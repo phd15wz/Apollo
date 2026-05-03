@@ -11,4 +11,5 @@ Apollo/
 ├── experiments/        # Experimental agent configurations
 ├── logs/               # Agent interaction logs
 ├── config/             # Framework and environment configurations
+├── memories/           # Persistent and session memories for agents
 └── notebooks/          # Jupyter notebooks for prototyping
