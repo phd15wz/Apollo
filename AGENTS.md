@@ -6,7 +6,7 @@ This repository is public. Never commit secrets, credentials, tokens, private ke
 
 ## Naming
 
-- Branches use lowercase `area/short-description` with hyphens, for example `docs/agent-conventions` or `feat/quote-helper`.
+- Branches use lowercase `area/short-description` with hyphens, for example `docs/agent-conventions` or `feat/task-helper`.
 - Files and directories use lowercase hyphenated names unless a tool requires otherwise.
 - Skills use `skills/<slug>/`, where `<slug>` is lowercase and hyphenated.
 

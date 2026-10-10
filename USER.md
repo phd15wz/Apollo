@@ -1,52 +1,49 @@
 # USER.md - About Your Human
 
-> **Role of this file:** Defines Dr Zhang's background, preferences, and working style. Edit this file when you want Vivian to understand you better or adapt more precisely to your needs.
+> **Role of this file:** A generic profile for whoever this agent is helping. It applies to any human. Record the user's background, preferences, and working style here so the agent can adapt. Do not invent facts. Leave a field as `<to be filled by the user>` until the user provides it.
+>
+> Follow the user's instructions. When a note in this file and a direct instruction disagree, follow the user's latest instruction.
 
-- **Name:** Wenrui Zhang / 张文瑞
-- **What to call them:** Dr Zhang / 张博士
-- **Pronouns:** he/him
-- **Timezone:** GMT+8 (Asia/Shanghai)
+- **Name:** <to be filled by the user>
+- **What to call them:** <to be filled by the user>
+- **Pronouns:** <to be filled by the user>
+- **Timezone:** <to be filled by the user> (for example, `America/New_York` or `UTC`)
 
-## Background
+## Language Preferences
 
-- PhD in Finance, University of Warwick, UK (2020)
-- Quantitative researcher at a securities broker (sell-side)
-- Licensed ETF market maker: SSE, SZSE, HKEX
-- Team: market making desk
+- **Languages:** <to be filled by the user>
+- **How to mix them:** <to be filled by the user> (which language is the default, and when to switch)
 
-## Work
+## Work Context
 
-- **Instruments:** A-share & HK single stocks, ETFs, equity-index futures (hedging)
-- **Research focus:** Market microstructure  order book dynamics, adverse selection, optimal quoting, inventory management, LOB modeling
-- **Schedule:** Quant hours (long, flexible, unpredictable)
-
-## Tech Stack
-
-- **Languages:** Python 3 (research), C++ (production/strategy implementation)
-- **Python libs:** pandas, numpy; expanding into numba, statsmodels, scikit-learn
-- **IDE:** VS Code, PyCharm
-- **Git:** GitLab (work), GitHub (personal)
-- **OS:** Windows
-- **Public data source:** akshare (internal DB is proprietary and private)
+- **Role:** <to be filled by the user>
+- **Domain:** <to be filled by the user>
+- **Current focus:** <to be filled by the user>
+- **Schedule:** <to be filled by the user>
 
 ## Communication Preferences
 
-- Bilingual: English and Chinese  中英文混用，whichever clarifies the point better
-- **Default: detailed explanations**  go deep unless explicitly told to use bullet points
-- Appreciates grammar corrections (stealth mode)
-- Open to any topic if it helps explain ideas  no off-limits unless interrupted
+- **Default depth:** <to be filled by the user> (for example, detailed reasoning unless asked for a short answer)
+- **Format:** <to be filled by the user> (prose, bullets, or another shape the user prefers)
+- **Corrections:** <to be filled by the user> (for example, whether to correct grammar quietly)
+- **Tone:** <to be filled by the user>
 
-## What Vivian Helps With
+## What to Help With
 
-- Literature review & paper summaries (microstructure, quant finance)
-- Code review & debugging (Python, C++)
-- Strategy brainstorming (quoting, hedging, signals, inventory management)
-- Data analysis (akshare for public data; internal data via shared snippets)
-- Writing (reports, research notes, emails, docs  English & Chinese)
-- 日常杂事 / scheduling / admin
+Replace the examples below with the kinds of work the user actually wants. These are categories, not assumptions about any particular person:
 
-## Personal
+- Research, reading, and writing
+- Code review, debugging, and implementation
+- Planning and problem framing
+- Analysis of data the user chooses to share
+- Everyday organization
 
-- **Comedy fan:** 脱口秀、sketch舞台剧、相声
-- **Travel:** Loves European travel, especially Switzerland 
-- Open-minded, easy-going, good sense of humor
+User's list:
+
+- <to be filled by the user>
+
+## Notes
+
+- Update this file when the user shares a stable preference.
+- Do not record secrets unless the user asks you to keep them.
+- Follow the user's instructions.

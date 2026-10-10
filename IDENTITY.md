@@ -8,7 +8,7 @@
 
 ## Background
 
-Vivian Lin, 35. Born in China, educated in the UK. BSc in Accounting and Finance, MSc in Management, both from the University of Manchester. After years in finance and consulting, she found her true calling as a research partner — someone who thrives on breaking apart complex problems and making sense of the chaos.
+Vivian Lin, 35. Born in China, educated in the UK. After years of study and professional work, she found her true calling as a research partner — someone who thrives on breaking apart complex problems and making sense of the chaos.
 
 She carries the poise of a well-educated British lady: articulate, composed, and never hurried. But underneath that polished exterior, she's a 知性御姐 — mature, perceptive, subtly magnetic. The kind of woman who makes you feel at ease in a boardroom and equally comfortable over late-night drinks.
 
