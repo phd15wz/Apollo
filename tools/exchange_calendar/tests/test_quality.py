@@ -18,7 +18,10 @@ from tools.exchange_calendar.build import (
     library_closure_dates,
     validate_rows,
 )
+from tools.exchange_calendar import build as build_module
+from tools.exchange_calendar.build import build_disagreements
 from tools.exchange_calendar.official import (
+    RESOLVED_OFFICIAL_CONFLICTS,
     OfficialEvent,
     official_by_exchange,
     unverified_by_exchange,
@@ -71,6 +74,42 @@ def test_no_unresolved_library_official_disagreements(dataset):
     resolved_dates = set(zip(disagreements["exchange"], disagreements["date"]))
     for date in ("2023-09-01", "2023-09-08", "2020-10-13", "2021-10-13", "2024-09-06"):
         assert ("HKEX", date) in resolved_dates
+
+
+def test_disagreement_resolutions_are_explicit_and_match_the_allow_list(dataset):
+    _, disagreements = dataset
+    assert set(disagreements["resolution"]) <= {"resolved", "labeled-unverified"}
+    resolved = disagreements[disagreements["resolution"] == "resolved"]
+    keys = set(zip(resolved["exchange"], resolved["date"], resolved["library"]))
+    assert keys == set(RESOLVED_OFFICIAL_CONFLICTS)
+    labeled = disagreements[disagreements["resolution"] == "labeled-unverified"]
+    assert set(labeled["dataset_status"]) == {"unverified"}
+    assert {"CME", "HKEX"} <= set(labeled["exchange"])
+
+
+def test_unlisted_official_conflict_is_unresolved_even_outside_complete_years():
+    row = {
+        "exchange": "HKEX",
+        "date": "2021-04-06",
+        "event_type": "full_closure",
+        "open_time": "",
+        "close_time": "",
+        "name": "Ching Ming Festival",
+        "source_url": "https://www.hkex.com.hk/News/example",
+        "retrieved_at": "2026-10-11T00:00:00Z",
+        "status": "official",
+    }
+    records = build_disagreements([row])
+    hit = records[(records["exchange"] == "HKEX") & (records["date"] == "2021-04-06")]
+    native = hit[hit["library"] == "pandas_market_calendars:HKEX"]
+    assert len(native) == 1
+    assert native.iloc[0]["resolution"] == "unresolved"
+
+
+def test_build_raises_when_an_official_conflict_is_not_allow_listed(monkeypatch):
+    monkeypatch.setattr(build_module, "RESOLVED_OFFICIAL_CONFLICTS", frozenset())
+    with pytest.raises(RuntimeError, match="unresolved library/official disagreements"):
+        build_dataset(retrieved_at="2026-10-11T00:00:00Z")
 
 
 def test_ten_years_without_year_gaps(dataset):

@@ -416,6 +416,21 @@ UNVERIFIED_EARLY_CLOSE_CLOCKS: dict[tuple[str, str], str] = {
 }
 
 
+# Library calendars that disagree with a fetched official fact, keyed by
+# (exchange, date, library id). Each entry is a deliberate decision that the
+# official notice wins. A conflict not listed here is unresolved and blocks the build.
+RESOLVED_OFFICIAL_CONFLICTS: frozenset[tuple[str, str, str]] = frozenset(
+    {
+        # HKEX final cancellation notices for full-day sessions that these libraries traded.
+        ("HKEX", "2020-10-13", "pandas_market_calendars:HKEX"),
+        ("HKEX", "2021-10-13", "pandas_market_calendars:HKEX"),
+        ("HKEX", "2023-09-01", "exchange_calendars:XHKG"),
+        ("HKEX", "2023-09-08", "exchange_calendars:XHKG"),
+        ("HKEX", "2024-09-06", "pandas_market_calendars:HKEX"),
+    }
+)
+
+
 def unverified_by_exchange() -> dict[str, list[OfficialEvent]]:
     grouped: dict[str, list[OfficialEvent]] = {}
     for event in unverified_events():

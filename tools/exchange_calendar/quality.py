@@ -160,10 +160,13 @@ def diff_datasets(previous: pd.DataFrame, updated: pd.DataFrame, *, as_of: str) 
     }
 
 
+ACCEPTED_RESOLUTIONS = frozenset({"resolved", "labeled-unverified"})
+
+
 def unresolved_disagreements(frame: pd.DataFrame) -> pd.DataFrame:
     if frame.empty or "resolution" not in frame.columns:
         return frame.iloc[0:0]
-    return frame[frame["resolution"].fillna("").str.lower() != "resolved"].reset_index(drop=True)
+    return frame[~frame["resolution"].fillna("").str.lower().isin(ACCEPTED_RESOLUTIONS)].reset_index(drop=True)
 
 
 def assert_no_unresolved(frame: pd.DataFrame) -> None:

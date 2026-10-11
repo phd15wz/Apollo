@@ -10,8 +10,10 @@ import pandas as pd
 import pandas_market_calendars as mcal
 
 from tools.exchange_calendar.exchanges import EXCHANGES, LIBRARY_SOURCE_URL, Exchange
+from tools.exchange_calendar.quality import unresolved_disagreements
 from tools.exchange_calendar.official import (
     COMPLETE_CLOSURE_YEARS,
+    RESOLVED_OFFICIAL_CONFLICTS,
     UNVERIFIED_EARLY_CLOSE_CLOCKS,
     OfficialEvent,
     official_by_exchange,
@@ -52,7 +54,8 @@ DISAGREEMENT_COLUMNS = [
     "date",
     "library",
     "library_claim",
-    "official_claim",
+    "dataset_claim",
+    "dataset_status",
     "source_url",
     "resolution",
     "note",
@@ -320,107 +323,151 @@ def validate_rows(frame: pd.DataFrame) -> None:
         raise ValueError("; ".join(problems))
 
 
-def _official_claim(event: OfficialEvent) -> str:
-    if event.event_type == "early_close":
-        return f"early_close {event.close_time}"
-    if event.event_type in CLOSURE_TYPES:
-        return "closed"
-    return event.event_type
-
-
-def _library_claim(event: OfficialEvent, closed: set[str], clocks: dict[str, str]) -> str:
-    if event.event_type in CLOSURE_TYPES:
-        return "closed" if event.date in closed else "open"
-    if event.date in closed:
-        return "closed"
-    clock = clocks.get(event.date)
-    if clock is None:
-        return "open"
-    clock_hhmm = clock[-5:]
-    if clock_hhmm == event.close_time:
-        return f"early_close {event.close_time}"
-    return f"session_close {clock_hhmm}"
+def _hhmm(clock: str) -> str:
+    return clock[-5:]
 
 
 def build_disagreements(rows: list[dict]) -> pd.DataFrame:
-    """Compare each official fact with each library. Unresolved rows fail the build tests."""
-    official = official_by_exchange()
-    records = []
+    """Compare every dataset closure or early close with each library calendar.
+
+    A mismatch is resolved in one of three ways, and no year-based rule decides it:
+
+    - ``resolved``: the row is an official fact and ``RESOLVED_OFFICIAL_CONFLICTS``
+      names this exchange, date, and library.
+    - ``labeled-unverified``: the libraries disagree with a row that is labeled
+      ``unverified``. The dataset makes no confirmed claim for that row.
+    - ``unresolved``: anything else. ``build_dataset`` raises on these.
+
+    A closure that a library reports on a date in a complete-list year, where the
+    fetched page does not list it, is always unresolved.
+    """
+    by_key = {
+        (row["exchange"], row["date"]): row
+        for row in rows
+        if row["event_type"] in CLOSURE_TYPES | {"early_close"}
+    }
+    official_closure_dates = {
+        (event.exchange, event.date)
+        for event in official_events()
+        if event.event_type in CLOSURE_TYPES
+    }
     present = {(row["exchange"], row["date"], row["event_type"]) for row in rows}
+    records = []
     for event in official_events():
         if (event.exchange, event.date, event.event_type) in present:
             continue
         records.append(
-            {
-                "exchange": event.exchange,
-                "date": event.date,
-                "library": "dataset",
-                "library_claim": "missing",
-                "official_claim": event.event_type,
-                "source_url": event.source_url,
-                "resolution": "unresolved",
-                "note": "Official snapshot event is missing from the dataset.",
-            }
+            _record(
+                event.exchange,
+                event.date,
+                "dataset",
+                "missing",
+                event.event_type,
+                "absent",
+                event.source_url,
+                "unresolved",
+                "Official snapshot event is missing from the dataset.",
+            )
         )
     for code, exchange in EXCHANGES.items():
-        events = official.get(code, [])
-        if not events:
-            continue
-        claims = _library_claims(exchange)
         complete_years = COMPLETE_CLOSURE_YEARS.get(code, frozenset())
-        official_closure_dates = {
-            event.date for event in events if event.event_type in CLOSURE_TYPES
-        }
+        claims = _library_claims(exchange)
+        dates = {date for ex, date in by_key if ex == code}
         for library, closed, clocks in claims:
-            for event in events:
-                library_claim = _library_claim(event, closed, clocks)
-                official_claim = _official_claim(event)
-                if library_claim == official_claim:
-                    continue
-                year = int(event.date[:4])
-                # A complete fetched holiday list that disagrees with a library
-                # stays unresolved until someone checks the parse. Weather notices
-                # are not a complete year list; the fetched notice is the resolution.
-                complete_conflict = year in complete_years
-                records.append(
-                    {
-                        "exchange": code,
-                        "date": event.date,
-                        "library": library,
-                        "library_claim": library_claim,
-                        "official_claim": official_claim,
-                        "source_url": event.source_url,
-                        "resolution": "unresolved" if complete_conflict else "resolved",
-                        "note": (
-                            "Official page and library disagree inside a year treated as a complete list."
-                            if complete_conflict
-                            else "Fetched official notice differs from this library. The dataset keeps the official event."
-                        ),
-                    }
+            dates |= {day for day in closed if day >= exchange.start}
+        for date in sorted(dates):
+            row = by_key.get((code, date))
+            dataset_closed = row is not None and row["event_type"] in CLOSURE_TYPES
+            dataset_early = row is not None and row["event_type"] == "early_close"
+            status = row["status"] if row is not None else "absent"
+            source_url = row["source_url"] if row is not None else ""
+            year = int(date[:4])
+            for library, closed, clocks in claims:
+                library_closed = date in closed
+                library_clock = _hhmm(clocks[date]) if date in clocks else ""
+                closure_mismatch = dataset_closed != library_closed
+                clock_mismatch = (
+                    dataset_early
+                    and not library_closed
+                    and library_clock != _hhmm(row["close_time"])
                 )
-            for date in sorted(closed):
-                year = int(date[:4])
-                if year not in complete_years or date in official_closure_dates:
+                if not closure_mismatch and not clock_mismatch:
                     continue
+                dataset_claim = (
+                    "closed" if dataset_closed
+                    else f"early_close {_hhmm(row['close_time'])}" if dataset_early
+                    else "open"
+                )
+                library_claim = (
+                    "closed" if library_closed
+                    else f"session_close {library_clock}" if library_clock
+                    else "open"
+                )
+                if status == "official":
+                    resolution = (
+                        "resolved"
+                        if (code, date, library) in RESOLVED_OFFICIAL_CONFLICTS
+                        else "unresolved"
+                    )
+                    note = (
+                        "Fetched official notice differs from this library. The dataset keeps the official event."
+                        if resolution == "resolved"
+                        else "Official fact and library disagree, and the conflict is not in RESOLVED_OFFICIAL_CONFLICTS."
+                    )
+                elif (
+                    library_closed
+                    and year in complete_years
+                    and (code, date) not in official_closure_dates
+                ):
+                    resolution = "unresolved"
+                    note = "Library closes this weekday in a year whose fetched official list is complete, and the list does not include it."
+                elif status == "unverified":
+                    resolution = "labeled-unverified"
+                    note = "Libraries disagree and no official source settled this row. The row is labeled unverified."
+                else:
+                    resolution = "unresolved"
+                    note = f"Libraries disagree with a row labeled {status}. Only unverified rows may carry a library disagreement."
                 records.append(
-                    {
-                        "exchange": code,
-                        "date": date,
-                        "library": library,
-                        "library_claim": "closed",
-                        "official_claim": "open",
-                        "source_url": "",
-                        "resolution": "unresolved",
-                        "note": (
-                            "Library closes this weekday in a year whose official page "
-                            "was fetched as a complete closure list, and the page does not list it."
-                        ),
-                    }
+                    _record(
+                        code,
+                        date,
+                        library,
+                        library_claim,
+                        dataset_claim,
+                        status,
+                        source_url,
+                        resolution,
+                        note,
+                    )
                 )
     frame = pd.DataFrame.from_records(records, columns=DISAGREEMENT_COLUMNS)
     if len(frame):
         frame = frame.sort_values(["exchange", "date", "library"]).reset_index(drop=True)
     return frame
+
+
+def _record(
+    exchange: str,
+    date: str,
+    library: str,
+    library_claim: str,
+    dataset_claim: str,
+    dataset_status: str,
+    source_url: str,
+    resolution: str,
+    note: str,
+) -> dict:
+    return {
+        "exchange": exchange,
+        "date": date,
+        "library": library,
+        "library_claim": library_claim,
+        "dataset_claim": dataset_claim,
+        "dataset_status": dataset_status,
+        "source_url": source_url,
+        "resolution": resolution,
+        "note": note,
+    }
 
 
 def build_dataset(retrieved_at: str | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -441,4 +488,7 @@ def build_dataset(retrieved_at: str | None = None) -> tuple[pd.DataFrame, pd.Dat
         raise RuntimeError("dataset has duplicate exchange/date/event_type keys")
     validate_rows(frame)
     disagreements = build_disagreements(rows)
+    pending = unresolved_disagreements(disagreements)
+    if len(pending):
+        raise RuntimeError(f"{len(pending)} unresolved library/official disagreements: {pending.head(10).to_dict(orient='records')}")
     return frame, disagreements

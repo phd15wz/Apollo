@@ -23,16 +23,16 @@
   {
     "url": "https://english.sse.com.cn/start/trading/schedule/",
     "phrase": "Shanghai Stock Exchange",
-    "ok": false,
-    "status": null,
-    "error": "URLError: <urlopen error _ssl.c:983: The handshake operation timed out>"
+    "ok": true,
+    "status": 200,
+    "error": ""
   },
   {
     "url": "https://www.sse.com.cn/disclosure/announcement/general/c/c_20251222_10802507.shtml",
     "phrase": "2026",
-    "ok": false,
-    "status": null,
-    "error": "URLError: <urlopen error _ssl.c:983: The handshake operation timed out>"
+    "ok": true,
+    "status": 200,
+    "error": ""
   },
   {
     "url": "https://www.hkex.com.hk/News/Market-Communications/2023/2309083news?sc_lang=en",
