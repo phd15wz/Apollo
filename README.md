@@ -28,4 +28,4 @@ Apollo/
 
 Agents work on branches and open pull requests. The owner reviews and merges.
 
-Do not push directly to `main`. See `AGENTS.md` for naming, commits, and pull request rules.
+Do not push directly to `main`. See `AGENTS.md` for naming, commits, pull request rules, and the standing rule that exchange holidays must go through `load_confirmed()`.
