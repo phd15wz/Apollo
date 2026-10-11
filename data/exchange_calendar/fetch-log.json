@@ -1,0 +1,100 @@
+[
+  {
+    "url": "https://www.nyse.com/markets/hours-calendars",
+    "phrase": "Martin Luther King",
+    "ok": true,
+    "status": 200,
+    "error": ""
+  },
+  {
+    "url": "https://www.nasdaqtrader.com/trader.aspx?id=calendar",
+    "phrase": "Holiday Schedule 2026",
+    "ok": true,
+    "status": 200,
+    "error": ""
+  },
+  {
+    "url": "https://www.jpx.co.jp/english/corporate/about-jpx/calendar/",
+    "phrase": "Market Holidays",
+    "ok": true,
+    "status": 200,
+    "error": ""
+  },
+  {
+    "url": "https://english.sse.com.cn/start/trading/schedule/",
+    "phrase": "Shanghai Stock Exchange",
+    "ok": false,
+    "status": null,
+    "error": "URLError: <urlopen error _ssl.c:983: The handshake operation timed out>"
+  },
+  {
+    "url": "https://www.sse.com.cn/disclosure/announcement/general/c/c_20251222_10802507.shtml",
+    "phrase": "2026",
+    "ok": false,
+    "status": null,
+    "error": "URLError: <urlopen error _ssl.c:983: The handshake operation timed out>"
+  },
+  {
+    "url": "https://www.hkex.com.hk/News/Market-Communications/2023/2309083news?sc_lang=en",
+    "phrase": "all trading sessions",
+    "ok": true,
+    "status": 200,
+    "error": ""
+  },
+  {
+    "url": "https://www.hkex.com.hk/News/Market-Communications/2023/2309012news?sc_lang=en",
+    "phrase": "all trading sessions",
+    "ok": true,
+    "status": 200,
+    "error": ""
+  },
+  {
+    "url": "https://www.hkex.com.hk/News/Market-Communications/2024/2409062news?sc_lang=en",
+    "phrase": "all trading sessions",
+    "ok": true,
+    "status": 200,
+    "error": ""
+  },
+  {
+    "url": "https://www.hkex.com.hk/News/Market-Communications/2021/2110132news?sc_lang=en",
+    "phrase": "cancelled",
+    "ok": true,
+    "status": 200,
+    "error": ""
+  },
+  {
+    "url": "https://www.hkex.com.hk/News/Market-Communications/2023/2307172news?sc_lang=en",
+    "phrase": "cancelled",
+    "ok": true,
+    "status": 200,
+    "error": ""
+  },
+  {
+    "url": "https://www.hkex.com.hk/News/Market-Communications/2020/2010132news?sc_lang=en",
+    "phrase": "cancelled",
+    "ok": true,
+    "status": 200,
+    "error": ""
+  },
+  {
+    "url": "https://www.hkex.com.hk/News/Market-Communications/2016/1608022news?sc_lang=en",
+    "phrase": "cancelled",
+    "ok": true,
+    "status": 200,
+    "error": ""
+  },
+  {
+    "url": "https://www.hkex.com.hk/News/Market-Communications/2016/1610212news?sc_lang=en",
+    "phrase": "cancelled",
+    "ok": true,
+    "status": 200,
+    "error": ""
+  },
+  {
+    "url": "https://www.hkex.com.hk/News/Market-Communications/2017/1708232news?sc_lang=en",
+    "phrase": "cancelled",
+    "ok": true,
+    "status": 200,
+    "error": ""
+  }
+]

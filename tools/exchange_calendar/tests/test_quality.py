@@ -1,0 +1,246 @@
+"""Data-quality rules for the exchange holiday dataset."""
+
+from datetime import datetime, timezone
+
+import pandas as pd
+import pytest
+
+from tools.exchange_calendar.build import CLOSURE_TYPES, COLUMNS, build_dataset, library_closure_dates
+from tools.exchange_calendar.exchanges import EXCHANGES
+from tools.exchange_calendar.quality import (
+    STALENESS_THRESHOLD_DAYS,
+    diff_datasets,
+    staleness_warning,
+    unresolved_disagreements,
+)
+
+ROOT_DATA = __import__("pathlib").Path(__file__).resolve().parents[3] / "data" / "exchange_calendar"
+STATUSES = {"official", "secondary-confirmed", "unverified", "pending"}
+EVENT_TYPES = {"full_closure", "early_close", "late_open", "typhoon_closure", "typhoon_partial", "other"}
+
+
+@pytest.fixture(scope="module")
+def dataset():
+    frame = pd.read_csv(ROOT_DATA / "holidays.csv", dtype=str, keep_default_na=False)
+    disagreements = pd.read_csv(ROOT_DATA / "disagreements.csv", dtype=str, keep_default_na=False)
+    return frame, disagreements
+
+
+def test_schema_and_required_fields(dataset):
+    frame, _ = dataset
+    assert list(frame.columns) == COLUMNS
+    for column in ("source_url", "retrieved_at", "status"):
+        assert frame[column].str.len().gt(0).all()
+    assert set(frame["status"]).issubset(STATUSES)
+    assert set(frame["event_type"]).issubset(EVENT_TYPES)
+    parsed = frame["retrieved_at"].map(lambda value: datetime.fromisoformat(value.replace("Z", "+00:00")))
+    assert parsed.notna().all()
+
+
+def test_no_unresolved_library_official_disagreements(dataset):
+    _, disagreements = dataset
+    pending = unresolved_disagreements(disagreements)
+    assert pending.empty
+    # The known HKEX cases are real conflicts that the official notice resolved.
+    resolved_dates = set(zip(disagreements["exchange"], disagreements["date"]))
+    for date in ("2023-09-01", "2023-09-08", "2020-10-13", "2021-10-13", "2024-09-06"):
+        assert ("HKEX", date) in resolved_dates
+
+
+def test_ten_years_without_year_gaps(dataset):
+    frame, _ = dataset
+    closures = frame[frame["event_type"].isin(CLOSURE_TYPES)]
+    for code, spec in EXCHANGES.items():
+        subset = closures[closures["exchange"] == code]
+        years = set(subset["date"].str.slice(0, 4).astype(int))
+        # At least the past 10 complete years before the 2026-10-11 probe date,
+        # and no missing year from 2001 through 2025 inside this exchange's window.
+        required = range(2001, 2026)
+        end_year = int(spec.end[:4])
+        expected = {year for year in required if year <= end_year}
+        missing = sorted(expected - years)
+        assert not missing, f"{code} missing closure years {missing}"
+        assert subset["date"].min() <= "2016-10-11"
+
+
+def test_library_closures_have_no_gaps(dataset):
+    frame, _ = dataset
+    for code, spec in EXCHANGES.items():
+        expected = library_closure_dates(spec)
+        actual = set(
+            frame[
+                (frame["exchange"] == code) & frame["event_type"].isin(CLOSURE_TYPES)
+            ]["date"]
+        )
+        missing = sorted(expected - actual)
+        assert not missing, f"{code} dropped library closures {missing[:10]}"
+
+
+def test_spot_checks(dataset):
+    frame, _ = dataset
+
+    def rows(exchange, date):
+        return frame[(frame["exchange"] == exchange) & (frame["date"] == date)]
+
+    for exchange in ("NYSE", "Nasdaq"):
+        for date in ("2001-09-11", "2001-09-12", "2001-09-13", "2001-09-14"):
+            matched = rows(exchange, date)
+            assert len(matched) == 1
+            assert matched.iloc[0]["event_type"] == "full_closure"
+        assert rows(exchange, "2001-09-10").empty
+        assert rows(exchange, "2001-09-17").empty
+
+    # Both CME library families leave 11-14 September 2001 open.
+    assert rows("CME", "2001-09-11").empty
+    christmas = rows("CME", "2001-12-25")
+    assert len(christmas) == 1
+    assert christmas.iloc[0]["event_type"] == "full_closure"
+    assert christmas.iloc[0]["status"] == "secondary-confirmed"
+
+    typhoon = rows("HKEX", "2023-09-08")
+    assert len(typhoon) == 1
+    assert typhoon.iloc[0]["event_type"] == "typhoon_closure"
+    assert typhoon.iloc[0]["status"] == "official"
+    assert "hkex.com.hk" in typhoon.iloc[0]["source_url"]
+
+    saola = rows("HKEX", "2023-09-01")
+    assert saola.iloc[0]["event_type"] == "typhoon_closure"
+    assert saola.iloc[0]["status"] == "official"
+
+    sse = rows("SSE", "2024-10-01")
+    assert sse.iloc[0]["event_type"] == "full_closure"
+    assert sse.iloc[0]["status"] == "official"
+    assert "sse.com.cn" in sse.iloc[0]["source_url"]
+
+    jpx = rows("JPX", "2020-10-01")
+    assert jpx.iloc[0]["event_type"] == "full_closure"
+    assert rows("JPX", "2026-12-31").iloc[0]["status"] == "official"
+
+    krx = rows("KRX", "2016-03-01")
+    assert krx.iloc[0]["event_type"] == "full_closure"
+    assert krx.iloc[0]["status"] == "unverified"
+
+
+def test_typhoon_rows_come_from_hkex_notices(dataset):
+    frame, _ = dataset
+    typhoon = frame[frame["event_type"].isin({"typhoon_closure", "typhoon_partial"})]
+    assert not typhoon.empty
+    assert set(typhoon["exchange"]) == {"HKEX"}
+    assert set(typhoon["status"]) == {"official"}
+    assert typhoon["source_url"].str.contains("https://www.hkex.com.hk/").all()
+    assert "2023-09-08" in set(typhoon["date"])
+
+
+def test_sse_and_krx_future_year_not_invented(dataset):
+    frame, _ = dataset
+    future = frame[frame["exchange"].isin(["SSE", "KRX"]) & frame["date"].str.startswith("2027")]
+    assert future.empty
+    # 2026 itself was already announced and is present.
+    for exchange in ("SSE", "KRX"):
+        assert frame[(frame["exchange"] == exchange) & frame["date"].str.startswith("2026")].shape[0] > 0
+
+
+def test_hkex_early_closes_use_library_hours_and_stay_unverified(dataset):
+    frame, _ = dataset
+    early = frame[(frame["exchange"] == "HKEX") & (frame["event_type"] == "early_close")]
+    assert len(early) == 52
+    assert set(early["status"]) == {"unverified"}
+    before = early[early["date"] == "2001-12-24"].iloc[0]
+    after = early[early["date"] == "2012-12-24"].iloc[0]
+    assert (before["open_time"], before["close_time"]) == ("10:00", "12:30")
+    assert (after["open_time"], after["close_time"]) == ("09:30", "12:00")
+
+
+def test_krx_csat_late_opens_stop_after_2020(dataset):
+    frame, _ = dataset
+    late = frame[(frame["exchange"] == "KRX") & (frame["event_type"] == "late_open")]
+    non_january = late[~late["date"].str[5:7].eq("01")]
+    assert non_january["date"].max() == "2020-12-03"
+    assert set(late["status"]) == {"unverified"}
+    assert set(late["open_time"]) == {"10:00"}
+
+
+def test_unverified_hkex_library_disagreement_stays_unverified(dataset):
+    frame, _ = dataset
+    row = frame[(frame["exchange"] == "HKEX") & (frame["date"] == "2021-04-06")]
+    assert len(row) == 1
+    assert row.iloc[0]["status"] == "unverified"
+    assert row.iloc[0]["event_type"] == "full_closure"
+
+
+def test_staleness_warns_after_35_days():
+    old = "2026-01-01T00:00:00Z"
+    now = datetime(2026, 10, 11, tzinfo=timezone.utc)
+    with pytest.warns(UserWarning, match="stale"):
+        assert staleness_warning(old, now=now, threshold_days=STALENESS_THRESHOLD_DAYS)
+    fresh = "2026-10-01T00:00:00Z"
+    assert staleness_warning(fresh, now=now) is False
+
+
+def test_committed_metadata_is_not_stale():
+    import json
+
+    metadata = json.loads((ROOT_DATA / "metadata.json").read_text(encoding="utf-8"))
+    now = datetime(2026, 10, 11, tzinfo=timezone.utc)
+    assert metadata["staleness_threshold_days"] == 35
+    assert staleness_warning(metadata["last_refreshed"], now=now) is False
+    assert metadata["open_items"]
+
+
+def test_past_date_diff_flags_history_and_ignores_retrieved_at():
+    base = pd.DataFrame(
+        [
+            {
+                "exchange": "NYSE",
+                "date": "2016-01-01",
+                "event_type": "full_closure",
+                "open_time": "",
+                "close_time": "",
+                "name": "New Year's Day",
+                "source_url": "https://example.test/old",
+                "retrieved_at": "2026-01-01T00:00:00Z",
+                "status": "secondary-confirmed",
+            },
+            {
+                "exchange": "NYSE",
+                "date": "2027-01-01",
+                "event_type": "full_closure",
+                "open_time": "",
+                "close_time": "",
+                "name": "New Year's Day",
+                "source_url": "https://example.test/old",
+                "retrieved_at": "2026-01-01T00:00:00Z",
+                "status": "official",
+            },
+        ]
+    )
+    refreshed = base.copy()
+    refreshed["retrieved_at"] = "2026-10-11T00:00:00Z"
+    only_timestamp = diff_datasets(base, refreshed, as_of="2026-10-11")
+    assert only_timestamp["past_change_count"] == 0
+
+    changed = refreshed.copy()
+    changed.loc[changed["date"] == "2016-01-01", "name"] = "Changed"
+    changed.loc[changed["date"] == "2027-01-01", "name"] = "Future change"
+    diff = diff_datasets(base, changed, as_of="2026-10-11")
+    assert diff["past_change_count"] == 1
+    assert diff["past"]["changed"] == [
+        {"exchange": "NYSE", "date": "2016-01-01", "event_type": "full_closure"}
+    ]
+    assert diff["future"]["changed"][0]["date"] == "2027-01-01"
+
+
+def test_rebuild_matches_committed_facts():
+    """A rebuild may move retrieved_at, but the holiday facts stay put."""
+    committed, disagreements = pd.read_csv(
+        ROOT_DATA / "holidays.csv", dtype=str, keep_default_na=False
+    ), pd.read_csv(ROOT_DATA / "disagreements.csv", dtype=str, keep_default_na=False)
+    rebuilt, rebuilt_disagreements = build_dataset(retrieved_at="2026-10-11T00:00:00Z")
+    diff = diff_datasets(committed, rebuilt, as_of="2099-01-01")
+    assert diff["past_change_count"] == 0
+    assert diff["future"]["added"] == []
+    assert diff["future"]["removed"] == []
+    assert diff["future"]["changed"] == []
+    left = disagreements.fillna("").sort_values(list(disagreements.columns)).reset_index(drop=True)
+    right = rebuilt_disagreements.fillna("").sort_values(list(rebuilt_disagreements.columns)).reset_index(drop=True)
+    pd.testing.assert_frame_equal(left, right)

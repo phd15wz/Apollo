@@ -1,0 +1,6 @@
+exchange,date,library,library_claim,official_claim,source_url,resolution,note
+HKEX,2020-10-13,pandas_market_calendars:HKEX,open,closed,https://www.hkex.com.hk/News/Market-Communications/2020/2010132news?sc_lang=en,resolved,Fetched official notice differs from this library. The dataset keeps the official event.
+HKEX,2021-10-13,pandas_market_calendars:HKEX,open,closed,https://www.hkex.com.hk/News/Market-Communications/2021/2110132news?sc_lang=en,resolved,Fetched official notice differs from this library. The dataset keeps the official event.
+HKEX,2023-09-01,exchange_calendars:XHKG,open,closed,https://www.hkex.com.hk/News/Market-Communications/2023/2309012news?sc_lang=en,resolved,Fetched official notice differs from this library. The dataset keeps the official event.
+HKEX,2023-09-08,exchange_calendars:XHKG,open,closed,https://www.hkex.com.hk/News/Market-Communications/2023/2309083news?sc_lang=en,resolved,Fetched official notice differs from this library. The dataset keeps the official event.
+HKEX,2024-09-06,pandas_market_calendars:HKEX,open,closed,https://www.hkex.com.hk/News/Market-Communications/2024/2409062news?sc_lang=en,resolved,Fetched official notice differs from this library. The dataset keeps the official event.
