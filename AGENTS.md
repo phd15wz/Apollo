@@ -34,3 +34,12 @@ Each skill lives in `skills/<slug>/SKILL.md`.
 - `SKILL.md` states what the skill is for, when to use it, and the steps an agent should follow.
 - Keep files that belong to that skill in the same directory.
 - Add a one-line entry to `skills/README.md` when you add a skill.
+
+## Standing rule: exchange holidays
+
+Strategies, reminders, and any agent must read exchange-holiday data only through `load_confirmed()` from `tools/exchange_calendar`. Never read `data/exchange_calendar/holidays.csv` directly for scheduling or answers that depend on confirmed closures.
+
+- Use only rows returned by `load_confirmed()` (`official` and `secondary-confirmed`). `secondary-confirmed` rows are acceptable.
+- Never treat `unverified` or `pending` rows as confirmed, including CME and KRX rows that are unverified.
+- Anything that needs a confirmed CME or KRX source must be flagged to the owner first.
+- Refresh is due within 35 days of `last_refreshed`. Re-check KRX and SSE next-year schedules each December before adding those years.
