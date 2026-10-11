@@ -68,7 +68,7 @@ Only in native `HKEX`: 2023-09-01, 2023-09-08.
 
 `XHKG` treats 2023-09-08 as a normal session (09:30–16:00 Asia/Hong_Kong). The fetched HKEX notice says all securities and derivatives sessions that day were cancelled because a Black Rainstorm Warning and Extreme Conditions remained in force: `https://www.hkex.com.hk/News/Market-Communications/2023/2309083news?sc_lang=en`.
 
-Final cancellation notices were also fetched for 2016-08-02, 2016-10-21, 2017-08-23 (Signal No. 10), 2020-10-13, 2021-10-13, 2023-07-17, 2023-09-01 (Signal No. 8), and 2024-09-06. Those nine dates are `typhoon_closure` / `official`. Where a library still has the day open, `disagreements.csv` records a resolved conflict. 2021-04-06 is closed only in `XHKG`. No notice was fetched, so that row stays `unverified` `full_closure`.
+2023-09-08 is `weather_closure` / `official`, not a typhoon closure. Final typhoon cancellation notices were also fetched for 2016-08-02, 2016-10-21, 2017-08-23 (Signal No. 10), 2020-10-13, 2021-10-13, 2023-07-17, 2023-09-01 (Signal No. 8), and 2024-09-06. Those eight dates are `typhoon_closure` / `official`. Where a library still has the day open, `disagreements.csv` records a resolved conflict. 2021-04-06 is closed only in `XHKG`. No notice was fetched, so that row stays `unverified` `full_closure`.
 
 For 2016–2026, `XHKG` has 23 early closes and native `HKEX` has none: every schedule close is 16:00. The dataset has 52 HKEX early-close rows from 2001 through 2027, all `unverified`. Before 2011-03-07 the library’s early close is 10:00–12:30 (2001-12-24). From 2012-12-24 onward in this build it is 09:30–12:00. Not every year has a weekday early close.
 

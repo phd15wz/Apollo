@@ -653,7 +653,7 @@ HKEX,2023-05-26,full_closure,,,Closure,https://github.com/gerrymanoim/exchange_c
 HKEX,2023-06-22,full_closure,,,Closure,https://github.com/gerrymanoim/exchange_calendars/tree/4.13.2,2026-10-11T07:20:32Z,secondary-confirmed
 HKEX,2023-07-17,typhoon_closure,,,Typhoon Signal No. 8,https://www.hkex.com.hk/News/Market-Communications/2023/2307172news?sc_lang=en,2026-10-11T07:20:32Z,official
 HKEX,2023-09-01,typhoon_closure,,,Typhoon Signal No. 8,https://www.hkex.com.hk/News/Market-Communications/2023/2309012news?sc_lang=en,2026-10-11T07:20:32Z,official
-HKEX,2023-09-08,typhoon_closure,,,Black Rainstorm Warning and Extreme Conditions,https://www.hkex.com.hk/News/Market-Communications/2023/2309083news?sc_lang=en,2026-10-11T07:20:32Z,official
+HKEX,2023-09-08,weather_closure,,,Black Rainstorm Warning and Extreme Conditions,https://www.hkex.com.hk/News/Market-Communications/2023/2309083news?sc_lang=en,2026-10-11T07:20:32Z,official
 HKEX,2023-10-02,full_closure,,,National Day,https://github.com/gerrymanoim/exchange_calendars/tree/4.13.2,2026-10-11T07:20:32Z,secondary-confirmed
 HKEX,2023-10-23,full_closure,,,Closure,https://github.com/gerrymanoim/exchange_calendars/tree/4.13.2,2026-10-11T07:20:32Z,secondary-confirmed
 HKEX,2023-12-25,full_closure,,,Christmas,https://github.com/gerrymanoim/exchange_calendars/tree/4.13.2,2026-10-11T07:20:32Z,secondary-confirmed

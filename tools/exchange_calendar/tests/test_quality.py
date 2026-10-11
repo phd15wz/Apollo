@@ -11,6 +11,7 @@ from tools.exchange_calendar.build import (
     _apply_official,
     build_dataset,
     library_closure_dates,
+    validate_rows,
 )
 from tools.exchange_calendar.official import OfficialEvent
 from tools.exchange_calendar.exchanges import EXCHANGES
@@ -23,7 +24,16 @@ from tools.exchange_calendar.quality import (
 
 ROOT_DATA = __import__("pathlib").Path(__file__).resolve().parents[3] / "data" / "exchange_calendar"
 STATUSES = {"official", "secondary-confirmed", "unverified", "pending"}
-EVENT_TYPES = {"full_closure", "early_close", "late_open", "typhoon_closure", "typhoon_partial", "other"}
+EVENT_TYPES = {
+    "full_closure",
+    "early_close",
+    "late_open",
+    "typhoon_closure",
+    "typhoon_partial",
+    "weather_closure",
+    "other",
+}
+WEATHER_TYPES = {"typhoon_closure", "typhoon_partial", "weather_closure"}
 
 
 @pytest.fixture(scope="module")
@@ -104,11 +114,12 @@ def test_spot_checks(dataset):
     assert christmas.iloc[0]["event_type"] == "full_closure"
     assert christmas.iloc[0]["status"] == "secondary-confirmed"
 
-    typhoon = rows("HKEX", "2023-09-08")
-    assert len(typhoon) == 1
-    assert typhoon.iloc[0]["event_type"] == "typhoon_closure"
-    assert typhoon.iloc[0]["status"] == "official"
-    assert "hkex.com.hk" in typhoon.iloc[0]["source_url"]
+    rainstorm = rows("HKEX", "2023-09-08")
+    assert len(rainstorm) == 1
+    assert rainstorm.iloc[0]["event_type"] == "weather_closure"
+    assert rainstorm.iloc[0]["status"] == "official"
+    assert "Black Rainstorm" in rainstorm.iloc[0]["name"]
+    assert "hkex.com.hk" in rainstorm.iloc[0]["source_url"]
 
     saola = rows("HKEX", "2023-09-01")
     assert saola.iloc[0]["event_type"] == "typhoon_closure"
@@ -128,14 +139,48 @@ def test_spot_checks(dataset):
     assert krx.iloc[0]["status"] == "unverified"
 
 
-def test_typhoon_rows_come_from_hkex_notices(dataset):
+def test_weather_rows_come_from_hkex_notices(dataset):
     frame, _ = dataset
-    typhoon = frame[frame["event_type"].isin({"typhoon_closure", "typhoon_partial"})]
-    assert not typhoon.empty
-    assert set(typhoon["exchange"]) == {"HKEX"}
-    assert set(typhoon["status"]) == {"official"}
-    assert typhoon["source_url"].str.contains("https://www.hkex.com.hk/").all()
-    assert "2023-09-08" in set(typhoon["date"])
+    weather = frame[frame["event_type"].isin(WEATHER_TYPES)]
+    assert not weather.empty
+    assert set(weather["exchange"]) == {"HKEX"}
+    assert set(weather["status"]) == {"official"}
+    assert weather["source_url"].str.startswith("https://www.hkex.com.hk/").all()
+    typhoon_dates = set(weather[weather["event_type"] == "typhoon_closure"]["date"])
+    assert "2023-09-08" not in typhoon_dates
+    assert min(typhoon_dates) == "2016-08-02"
+
+
+def _row(**overrides):
+    row = {
+        "exchange": "HKEX",
+        "date": "2030-01-02",
+        "event_type": "typhoon_partial",
+        "open_time": "13:00",
+        "close_time": "16:00",
+        "name": "Typhoon Signal No. 8 lowered before noon",
+        "source_url": "https://www.hkex.com.hk/News/example",
+        "retrieved_at": "2026-10-11T00:00:00Z",
+        "status": "official",
+    }
+    row.update(overrides)
+    return row
+
+
+def test_typhoon_partial_requires_traded_hours_and_is_not_a_closure():
+    assert "typhoon_partial" not in CLOSURE_TYPES
+    validate_rows(pd.DataFrame([_row()], columns=COLUMNS))
+    with pytest.raises(ValueError, match="missing hours"):
+        validate_rows(pd.DataFrame([_row(open_time="")], columns=COLUMNS))
+
+
+def test_weather_rows_need_an_official_hkex_source():
+    with pytest.raises(ValueError, match="official HKEX notice"):
+        validate_rows(pd.DataFrame([_row(event_type="weather_closure", open_time="", close_time="", status="unverified")], columns=COLUMNS))
+    with pytest.raises(ValueError, match="official HKEX notice"):
+        validate_rows(pd.DataFrame([_row(source_url="https://news.example/typhoon")], columns=COLUMNS))
+    with pytest.raises(ValueError, match="closure rows with hours"):
+        validate_rows(pd.DataFrame([_row(event_type="weather_closure")], columns=COLUMNS))
 
 
 def test_sse_and_krx_future_year_not_invented(dataset):

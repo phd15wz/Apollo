@@ -1,5 +1,5 @@
 {
-  "dataset_version": "2026-10-11.b8442f163393",
+  "dataset_version": "2026-10-11.0ec6acd647b9",
   "last_refreshed": "2026-10-11T07:20:32Z",
   "staleness_threshold_days": 35,
   "history_start": "2001-01-01",
@@ -22,7 +22,8 @@
     "early_close": 377,
     "full_closure": 2270,
     "late_open": 47,
-    "typhoon_closure": 9
+    "typhoon_closure": 8,
+    "weather_closure": 1
   },
   "libraries": {
     "exchange_calendars": "4.13.2",

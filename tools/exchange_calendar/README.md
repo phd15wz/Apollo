@@ -24,11 +24,11 @@ Live fetches that fail stay in `metadata.json` under `open_items`. Official rows
 
 `exchange`, `date`, `event_type`, `open_time`, `close_time`, `name`, `source_url`, `retrieved_at`, `status`.
 
-`event_type` is `full_closure`, `early_close`, `late_open`, `typhoon_closure`, `typhoon_partial`, or `other`.
+`event_type` is `full_closure`, `typhoon_closure`, `weather_closure`, `early_close`, `late_open`, `typhoon_partial`, or `other`. The three closure types have empty hours. `early_close`, `late_open`, and `typhoon_partial` must carry both `open_time` and `close_time`. `other` must have a name. `build.validate_rows` enforces this. The definitions are in `skills/exchange-calendar/SKILL.md`.
 
 `status` is `official`, `secondary-confirmed`, `unverified`, or `pending`.
 
-`CME` rows are the `CMES` calendar. `JPX` rows are TSE (`XTKS`). Nasdaq rows use the NYSE calendar because that is what both libraries implement. HKEX typhoon rows exist only for fetched HKEX notices.
+`CME` rows are the `CMES` calendar. `JPX` rows are TSE (`XTKS`). Nasdaq rows use the NYSE calendar because that is what both libraries implement. HKEX typhoon and weather rows exist only for fetched HKEX notices.
 
 ## Tests
 

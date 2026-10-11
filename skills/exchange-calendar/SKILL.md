@@ -12,7 +12,7 @@ Read `docs/exchange-calendar-coverage.md` before treating a library as complete.
 | --- | --- |
 | `exchange` | `NYSE`, `Nasdaq`, `CME`, `HKEX`, `SSE`, `JPX`, `KRX` |
 | `date` | Session date `YYYY-MM-DD` |
-| `event_type` | `full_closure`, `early_close`, `late_open`, `typhoon_closure`, `typhoon_partial`, `other` |
+| `event_type` | See the event types below |
 | `open_time`, `close_time` | Exchange-local clock. Empty on a full closure. A CME time on the previous evening is `YYYY-MM-DDTHH:MM`. |
 | `name` | Holiday or notice name when one was known |
 | `source_url` | Page or library tree the row was taken from |
@@ -21,9 +21,21 @@ Read `docs/exchange-calendar-coverage.md` before treating a library as complete.
 
 `JPX` is the Tokyo Stock Exchange cash calendar (`XTKS`). `CME` is `exchange_calendars` `CMES` only, not every CME Group product.
 
+Event types:
+
+- `full_closure` — no session that day. Hours are empty.
+- `typhoon_closure` — HKEX cancelled every session because of a typhoon signal. Hours are empty.
+- `weather_closure` — HKEX cancelled every session because of other severe weather, such as a Black Rainstorm Warning or Extreme Conditions (2023-09-08). Hours are empty.
+- `early_close` — the session closed early. `open_time` and `close_time` are the hours that traded.
+- `late_open` — the session opened late. `open_time` and `close_time` are the hours that traded.
+- `typhoon_partial` — HKEX traded only part of the day because of a typhoon or rainstorm. `open_time` and `close_time` are required and give the hours that traded. It is not a closure. No row uses it yet because no partial-day notice has been fetched.
+- `other` — anything else, such as a suspension that does not fit the types above. `name` is required and says what happened.
+
+`build.validate_rows` rejects unknown types, closures with hours, session rows without both hours, `other` rows without a name, and weather rows that are not backed by an official HKEX notice.
+
 Status:
 
-- `official` — a fetched exchange or regulator page states this fact. HKEX `typhoon_closure` and `typhoon_partial` rows are allowed only at this status, and only with an `hkex.com.hk` notice URL.
+- `official` — a fetched exchange or regulator page states this fact. HKEX `typhoon_closure`, `weather_closure`, and `typhoon_partial` rows are allowed only at this status, and only with an `hkex.com.hk` notice URL.
 - `secondary-confirmed` — `exchange_calendars` and an independent `pandas_market_calendars` calendar agree. The mirror calendars do not count.
 - `unverified` — one library only, the libraries disagree, or the only `pandas_market_calendars` calendar is a mirror. KRX is in this bucket.
 - `pending` — reserved for a future SSE or KRX year after an announcement says the schedule is not final. Do not create dated rows for a year that has not been announced.
@@ -36,7 +48,7 @@ History in the file starts at 2001-01-01 (more than ten years before 2026-10-11)
 2. Filter `holidays.csv` to the exchange and date.
 3. No row does not by itself mean the market is open. Weekends are not stored. CME 2001-09-11 has no row because the calendars that were tested leave it open; NYSE and Nasdaq do have closure rows. HKEX can still be halted for weather after the file was built.
 4. Quote `status` and `source_url` with the answer. Do not describe `unverified` as confirmed. Do not describe `secondary-confirmed` as the exchange's own notice.
-5. For HKEX weather, use a `typhoon_*` row only when `status` is `official`. A closure reconstructed from news stays `unverified` and must not be labeled `typhoon_closure` or `typhoon_partial`.
+5. For HKEX weather, use a `typhoon_*` or `weather_closure` row only when `status` is `official`. A closure reconstructed from news stays `unverified` and must not be labeled with a weather type.
 
 ## SSE and KRX next year
 
@@ -68,4 +80,5 @@ Unresolved rows in `disagreements.csv` fail those tests. A library and a fetched
 - Do not call `get_calendar` without `start` and `end` and then claim a ten-year history. The default window is shorter.
 - Do not treat Nasdaq as a separate holiday calendar. Both libraries alias it to NYSE.
 - Do not answer a CME product question from the `CME` rows alone. Say the row is the `CMES` calendar and point at the coverage note.
-- Do not add a typhoon or black-rainstorm row from a news article. Fetch the HKEX market-communications notice, or leave the row unverified and not typed as `typhoon_*`.
+- Do not add a typhoon or black-rainstorm row from a news article. Fetch the HKEX market-communications notice, or leave the row unverified and not typed as `typhoon_*` or `weather_closure`.
+- Do not type a rainstorm closure as `typhoon_closure`. Use `weather_closure`.

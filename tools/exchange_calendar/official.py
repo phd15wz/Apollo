@@ -15,6 +15,13 @@ import pandas as pd
 
 @dataclass(frozen=True)
 class OfficialEvent:
+    """A fact read from a fetched page. It overrides library rows on its date.
+
+    ``status`` is ``official`` when the page belongs to the exchange or a
+    regulator. A fetched third-party copy of the exchange's own announcement
+    (a news wire, a republished press release) is ``secondary-confirmed``.
+    """
+
     exchange: str
     date: str
     event_type: str
@@ -22,6 +29,7 @@ class OfficialEvent:
     source_url: str
     open_time: str = ""
     close_time: str = ""
+    status: str = "official"
 
 
 NYSE_URL = "https://www.nyse.com/markets/hours-calendars"
@@ -307,20 +315,27 @@ def _hkex_events() -> list[OfficialEvent]:
             "https://www.hkex.com.hk/News/Market-Communications/2023/2309012news?sc_lang=en",
         ),
         (
-            "2023-09-08",
-            "Black Rainstorm Warning and Extreme Conditions",
-            "https://www.hkex.com.hk/News/Market-Communications/2023/2309083news?sc_lang=en",
-        ),
-        (
             "2024-09-06",
             "Typhoon Signal No. 8",
             "https://www.hkex.com.hk/News/Market-Communications/2024/2409062news?sc_lang=en",
         ),
     ]
-    return [
+    events = [
         _closure("HKEX", date, name, url, event_type="typhoon_closure")
         for date, name, url in notices
     ]
+    # Not a typhoon: the notice cites a Black Rainstorm Warning and the
+    # government's Extreme Conditions announcement.
+    events.append(
+        _closure(
+            "HKEX",
+            "2023-09-08",
+            "Black Rainstorm Warning and Extreme Conditions",
+            "https://www.hkex.com.hk/News/Market-Communications/2023/2309083news?sc_lang=en",
+            event_type="weather_closure",
+        )
+    )
+    return events
 
 
 def official_events() -> list[OfficialEvent]:

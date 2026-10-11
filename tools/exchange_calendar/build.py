@@ -35,7 +35,14 @@ COLUMNS = [
     "status",
 ]
 
-CLOSURE_TYPES = {"full_closure", "typhoon_closure", "typhoon_partial"}
+# Whole-day closures. typhoon_partial is not here: the exchange traded part of
+# the day, so the row carries the hours that did trade.
+CLOSURE_TYPES = {"full_closure", "typhoon_closure", "weather_closure"}
+# Rows that describe a shortened or shifted session. open_time and close_time
+# are required on these.
+SESSION_TYPES = {"early_close", "late_open", "typhoon_partial"}
+EVENT_TYPES = CLOSURE_TYPES | SESSION_TYPES | {"other"}
+STATUSES = ("official", "secondary-confirmed", "unverified", "pending")
 DISAGREEMENT_COLUMNS = [
     "exchange",
     "date",
@@ -250,10 +257,38 @@ def _apply_official(rows: list[dict], events: list[OfficialEvent]) -> list[dict]
                 "close_time": event.close_time,
                 "name": event.name,
                 "source_url": event.source_url,
-                "status": "official",
+                "status": event.status,
             }
         )
     return kept
+
+
+def validate_rows(frame: pd.DataFrame) -> None:
+    """Reject rows the schema does not allow. Raises ValueError."""
+    problems = []
+    bad_types = sorted(set(frame["event_type"]) - EVENT_TYPES)
+    if bad_types:
+        problems.append(f"unknown event_type {bad_types}")
+    bad_status = sorted(set(frame["status"]) - set(STATUSES))
+    if bad_status:
+        problems.append(f"unknown status {bad_status}")
+    closures = frame[frame["event_type"].isin(CLOSURE_TYPES)]
+    timed = closures[(closures["open_time"] != "") | (closures["close_time"] != "")]
+    if len(timed):
+        problems.append(f"closure rows with hours: {timed[['exchange', 'date']].values.tolist()[:5]}")
+    sessions = frame[frame["event_type"].isin(SESSION_TYPES)]
+    untimed = sessions[(sessions["open_time"] == "") | (sessions["close_time"] == "")]
+    if len(untimed):
+        problems.append(f"session rows missing hours: {untimed[['exchange', 'date', 'event_type']].values.tolist()[:5]}")
+    weather = frame[frame["event_type"].isin({"typhoon_closure", "typhoon_partial", "weather_closure"})]
+    unsourced = weather[(weather["status"] != "official") | ~weather["source_url"].str.startswith("https://www.hkex.com.hk/")]
+    if len(unsourced):
+        problems.append(f"weather rows without an official HKEX notice: {unsourced[['exchange', 'date']].values.tolist()[:5]}")
+    unnamed_other = frame[(frame["event_type"] == "other") & (frame["name"] == "")]
+    if len(unnamed_other):
+        problems.append("event_type other requires a name")
+    if problems:
+        raise ValueError("; ".join(problems))
 
 
 def _official_claim(event: OfficialEvent) -> str:
@@ -373,5 +408,6 @@ def build_dataset(retrieved_at: str | None = None) -> tuple[pd.DataFrame, pd.Dat
     frame = frame.sort_values(["exchange", "date", "event_type"]).reset_index(drop=True)
     if frame.duplicated(["exchange", "date", "event_type"]).any():
         raise RuntimeError("dataset has duplicate exchange/date/event_type keys")
+    validate_rows(frame)
     disagreements = build_disagreements(rows)
     return frame, disagreements
