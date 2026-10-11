@@ -5,10 +5,15 @@ from datetime import datetime, timezone
 import pandas as pd
 import pytest
 
+import exchange_calendars as ec
+
 from tools.exchange_calendar.build import (
     CLOSURE_TYPES,
     COLUMNS,
+    UNNAMED_CLOSURE,
     _apply_official,
+    _holiday_names,
+    _native_holiday_names,
     build_dataset,
     library_closure_dates,
     validate_rows,
@@ -91,6 +96,21 @@ def test_library_closures_have_no_gaps(dataset):
         )
         missing = sorted(expected - actual)
         assert not missing, f"{code} dropped library closures {missing[:10]}"
+
+
+def test_closure_names_come_from_sources_or_say_unnamed(dataset):
+    frame, _ = dataset
+    closures = frame[frame["event_type"].isin(CLOSURE_TYPES)]
+    assert (closures["name"] != "Closure").all()
+    assert closures["name"].str.len().gt(0).all()
+    unnamed = closures[closures["name"] == UNNAMED_CLOSURE]
+    for code, group in unnamed.groupby("exchange"):
+        spec = EXCHANGES[code]
+        calendar = ec.get_calendar(spec.ec_code, start=spec.start, end=spec.end)
+        library_names = set(_holiday_names(calendar, spec.start, spec.end))
+        library_names |= set(_native_holiday_names(spec))
+        leaked = sorted(set(group["date"]) & library_names)
+        assert not leaked, f"{code} has a library name for unnamed closures {leaked[:5]}"
 
 
 def test_spot_checks(dataset):

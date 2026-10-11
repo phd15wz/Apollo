@@ -35,6 +35,8 @@ COLUMNS = [
     "status",
 ]
 
+UNNAMED_CLOSURE = "Unnamed closure (no holiday name in the libraries)"
+
 # Whole-day closures. typhoon_partial is not here: the exchange traded part of
 # the day, so the row carries the hours that did trade.
 CLOSURE_TYPES = {"full_closure", "typhoon_closure", "weather_closure"}
@@ -85,6 +87,21 @@ def _holiday_names(calendar, start: str, end: str) -> dict[str, str]:
         label = pd.Timestamp(ts).tz_localize(None).strftime("%Y-%m-%d")
         out.setdefault(label, str(name))
     return out
+
+
+def _native_holiday_names(exchange: Exchange) -> dict[str, str]:
+    """Holiday names from the native pandas_market_calendars classes. Names only, not a second source."""
+    names: dict[str, str] = {}
+    for code in exchange.mcal_codes:
+        calendar = mcal.get_calendar(code)
+        try:
+            named = calendar.regular_holidays.holidays(exchange.start, exchange.end, return_name=True)
+        except Exception:
+            continue
+        for ts, name in named.items():
+            label = pd.Timestamp(ts).tz_localize(None).strftime("%Y-%m-%d")
+            names.setdefault(label, str(name))
+    return names
 
 
 def _expected_open(calendar, session_date: pd.Timestamp):
@@ -162,6 +179,7 @@ def _status_for_early(exchange: Exchange, date: str, ec_close: str, native_close
 def _base_rows(exchange: Exchange) -> list[dict]:
     calendar = ec.get_calendar(exchange.ec_code, start=exchange.start, end=exchange.end)
     names = _holiday_names(calendar, exchange.start, exchange.end)
+    native_names = _native_holiday_names(exchange)
     native_closes = []
     native_closed = []
     for code in exchange.mcal_codes:
@@ -178,7 +196,7 @@ def _base_rows(exchange: Exchange) -> list[dict]:
                 "event_type": "full_closure",
                 "open_time": "",
                 "close_time": "",
-                "name": names.get(date, "Closure"),
+                "name": names.get(date) or native_names.get(date) or UNNAMED_CLOSURE,
                 "source_url": LIBRARY_SOURCE_URL,
                 "status": _status_for_closure(exchange, date, native_closed),
             }
