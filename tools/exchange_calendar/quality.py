@@ -20,6 +20,7 @@ CONTENT_COLUMNS = [
     "name",
     "source_url",
     "status",
+    "note",
 ]
 
 STALENESS_THRESHOLD_DAYS = 35
@@ -29,9 +30,13 @@ OPEN_ITEMS = [
     (
         "KRX has no parsed official holiday list. open.krx.co.kr and the KIND market "
         "calendar returned page shells without dates. pandas_market_calendars XKRX is a "
-        "mirror of exchange_calendars, so every KRX row is unverified. 2027 and later "
-        "are omitted: the exchange announces that year around December, and library "
-        "projections through 2050 were not copied."
+        "mirror of exchange_calendars, so library agreement is not a second source. "
+        "News rows Isaac marked secondary-confirmed (and the 2026-06-03 local-election "
+        "and 2026-07-17 Constitution Day closures those articles add) are "
+        "secondary-confirmed. Weaker-B market-wrap rows stay B and are flagged in "
+        "note. Remaining KRX rows stay unverified. 2027 and later are omitted: the "
+        "exchange announces that year around December, and library projections through "
+        "2050 were not copied."
     ),
     (
         "KRX late opens (first business day of the year, and CSAT days, at 10:00 KST) "
@@ -63,7 +68,11 @@ OPEN_ITEMS = [
         "CME_Equity; they are unverified. The Juneteenth 2027 early close at 12:00 is unverified: "
         "the two native calendars show it and CMES does not. The same native pattern holds for "
         "2026-06-19, and earlier Juneteenth dates were not checked and are not added. CME Group "
-        "pages returned HTTP 403 in this run."
+        "pages returned HTTP 403 in this run. The 2025-01-09 row is official ``other`` "
+        "from the fetched CME investor press release (equity-index abbreviated session, "
+        "not a full closure). Close clocks for 2024-11-29, 2024-12-24, and 2025-11-28 "
+        "stay at the CMES 12:00 value and are unverified; they were not changed from "
+        "broker (tier C) 12:15 reports and need a CME tier-A check."
     ),
     (
         "Nasdaq is an alias of NYSE. Both libraries implement XNAS / NASDAQ as the NYSE "
@@ -97,12 +106,13 @@ OPEN_ITEMS = [
         "tools/exchange_calendar/official.py after it is read."
     ),
     (
-        "HKEX half-days are not official. The HKEX Securities trading-hours page, fetched on "
-        "2026-10-11, gives the half-day session (morning to 12:00 noon, then a closing auction "
-        "to a random close between 12:08 and 12:10) and says there is no extended morning or "
-        "afternoon session on the eves of Christmas, New Year, and Lunar New Year. It lists no "
-        "dates. The HKEX derivatives calendar lists 2026 and 2027 eve dates for derivatives "
-        "only. HKEX early closes stay unverified until a securities date list is fetched."
+        "HKEX half-days 2025-12-24, 2025-12-31, and 2026-02-16 are official from circular "
+        "CT/166/2025 (no afternoon session) plus the securities trading-hours half-day session "
+        "(09:30-12:00). The circular does not print 12:00. 2024-12-31 and 2025-01-28 are "
+        "secondary-confirmed from news that names a half-day or shortened session but not the "
+        "clock. Other HKEX early closes stay unverified. The trading-hours page still lists no "
+        "dates. Live urllib of the CT/166/2025 PDF returns binary; phrase/date checks may not "
+        "parse it."
     ),
     (
         "CME native early closes outside CMES are not in the dataset. CME_Equity and CME Globex "
@@ -262,6 +272,16 @@ def dataset_metadata(frame: pd.DataFrame, *, retrieved_at: str, fetch_log: list[
         "official_snapshot_parsed_on": OFFICIAL_SNAPSHOT_DATE,
         "aliases": dict(ALIASES),
         "windows": windows,
+        "weaker_b_rows": [
+            {"exchange": row.exchange, "date": row.date, "note": row.note}
+            for row in frame.itertuples(index=False)
+            if "weaker B" in getattr(row, "note", "")
+        ],
+        "needs_cme_tier_a": [
+            row.date
+            for row in frame.itertuples(index=False)
+            if row.exchange == "CME" and "Needs a CME tier-A check" in getattr(row, "note", "")
+        ],
         "open_items": open_items,
         "fetch_failures": failed_fetches,
     }

@@ -12,6 +12,8 @@ from dataclasses import dataclass
 
 import pandas as pd
 
+from tools.exchange_calendar.exchanges import LIBRARY_SOURCE_URL
+
 
 @dataclass(frozen=True)
 class OfficialEvent:
@@ -30,6 +32,7 @@ class OfficialEvent:
     open_time: str = ""
     close_time: str = ""
     status: str = "official"
+    note: str = ""
 
 
 NYSE_URL = "https://www.nyse.com/markets/hours-calendars"
@@ -38,6 +41,29 @@ JPX_URL = "https://www.jpx.co.jp/english/corporate/about-jpx/calendar/"
 SSE_EN_URL = "https://english.sse.com.cn/start/trading/schedule/"
 SSE_2026_URL = (
     "https://www.sse.com.cn/disclosure/announcement/general/c/c_20251222_10802507.shtml"
+)
+HKEX_CT_166_2025_URL = (
+    "https://www.hkex.com.hk/-/media/HKEX-Market/Services/Circulars-and-Notices/"
+    "Participant-and-Members-Circulars/SEHK/2025/ce_SEHK_CT_166_2025.pdf"
+)
+CME_CARTER_MOURNING_URL = (
+    "https://investor.cmegroup.com/news-releases/news-release-details/"
+    "cme-group-announces-trading-hours-us-national-day-mourning-honor"
+)
+SEDAILY_KRX_2026_ELECTIONS_URL = (
+    "https://en.sedaily.com/finance/2026/05/20/"
+    "korea-exchange-to-close-on-local-election-day-constitution"
+)
+ASIAE_KRX_2026_ELECTIONS_URL = "https://www.asiae.co.kr/en/article/2026052010280055447"
+
+WEAKER_B_NOTE = (
+    "weaker B: market-wrap sentence (no KRX statement cited); "
+    "still secondary-confirmed per policy"
+)
+CME_CLOCK_NOTE = (
+    "CMES close 12:00 kept; not changed from the library. Broker bulletins "
+    "(Cannon/AMP/RJO, tier C) report 12:15 CT for equity-index. Needs a CME "
+    "tier-A check. CME Group holiday pages returned HTTP 403 in this run."
 )
 
 # Years whose closure list on the fetched page is the full weekday closure set,
@@ -96,6 +122,8 @@ FETCH_CHECKS = (
         "https://www.hkex.com.hk/News/Market-Communications/2017/1708232news?sc_lang=en",
         "cancelled",
     ),
+    (HKEX_CT_166_2025_URL, "no afternoon trading session"),
+    (CME_CARTER_MOURNING_URL, "8:30 a.m. CT"),
 )
 
 
@@ -111,13 +139,46 @@ def _us_early(exchange: str, date: str, name: str, url: str) -> OfficialEvent:
     )
 
 
-def _closure(exchange: str, date: str, name: str, url: str, event_type: str = "full_closure") -> OfficialEvent:
+def _closure(
+    exchange: str,
+    date: str,
+    name: str,
+    url: str,
+    event_type: str = "full_closure",
+    status: str = "official",
+    note: str = "",
+) -> OfficialEvent:
     return OfficialEvent(
         exchange=exchange,
         date=date,
         event_type=event_type,
         name=name,
         source_url=url,
+        status=status,
+        note=note,
+    )
+
+
+def _secondary(
+    exchange: str,
+    date: str,
+    event_type: str,
+    name: str,
+    url: str,
+    open_time: str = "",
+    close_time: str = "",
+    note: str = "",
+) -> OfficialEvent:
+    return OfficialEvent(
+        exchange=exchange,
+        date=date,
+        event_type=event_type,
+        name=name,
+        source_url=url,
+        open_time=open_time,
+        close_time=close_time,
+        status="secondary-confirmed",
+        note=note,
     )
 
 
@@ -365,7 +426,362 @@ def _hkex_events() -> list[OfficialEvent]:
             event_type="weather_closure",
         )
     )
+    # Circular CT/166/2025, fetched 2026-10-11: no afternoon session on these
+    # securities-market eves. 12:00 is the half-day session on the HKEX
+    # trading-hours page; the circular does not print the clock.
+    halfday_note = (
+        "CT/166/2025: no afternoon session. 12:00 is the half-day session on "
+        "the HKEX securities trading-hours page; the circular does not print the clock."
+    )
+    for date, name in (
+        ("2025-12-24", "Christmas Eve"),
+        ("2025-12-31", "New Year's Eve"),
+        ("2026-02-16", "Lunar New Year's Eve"),
+    ):
+        events.append(
+            OfficialEvent(
+                exchange="HKEX",
+                date=date,
+                event_type="early_close",
+                name=name,
+                source_url=HKEX_CT_166_2025_URL,
+                open_time="09:30",
+                close_time="12:00",
+                status="official",
+                note=halfday_note,
+            )
+        )
     return events
+
+
+def _secondary_news_events() -> list[OfficialEvent]:
+    """Tier-B news rows read on 2026-10-11 (Isaac's secondary_verify.csv).
+
+    Status stays ``secondary-confirmed``. Weaker-B rows (market-wrap sentence,
+    no named KRX statement) are flagged in ``note`` and remain grade B.
+    """
+    yna_2025_seollal = "https://en.yna.co.kr/view/AEN20250117003800320"
+    yna_2025_yearend = "https://en.yna.co.kr/view/AEN20251218005600320"
+    yna_2025_chuseok = "https://en.yna.co.kr/view/AEN20251010001800320"
+    yna_2026_seollal = "https://en.yna.co.kr/view/AEN20260219007051320"
+    yna_2026_chuseok = "https://en.yna.co.kr/view/AEN20260909006300320"
+    asiae_2024_yearend = "https://www.asiae.co.kr/en/article/2024121711235993105"
+    asiae_2023_yearend = "https://www.asiae.co.kr/en/article/2023121410523267434"
+    sedaily_2026_may = (
+        "https://en.sedaily.com/finance/2026/05/02/"
+        "may-holiday-clusters-iran-uncertainty-prompt-cash-strategy"
+    )
+    rows = [
+        _secondary(
+            "KRX",
+            "2023-12-29",
+            "full_closure",
+            "End of Year Holiday",
+            "https://www.koreatimes.co.kr/economy/20231214/financial-markets-to-close-on-dec-29-ahead-of-new-year",
+            note="Yonhap wire in Korea Times; cites Korea Exchange",
+        ),
+        _secondary(
+            "KRX",
+            "2024-01-02",
+            "late_open",
+            "First business day of the year",
+            asiae_2023_yearend,
+            open_time="10:00",
+            close_time="15:30",
+            note="Cites KRX press release; Jan 2 regular open 10:00, close 15:30 unchanged",
+        ),
+        _secondary(
+            "KRX",
+            "2024-05-06",
+            "full_closure",
+            "Children's Day (alternative holiday)",
+            "https://www.koreaherald.com/article/3387435",
+            note=WEAKER_B_NOTE,
+        ),
+        _secondary(
+            "KRX",
+            "2024-10-01",
+            "full_closure",
+            "Temporary holiday",
+            "https://en.yna.co.kr/view/AEN20240910002600320",
+            note="Cites Korea Exchange",
+        ),
+        _secondary(
+            "KRX",
+            "2024-12-31",
+            "full_closure",
+            "End of Year Holiday",
+            asiae_2024_yearend,
+            note="Cites Korea Exchange announcement; Dec 31 year-end holiday",
+        ),
+        _secondary(
+            "KRX",
+            "2025-01-02",
+            "late_open",
+            "First business day of the year",
+            asiae_2024_yearend,
+            open_time="10:00",
+            close_time="15:30",
+            note="Cites Korea Exchange announcement; Jan 2 regular open 10:00, close 15:30 unchanged",
+        ),
+        _secondary(
+            "KRX",
+            "2025-01-27",
+            "full_closure",
+            "Temporary holiday",
+            yna_2025_seollal,
+            note="Yonhap cites KRX/market operators; closure Jan 27-30",
+        ),
+        _secondary(
+            "KRX",
+            "2025-01-28",
+            "full_closure",
+            "Seollal (New Year's Day by the lunar) (-1 day)",
+            yna_2025_seollal,
+            note="Yonhap cites KRX/market operators; closure Jan 27-30",
+        ),
+        _secondary(
+            "KRX",
+            "2025-01-29",
+            "full_closure",
+            "Seollal (New Year's Day by the lunar)",
+            yna_2025_seollal,
+            note="Yonhap cites KRX/market operators; closure Jan 27-30",
+        ),
+        _secondary(
+            "KRX",
+            "2025-01-30",
+            "full_closure",
+            "Seollal (New Year's Day by the lunar) (+1 day)",
+            yna_2025_seollal,
+            note="Yonhap cites KRX/market operators; closure Jan 27-30",
+        ),
+        _secondary(
+            "KRX",
+            "2025-05-05",
+            "full_closure",
+            "Buddha's Birthday",
+            "https://en.yna.co.kr/view/AEN20250508009900320",
+            note=f"{WEAKER_B_NOTE}. Article lists Children's Day and Buddha's Birthday for Mon-Tue without assigning each date.",
+        ),
+        _secondary(
+            "KRX",
+            "2025-05-06",
+            "full_closure",
+            "Children's Day",
+            "https://en.yna.co.kr/view/AEN20250508009900320",
+            note=f"{WEAKER_B_NOTE}. Article lists Children's Day and Buddha's Birthday for Mon-Tue without assigning each date.",
+        ),
+        _secondary(
+            "KRX",
+            "2025-06-03",
+            "full_closure",
+            "Presidential election",
+            "https://en.yna.co.kr/view/AEN20250528002000320",
+            note="Cites Korea Exchange / FX committee",
+        ),
+        _secondary(
+            "KRX",
+            "2025-10-03",
+            "full_closure",
+            "Korean National Foundation Day",
+            yna_2025_chuseok,
+            note=f"{WEAKER_B_NOTE}. Wrap: reopened after seven-day Chuseok holiday (Oct 3-9).",
+        ),
+        _secondary(
+            "KRX",
+            "2025-10-06",
+            "full_closure",
+            "Chuseok (Korean Thanksgiving Day)",
+            yna_2025_chuseok,
+            note=f"{WEAKER_B_NOTE}. Wrap: reopened after seven-day Chuseok holiday (Oct 3-9).",
+        ),
+        _secondary(
+            "KRX",
+            "2025-10-07",
+            "full_closure",
+            "Chuseok (Korean Thanksgiving Day) (+1 day)",
+            yna_2025_chuseok,
+            note=f"{WEAKER_B_NOTE}. Wrap: reopened after seven-day Chuseok holiday (Oct 3-9).",
+        ),
+        _secondary(
+            "KRX",
+            "2025-10-08",
+            "full_closure",
+            "Chuseok (Korean Thanksgiving Day) (-1 day)",
+            yna_2025_chuseok,
+            note=f"{WEAKER_B_NOTE}. Wrap: reopened after seven-day Chuseok holiday (Oct 3-9).",
+        ),
+        _secondary(
+            "KRX",
+            "2025-10-09",
+            "full_closure",
+            "Hangul Proclamation Day",
+            yna_2025_chuseok,
+            note=f"{WEAKER_B_NOTE}. Wrap: reopened after seven-day Chuseok holiday (Oct 3-9).",
+        ),
+        _secondary(
+            "KRX",
+            "2025-12-31",
+            "full_closure",
+            "End of Year Holiday",
+            yna_2025_yearend,
+            note="Cites KRX; Jan 2 opens one hour late at 10:00",
+        ),
+        _secondary(
+            "KRX",
+            "2026-01-02",
+            "late_open",
+            "First business day of the year",
+            yna_2025_yearend,
+            open_time="10:00",
+            close_time="15:30",
+            note="Cites KRX; Jan 2 opens one hour late at 10:00",
+        ),
+        _secondary(
+            "KRX",
+            "2026-02-16",
+            "full_closure",
+            "Seollal (New Year's Day by the lunar) (-1 day)",
+            yna_2026_seollal,
+            note=f"{WEAKER_B_NOTE}. Wrap: three-day Lunar New Year break before Feb 19.",
+        ),
+        _secondary(
+            "KRX",
+            "2026-02-17",
+            "full_closure",
+            "Seollal (New Year's Day by the lunar)",
+            yna_2026_seollal,
+            note=f"{WEAKER_B_NOTE}. Wrap: three-day Lunar New Year break before Feb 19.",
+        ),
+        _secondary(
+            "KRX",
+            "2026-02-18",
+            "full_closure",
+            "Seollal (New Year's Day by the lunar) (+1 day)",
+            yna_2026_seollal,
+            note=f"{WEAKER_B_NOTE}. Wrap: three-day Lunar New Year break before Feb 19.",
+        ),
+        _secondary(
+            "KRX",
+            "2026-03-02",
+            "full_closure",
+            "Independence Movement Day (substitute holiday)",
+            "https://www.ajupress.com/view/20260302140757337",
+            note="Same-day report: market closed for March 1 makeup holiday",
+        ),
+        _secondary(
+            "KRX",
+            "2026-05-01",
+            "full_closure",
+            "Labor Day",
+            sedaily_2026_may,
+            note=f"{WEAKER_B_NOTE}. Cites financial investment industry; names Labor Day May 1, Children's Day May 5, Buddha's Birthday May 25.",
+        ),
+        _secondary(
+            "KRX",
+            "2026-05-05",
+            "full_closure",
+            "Children's Day",
+            sedaily_2026_may,
+            note=f"{WEAKER_B_NOTE}. Cites financial investment industry; names Labor Day May 1, Children's Day May 5, Buddha's Birthday May 25.",
+        ),
+        _secondary(
+            "KRX",
+            "2026-05-25",
+            "full_closure",
+            "Buddha's Birthday (substitute holiday)",
+            sedaily_2026_may,
+            note=f"{WEAKER_B_NOTE}. Cites financial investment industry; names Buddha's Birthday May 25 (May 24 is Sunday).",
+        ),
+        _secondary(
+            "KRX",
+            "2026-06-03",
+            "full_closure",
+            "Local elections",
+            SEDAILY_KRX_2026_ELECTIONS_URL,
+            note="Seoul Economic Daily and Asia Business Daily (2026-05-20) cite KRX: closed Jun 3 local elections and Jul 17 Constitution Day (reinstated).",
+        ),
+        _secondary(
+            "KRX",
+            "2026-07-17",
+            "full_closure",
+            "Constitution Day",
+            SEDAILY_KRX_2026_ELECTIONS_URL,
+            note="Seoul Economic Daily and Asia Business Daily (2026-05-20) cite KRX: closed Jun 3 local elections and Jul 17 Constitution Day (reinstated).",
+        ),
+        _secondary(
+            "KRX",
+            "2026-08-17",
+            "full_closure",
+            "National Liberation Day (substitute holiday)",
+            "https://www.ajupress.com/view/20260806180870427",
+            note="Cites KRX 2026 schedule; substitute holiday Aug 17",
+        ),
+        _secondary(
+            "KRX",
+            "2026-09-24",
+            "full_closure",
+            "Chuseok (Korean Thanksgiving Day) (-1 day)",
+            yna_2026_chuseok,
+            note="Cites KRX statement; Chuseok holiday runs Sept 24-27",
+        ),
+        _secondary(
+            "KRX",
+            "2026-09-25",
+            "full_closure",
+            "Chuseok (Korean Thanksgiving Day)",
+            yna_2026_chuseok,
+            note="Cites KRX statement; Chuseok holiday runs Sept 24-27",
+        ),
+        _secondary(
+            "HKEX",
+            "2024-12-31",
+            "early_close",
+            "New Year's Eve",
+            "https://www.scmp.com/business/china-business/article/3292833/hong-kong-stocks-head-2024-gain-after-four-straight-years-losses",
+            open_time="09:30",
+            close_time="12:00",
+            note="SCMP: shortened trading session; close time not stated in the article. 12:00 is the library / trading-hours half-day session.",
+        ),
+        _secondary(
+            "HKEX",
+            "2025-01-28",
+            "early_close",
+            "Lunar New Year's Eve",
+            "https://www.gmanetwork.com/news/money/economy/934295/hong-kong-stocks-close-firmer-as-lunar-new-year-holiday-kicks-in/story/",
+            open_time="09:30",
+            close_time="12:00",
+            note="Reuters via GMA: half-day trading; close time not stated in the article. 12:00 is the library / trading-hours half-day session.",
+        ),
+    ]
+    return rows
+
+
+def _cme_carter_mourning() -> OfficialEvent:
+    # Fetched investor.cmegroup.com press release, 2026-10-11. US equity-index
+    # products ended 8:30 a.m. CT and Globex reopened the same calendar day for
+    # the Jan 10 trade date. That is not a full closure and not a simple early
+    # close, so the row is ``other``.
+    return OfficialEvent(
+        exchange="CME",
+        date="2025-01-09",
+        event_type="other",
+        name=(
+            "National Day of Mourning for Jimmy Carter: US equity-index "
+            "abbreviated session (ended 08:30 CT; Globex reopen 17:00 CT for "
+            "the 2025-01-10 trade date). Interest-rate and agricultural markets "
+            "closed 12:15 CT; crypto, energy, FX, and metals traded normal hours. "
+            "This CMES row is not a full product calendar."
+        ),
+        source_url=CME_CARTER_MOURNING_URL,
+        status="official",
+        note=(
+            "Fetched CME Group investor press release 2024-12-30. Clearing "
+            "notice 25-012 and cmegroup.com holiday pages returned HTTP 403 "
+            "in this run."
+        ),
+    )
 
 
 WIKIPEDIA_9_11_URL = "https://en.wikipedia.org/wiki/September_11_attacks"
@@ -387,6 +803,7 @@ def _unverified(
     url: str,
     open_time: str = "",
     close_time: str = "",
+    note: str = "",
 ) -> OfficialEvent:
     return OfficialEvent(
         exchange=exchange,
@@ -397,6 +814,7 @@ def _unverified(
         open_time=open_time,
         close_time=close_time,
         status="unverified",
+        note=note,
     )
 
 
@@ -432,6 +850,38 @@ def unverified_events() -> list[OfficialEvent]:
             open_time="2027-06-17T17:00",
             close_time="12:00",
         ),
+        # Close clocks stay at the CMES 12:00 value. Do not take 12:15 from
+        # broker (tier C) bulletins. Flagged for a CME tier-A check.
+        _unverified(
+            "CME",
+            "2024-11-29",
+            "early_close",
+            "Early close",
+            LIBRARY_SOURCE_URL,
+            open_time="2024-11-28T17:00",
+            close_time="12:00",
+            note=CME_CLOCK_NOTE,
+        ),
+        _unverified(
+            "CME",
+            "2024-12-24",
+            "early_close",
+            "Early close",
+            LIBRARY_SOURCE_URL,
+            open_time="2024-12-23T17:00",
+            close_time="12:00",
+            note=CME_CLOCK_NOTE,
+        ),
+        _unverified(
+            "CME",
+            "2025-11-28",
+            "early_close",
+            "Early close",
+            LIBRARY_SOURCE_URL,
+            open_time="2025-11-27T17:00",
+            close_time="12:00",
+            note=CME_CLOCK_NOTE,
+        ),
     ]
 
 
@@ -457,6 +907,19 @@ RESOLVED_OFFICIAL_CONFLICTS: frozenset[tuple[str, str, str]] = frozenset(
         ("HKEX", "2023-09-01", "exchange_calendars:XHKG"),
         ("HKEX", "2023-09-08", "exchange_calendars:XHKG"),
         ("HKEX", "2024-09-06", "pandas_market_calendars:HKEX"),
+        # HKEX half-days: native HKEX keeps a 16:00 close. Sourced rows are early_close 12:00.
+        ("HKEX", "2024-12-31", "pandas_market_calendars:HKEX"),
+        ("HKEX", "2025-01-28", "pandas_market_calendars:HKEX"),
+        ("HKEX", "2025-12-24", "pandas_market_calendars:HKEX"),
+        ("HKEX", "2025-12-31", "pandas_market_calendars:HKEX"),
+        ("HKEX", "2026-02-16", "pandas_market_calendars:HKEX"),
+        # KRX closures the XKRX library omitted. News cites the exchange notice.
+        ("KRX", "2026-06-03", "exchange_calendars:XKRX"),
+        ("KRX", "2026-07-17", "exchange_calendars:XKRX"),
+        # CME 2025-01-09: CMES and CME_Equity treat the day as a full closure.
+        # The fetched CME press release describes an abbreviated equity-index session.
+        ("CME", "2025-01-09", "exchange_calendars:CMES"),
+        ("CME", "2025-01-09", "pandas_market_calendars:CME_Equity"),
     }
 )
 
@@ -474,6 +937,8 @@ def official_events() -> list[OfficialEvent]:
         + _jpx_events()
         + _sse_events()
         + _hkex_events()
+        + _secondary_news_events()
+        + [_cme_carter_mourning()]
     )
 
 

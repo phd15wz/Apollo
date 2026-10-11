@@ -3,7 +3,13 @@ import pytest
 
 from tools.exchange_calendar.build import COLUMNS
 from tools.exchange_calendar.exchanges import ALIASES
-from tools.exchange_calendar.query import CONFIRMED_STATUSES, HOLIDAYS_PATH, for_exchange, load_confirmed
+from tools.exchange_calendar.query import (
+    CONFIRMED_STATUSES,
+    HOLIDAYS_PATH,
+    for_exchange,
+    load_confirmed,
+    resolve_exchange,
+)
 
 
 def _row(status: str, date: str = "2026-01-01") -> dict:
@@ -17,6 +23,7 @@ def _row(status: str, date: str = "2026-01-01") -> dict:
         "source_url": "https://example.test/holidays",
         "retrieved_at": "2026-10-11T00:00:00Z",
         "status": status,
+        "note": "",
     }
 
 
@@ -58,3 +65,15 @@ def test_nasdaq_queries_equal_nyse_and_csv_has_no_nasdaq_rows():
     assert not nyse.empty
     pd.testing.assert_frame_equal(nyse, nasdaq)
     pd.testing.assert_frame_equal(for_exchange(raw, "Nasdaq"), for_exchange(raw, "NYSE"))
+
+
+def test_unknown_exchange_name_raises():
+    raw = pd.read_csv(HOLIDAYS_PATH, dtype=str, keep_default_na=False)
+    with pytest.raises(ValueError, match="unknown exchange"):
+        for_exchange(raw, "XNAS")
+    with pytest.raises(ValueError, match="unknown exchange"):
+        load_confirmed(exchange="NASDAQ")
+    with pytest.raises(ValueError, match="unknown exchange"):
+        resolve_exchange("not-an-exchange")
+    assert resolve_exchange("Nasdaq") == "NYSE"
+    assert resolve_exchange("KRX") == "KRX"

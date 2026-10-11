@@ -139,6 +139,11 @@ def _official_closure_dates(code: str) -> set[str]:
     return {event.date for event in events if event.event_type in CLOSURE_TYPES}
 
 
+def _sourced_event_dates(code: str) -> set[str]:
+    events = official_by_exchange().get(code, []) + unverified_by_exchange().get(code, [])
+    return {event.date for event in events}
+
+
 COVERAGE_CASES = [
     (code, year)
     for code, spec in EXCHANGES.items()
@@ -158,7 +163,8 @@ def test_every_library_closure_is_listed_for_the_year(dataset, code, year):
         ]["date"]
     )
     library = {day for day in _library_closures(code) if day.startswith(prefix)}
-    missing = sorted(library - listed)
+    sourced = _sourced_event_dates(code)
+    missing = sorted(library - listed - sourced)
     assert not missing, f"{code} {year} dropped library closures {missing}"
     extra = sorted(listed - library - _official_closure_dates(code))
     assert not extra, f"{code} {year} lists closures no library or sourced event explains: {extra}"
@@ -257,6 +263,7 @@ def _row(**overrides):
         "source_url": "https://www.hkex.com.hk/News/example",
         "retrieved_at": "2026-10-11T00:00:00Z",
         "status": "official",
+        "note": "",
     }
     row.update(overrides)
     return row
@@ -308,7 +315,12 @@ def test_hkex_early_closes_use_library_hours_and_stay_unverified(dataset):
     frame, _ = dataset
     early = frame[(frame["exchange"] == "HKEX") & (frame["event_type"] == "early_close")]
     assert len(early) == 52
-    assert set(early["status"]) == {"unverified"}
+    official = early[early["status"] == "official"]
+    secondary = early[early["status"] == "secondary-confirmed"]
+    unverified = early[early["status"] == "unverified"]
+    assert set(official["date"]) == {"2025-12-24", "2025-12-31", "2026-02-16"}
+    assert set(secondary["date"]) == {"2024-12-31", "2025-01-28"}
+    assert len(unverified) == 47
     before = early[early["date"] == "2001-12-24"].iloc[0]
     after = early[early["date"] == "2012-12-24"].iloc[0]
     assert (before["open_time"], before["close_time"]) == ("10:00", "12:30")
@@ -318,9 +330,11 @@ def test_hkex_early_closes_use_library_hours_and_stay_unverified(dataset):
 def test_krx_late_opens_are_unverified_and_never_official(dataset):
     frame, _ = dataset
     late = frame[(frame["exchange"] == "KRX") & (frame["event_type"] == "late_open")]
-    assert set(late["status"]) == {"unverified"}
+    assert set(late["status"]) <= {"unverified", "secondary-confirmed"}
     assert set(late["open_time"]) == {"10:00"}
     assert not frame[(frame["exchange"] == "KRX") & (frame["status"] == "official")].shape[0]
+    sourced_late = late[late["status"] == "secondary-confirmed"]
+    assert set(sourced_late["date"]) == {"2024-01-02", "2025-01-02", "2026-01-02"}
 
 
 def test_krx_non_january_late_opens_come_from_the_csat_offset(dataset):
@@ -372,6 +386,7 @@ def test_past_date_diff_flags_history_and_ignores_retrieved_at():
                 "source_url": "https://example.test/old",
                 "retrieved_at": "2026-01-01T00:00:00Z",
                 "status": "secondary-confirmed",
+                "note": "",
             },
             {
                 "exchange": "NYSE",
@@ -383,6 +398,7 @@ def test_past_date_diff_flags_history_and_ignores_retrieved_at():
                 "source_url": "https://example.test/old",
                 "retrieved_at": "2026-01-01T00:00:00Z",
                 "status": "official",
+                "note": "",
             },
         ]
     )
@@ -453,6 +469,82 @@ def test_official_event_replaces_library_rows_of_any_type_on_that_date():
 
 def test_nasdaq_2026_page_matches_nyse_hours():
     assert nasdaq_nyse_mismatches() == []
+
+
+def test_krx_added_2026_closures_and_buddhas_birthday_name(dataset):
+    frame, _ = dataset
+
+    def row(date):
+        matched = frame[(frame["exchange"] == "KRX") & (frame["date"] == date)]
+        assert len(matched) == 1, date
+        return matched.iloc[0]
+
+    elections = row("2026-06-03")
+    assert elections["event_type"] == "full_closure"
+    assert elections["status"] == "secondary-confirmed"
+    assert elections["name"] == "Local elections"
+    assert "sedaily.com" in elections["source_url"]
+
+    constitution = row("2026-07-17")
+    assert constitution["event_type"] == "full_closure"
+    assert constitution["status"] == "secondary-confirmed"
+    assert constitution["name"] == "Constitution Day"
+
+    buddha = row("2026-05-25")
+    assert buddha["name"] == "Buddha's Birthday (substitute holiday)"
+    assert buddha["status"] == "secondary-confirmed"
+    assert "weaker B" in buddha["note"]
+
+
+def test_hkex_ct166_half_days_are_official(dataset):
+    frame, _ = dataset
+    for date, name in (
+        ("2025-12-24", "Christmas Eve"),
+        ("2025-12-31", "New Year's Eve"),
+        ("2026-02-16", "Lunar New Year's Eve"),
+    ):
+        matched = frame[(frame["exchange"] == "HKEX") & (frame["date"] == date)]
+        assert len(matched) == 1, date
+        row = matched.iloc[0]
+        assert row["event_type"] == "early_close"
+        assert row["status"] == "official"
+        assert row["name"] == name
+        assert (row["open_time"], row["close_time"]) == ("09:30", "12:00")
+        assert "ce_SEHK_CT_166_2025.pdf" in row["source_url"]
+
+
+def test_cme_2025_01_09_is_abbreviated_session_not_full_closure(dataset):
+    frame, _ = dataset
+    matched = frame[(frame["exchange"] == "CME") & (frame["date"] == "2025-01-09")]
+    assert len(matched) == 1
+    row = matched.iloc[0]
+    assert row["event_type"] == "other"
+    assert row["status"] == "official"
+    assert "08:30" in row["name"]
+    assert "investor.cmegroup.com" in row["source_url"]
+    assert row["open_time"] == ""
+    assert row["close_time"] == ""
+
+
+def test_cme_broker_clocks_stay_1200_and_are_flagged(dataset):
+    frame, _ = dataset
+    for date in ("2024-11-29", "2024-12-24", "2025-11-28"):
+        matched = frame[(frame["exchange"] == "CME") & (frame["date"] == date)]
+        assert len(matched) == 1, date
+        row = matched.iloc[0]
+        assert row["event_type"] == "early_close"
+        assert row["close_time"] == "12:00"
+        assert row["status"] == "unverified"
+        assert "Needs a CME tier-A check" in row["note"]
+
+
+def test_weaker_b_rows_stay_secondary_confirmed(dataset):
+    frame, _ = dataset
+    weaker = frame[frame["note"].str.contains("weaker B")]
+    assert not weaker.empty
+    assert set(weaker["exchange"]) == {"KRX"}
+    assert set(weaker["status"]) == {"secondary-confirmed"}
+    assert {"2024-05-06", "2026-05-25"} <= set(weaker["date"])
 
 
 def test_rebuild_matches_committed_facts():

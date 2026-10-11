@@ -37,6 +37,7 @@ COLUMNS = [
     "source_url",
     "retrieved_at",
     "status",
+    "note",
 ]
 
 UNNAMED_CLOSURE = "Unnamed closure (no holiday name in the libraries)"
@@ -204,6 +205,7 @@ def _base_rows(exchange: Exchange) -> list[dict]:
                 "name": names.get(date) or native_names.get(date) or UNNAMED_CLOSURE,
                 "source_url": LIBRARY_SOURCE_URL,
                 "status": _status_for_closure(exchange, date, native_closed),
+                "note": "",
             }
         )
 
@@ -228,6 +230,7 @@ def _base_rows(exchange: Exchange) -> list[dict]:
                 "name": "Early close",
                 "source_url": LIBRARY_SOURCE_URL,
                 "status": _status_for_early(exchange, label, close_clock[-5:], native_closes),
+                "note": "",
             }
         )
 
@@ -247,6 +250,7 @@ def _base_rows(exchange: Exchange) -> list[dict]:
                     "name": late["name"],
                     "source_url": LIBRARY_SOURCE_URL,
                     "status": "unverified",
+                    "note": "",
                 }
             )
     return rows
@@ -290,6 +294,7 @@ def _apply_official(rows: list[dict], events: list[OfficialEvent]) -> list[dict]
                 "name": event.name,
                 "source_url": event.source_url,
                 "status": event.status,
+                "note": event.note,
             }
         )
     return kept
@@ -344,7 +349,7 @@ def build_disagreements(rows: list[dict]) -> pd.DataFrame:
     by_key = {
         (row["exchange"], row["date"]): row
         for row in rows
-        if row["event_type"] in CLOSURE_TYPES | {"early_close"}
+        if row["event_type"] in CLOSURE_TYPES | {"early_close", "other"}
     }
     official_closure_dates = {
         (event.exchange, event.date)
@@ -381,6 +386,7 @@ def build_disagreements(rows: list[dict]) -> pd.DataFrame:
             row = by_key.get((code, date))
             dataset_closed = row is not None and row["event_type"] in CLOSURE_TYPES
             dataset_early = row is not None and row["event_type"] == "early_close"
+            dataset_other = row is not None and row["event_type"] == "other"
             status = row["status"] if row is not None else "absent"
             source_url = row["source_url"] if row is not None else ""
             year = int(date[:4])
@@ -398,6 +404,7 @@ def build_disagreements(rows: list[dict]) -> pd.DataFrame:
                 dataset_claim = (
                     "closed" if dataset_closed
                     else f"early_close {_hhmm(row['close_time'])}" if dataset_early
+                    else "other" if dataset_other
                     else "open"
                 )
                 library_claim = (
@@ -405,17 +412,17 @@ def build_disagreements(rows: list[dict]) -> pd.DataFrame:
                     else f"session_close {library_clock}" if library_clock
                     else "open"
                 )
-                if status == "official":
-                    resolution = (
-                        "resolved"
-                        if (code, date, library) in RESOLVED_OFFICIAL_CONFLICTS
-                        else "unresolved"
-                    )
+                sourced_conflict = (code, date, library) in RESOLVED_OFFICIAL_CONFLICTS
+                if status in {"official", "secondary-confirmed"} and sourced_conflict:
+                    resolution = "resolved"
                     note = (
                         "Fetched official notice differs from this library. The dataset keeps the official event."
-                        if resolution == "resolved"
-                        else "Official fact and library disagree, and the conflict is not in RESOLVED_OFFICIAL_CONFLICTS."
+                        if status == "official"
+                        else "Fetched secondary source differs from this library. The dataset keeps the sourced event."
                     )
+                elif status == "official":
+                    resolution = "unresolved"
+                    note = "Official fact and library disagree, and the conflict is not in RESOLVED_OFFICIAL_CONFLICTS."
                 elif (
                     library_closed
                     and year in complete_years
