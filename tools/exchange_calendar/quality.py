@@ -51,8 +51,16 @@ OPEN_ITEMS = [
         "pandas_market_calendars CME_Equity and CME Globex Equity disagree on some "
         "full closures (several Good Fridays) and on early-close sets; disagreed rows "
         "are unverified. The CME Group holiday page is product-specific and was not "
-        "parsed into session rows. 2001-09-11 through 2001-09-14 are sessions in CMES "
-        "and in both native CME calendars."
+        "parsed into session rows. CMES and both native CME calendars treat 2001-09-11 "
+        "through 2001-09-14 as sessions. The dataset carries reported closures for 2001-09-11 "
+        "to 2001-09-13 as unverified rows, cited to a fetched Wikipedia article that says US "
+        "stock exchanges were closed through 2001-09-17. The 2001-09-12 and 2001-09-13 CME "
+        "details were not found in a fetched source. The CME early-close clocks for 2026-11-27, "
+        "2026-12-24, and 2027-11-26 are 12:15 per CME Globex Equity and 12:00 per CMES and "
+        "CME_Equity; they are unverified. The Juneteenth 2027 early close at 12:00 is unverified: "
+        "the two native calendars show it and CMES does not. The same native pattern holds for "
+        "2026-06-19, and earlier Juneteenth dates were not checked and are not added. CME Group "
+        "pages returned HTTP 403 in this run."
     ),
     (
         "Nasdaq is not an independent calendar in either library (alias of NYSE / XNYS), so "

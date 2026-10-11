@@ -12,9 +12,11 @@ import pandas_market_calendars as mcal
 from tools.exchange_calendar.exchanges import EXCHANGES, LIBRARY_SOURCE_URL, Exchange
 from tools.exchange_calendar.official import (
     COMPLETE_CLOSURE_YEARS,
+    UNVERIFIED_EARLY_CLOSE_CLOCKS,
     OfficialEvent,
     official_by_exchange,
     official_events,
+    unverified_by_exchange,
 )
 
 warnings.filterwarnings(
@@ -203,11 +205,16 @@ def _base_rows(exchange: Exchange) -> list[dict]:
         )
 
     schedule = calendar.schedule
+    early_labels = set()
     for early in calendar.early_closes:
         label = pd.Timestamp(early).strftime("%Y-%m-%d")
+        early_labels.add(label)
         open_ts = schedule.loc[early, "open"]
         close_ts = schedule.loc[early, "close"]
         close_clock = _local_clock(close_ts, exchange.tz, label)
+        override = UNVERIFIED_EARLY_CLOSE_CLOCKS.get((exchange.code, label))
+        if override is not None:
+            close_clock = override
         rows.append(
             {
                 "exchange": exchange.code,
@@ -220,6 +227,10 @@ def _base_rows(exchange: Exchange) -> list[dict]:
                 "status": _status_for_early(exchange, label, close_clock[-5:], native_closes),
             }
         )
+
+    for code, label in UNVERIFIED_EARLY_CLOSE_CLOCKS:
+        if code == exchange.code and label not in early_labels:
+            raise RuntimeError(f"close-time override {code} {label} matches no early-close session")
 
     if exchange.detect_late_opens:
         for late in _krx_late_opens(calendar, exchange.tz):
@@ -416,10 +427,12 @@ def build_dataset(retrieved_at: str | None = None) -> tuple[pd.DataFrame, pd.Dat
     if retrieved_at is None:
         retrieved_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     official = official_by_exchange()
+    unverified = unverified_by_exchange()
     rows: list[dict] = []
     for exchange in EXCHANGES.values():
         base = _base_rows(exchange)
-        rows.extend(_apply_official(base, official.get(exchange.code, [])))
+        events = official.get(exchange.code, []) + unverified.get(exchange.code, [])
+        rows.extend(_apply_official(base, events))
     for row in rows:
         row["retrieved_at"] = retrieved_at
     frame = pd.DataFrame(rows, columns=COLUMNS)

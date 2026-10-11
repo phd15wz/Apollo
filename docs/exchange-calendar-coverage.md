@@ -30,7 +30,7 @@ Calling `get_calendar("XNYS")` with no start or end, on this probe day, built on
 
 The NYSE holiday page (`https://www.nyse.com/markets/hours-calendars`) was fetched and lists full closures for 2026, 2027, and 2028 plus early closes at 1:00 p.m. ET on 2026-11-27, 2026-12-24, 2027-11-26, 2028-07-03, and 2028-11-24. Those dates match `XNYS`. The page does not publish 2001–2025. Those rows stay `secondary-confirmed`.
 
-2001-09-11, 2001-09-12, 2001-09-13, and 2001-09-14 are closures. 2001-09-10 and 2001-09-17 are sessions.
+2001-09-11, 2001-09-12, 2001-09-13, and 2001-09-14 are closures in both libraries. 2001-09-10 and 2001-09-17 are sessions.
 
 ## Nasdaq
 
@@ -56,7 +56,9 @@ Weekday closures from 2001-01-01 through 2026-12-31:
 
 For 2016–2026, `CMES` has 83 early closes at 12:00 America/Chicago. Session open on those days is the previous local evening (stored as `YYYY-MM-DDTHH:MM`). `CME_Equity` in the same window has 99 sessions whose close is not 16:00 (94 at 12:00 and 5 at 08:15). Early-close rows are `secondary-confirmed` only when both native calendars show the same close clock. The rest are `unverified`. In this build that split is 82 secondary-confirmed and 123 unverified across 2001–2027.
 
-2001-09-11, 2001-09-12, 2001-09-13, and 2001-09-14 are sessions in `CMES`, `CME_Equity`, and `CME Globex Equity`. They are not in the dataset. 2001-12-25 is a closure in all three and is `secondary-confirmed`.
+2001-09-11 through 2001-09-14 are sessions in `CMES`, `CME_Equity`, and `CME Globex Equity`. The dataset still carries three reported CME closures for that week, all `unverified`, because a fetched source says the US stock exchanges were closed through 2001-09-17 (`https://en.wikipedia.org/wiki/September_11_attacks`): 2001-09-11 `full_closure`, 2001-09-12 `full_closure` (Chicago exchanges closed), and 2001-09-13 `other` (equity-index products closed). The 9/12 and 9/13 details were not found in any fetched source. 2001-09-14 has no row. 2001-12-25 is a closure in all three and is `secondary-confirmed`.
+
+The CME early-close clocks for 2026-11-27, 2026-12-24, and 2027-11-26 are set to 12:15 in the dataset because `CME Globex Equity` says 12:15. `CMES` and `CME_Equity` say 12:00. The CME Group pages returned HTTP 403 to every request in this run, so these rows stay `unverified`. The Juneteenth 2027 (2027-06-18) row is an unverified `early_close` at 12:00, the value both native calendars give. `CMES` treats that session as a normal day. The same native pattern holds for the 2026-06-19 session, and earlier Juneteenth dates were not checked. None of those dates are added.
 
 The CME Group holiday page (`https://www.cmegroup.com/trading-hours.html`) was fetched. It is a product-level hour table, not a single session calendar, and it was not parsed into rows.
 

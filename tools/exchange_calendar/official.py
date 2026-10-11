@@ -338,6 +338,91 @@ def _hkex_events() -> list[OfficialEvent]:
     return events
 
 
+WIKIPEDIA_9_11_URL = "https://en.wikipedia.org/wiki/September_11_attacks"
+
+# Reported CME closures that no fetched official page confirms. They are kept
+# as unverified rows so a reader can see them, but they never carry official or
+# secondary-confirmed status. Every library calendar here treats these dates as
+# sessions, so the disagreement is recorded in disagreements.csv.
+#
+# The fetched Wikipedia article says the stock exchanges did not open on
+# 2001-09-11 and remained closed until 2001-09-17. It does not name CME's
+# 2001-09-12 or 2001-09-13 notices, and the CME Group pages returned HTTP 403
+# to every request in this run.
+def _unverified(
+    exchange: str,
+    date: str,
+    event_type: str,
+    name: str,
+    url: str,
+    open_time: str = "",
+    close_time: str = "",
+) -> OfficialEvent:
+    return OfficialEvent(
+        exchange=exchange,
+        date=date,
+        event_type=event_type,
+        name=name,
+        source_url=url,
+        open_time=open_time,
+        close_time=close_time,
+        status="unverified",
+    )
+
+
+def unverified_events() -> list[OfficialEvent]:
+    return [
+        _unverified(
+            "CME",
+            "2001-09-11",
+            "full_closure",
+            "September 11 attacks: US markets suspended",
+            WIKIPEDIA_9_11_URL,
+        ),
+        _unverified(
+            "CME",
+            "2001-09-12",
+            "full_closure",
+            "September 12 2001: Chicago exchanges closed (reported, not fetched)",
+            WIKIPEDIA_9_11_URL,
+        ),
+        _unverified(
+            "CME",
+            "2001-09-13",
+            "other",
+            "September 13 2001: equity-index products closed (reported, not fetched)",
+            WIKIPEDIA_9_11_URL,
+        ),
+        _unverified(
+            "CME",
+            "2027-06-18",
+            "early_close",
+            "Juneteenth National Independence Day (observed)",
+            "https://github.com/rsheftel/pandas_market_calendars",
+            open_time="2027-06-17T17:00",
+            close_time="12:00",
+        ),
+    ]
+
+
+# The dataset takes CME early-close clocks from exchange_calendars CMES, which
+# says 12:00 America/Chicago for these sessions. The CME Globex Equity calendar
+# says 12:15. The CME Group page could not be read in this run, so the 12:15
+# value is unverified and recorded as a disagreement.
+UNVERIFIED_EARLY_CLOSE_CLOCKS: dict[tuple[str, str], str] = {
+    ("CME", "2026-11-27"): "12:15",
+    ("CME", "2026-12-24"): "12:15",
+    ("CME", "2027-11-26"): "12:15",
+}
+
+
+def unverified_by_exchange() -> dict[str, list[OfficialEvent]]:
+    grouped: dict[str, list[OfficialEvent]] = {}
+    for event in unverified_events():
+        grouped.setdefault(event.exchange, []).append(event)
+    return grouped
+
+
 def official_events() -> list[OfficialEvent]:
     return (
         _nyse_events()

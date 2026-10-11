@@ -127,8 +127,17 @@ def test_spot_checks(dataset):
         assert rows(exchange, "2001-09-10").empty
         assert rows(exchange, "2001-09-17").empty
 
-    # Both CME library families leave 11-14 September 2001 open.
-    assert rows("CME", "2001-09-11").empty
+    cme_2001 = {
+        "2001-09-11": ("full_closure", "unverified"),
+        "2001-09-12": ("full_closure", "unverified"),
+        "2001-09-13": ("other", "unverified"),
+    }
+    for date, (event_type, status) in cme_2001.items():
+        matched = rows("CME", date)
+        assert len(matched) == 1, date
+        assert matched.iloc[0]["event_type"] == event_type
+        assert matched.iloc[0]["status"] == status
+    assert rows("CME", "2001-09-14").empty
     christmas = rows("CME", "2001-12-25")
     assert len(christmas) == 1
     assert christmas.iloc[0]["event_type"] == "full_closure"
@@ -210,6 +219,23 @@ def test_sse_and_krx_future_year_not_invented(dataset):
     # 2026 itself was already announced and is present.
     for exchange in ("SSE", "KRX"):
         assert frame[(frame["exchange"] == exchange) & frame["date"].str.startswith("2026")].shape[0] > 0
+
+
+def test_cme_early_close_clocks_and_juneteenth_2027_stay_unverified(dataset):
+    frame, _ = dataset
+    cme = frame[frame["exchange"] == "CME"]
+    for date in ("2026-11-27", "2026-12-24", "2027-11-26"):
+        row = cme[cme["date"] == date]
+        assert len(row) == 1, date
+        assert row.iloc[0]["event_type"] == "early_close"
+        assert row.iloc[0]["close_time"] == "12:15"
+        assert row.iloc[0]["status"] == "unverified"
+    juneteenth = cme[cme["date"] == "2027-06-18"]
+    assert len(juneteenth) == 1
+    assert juneteenth.iloc[0]["event_type"] == "early_close"
+    assert juneteenth.iloc[0]["close_time"] == "12:00"
+    assert juneteenth.iloc[0]["status"] == "unverified"
+    assert "Juneteenth" in juneteenth.iloc[0]["name"]
 
 
 def test_hkex_early_closes_use_library_hours_and_stay_unverified(dataset):

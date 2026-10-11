@@ -46,7 +46,7 @@ History in the file starts at 2001-01-01 (more than ten years before 2026-10-11)
 
 1. Open `metadata.json`. If `last_refreshed` is more than 35 days before today, tell the user the file is stale and run the refresh below before relying on upcoming dates.
 2. Filter `holidays.csv` to the exchange and date.
-3. No row does not by itself mean the market is open. Weekends are not stored. CME 2001-09-11 has no row because the calendars that were tested leave it open; NYSE and Nasdaq do have closure rows. HKEX can still be halted for weather after the file was built.
+3. No row does not by itself mean the market is open. Weekends are not stored. CME 2001-09-11 to 2001-09-13 have `unverified` rows, and every library calendar tested treats those dates as sessions. Do not present them as confirmed closures. NYSE and Nasdaq have closure rows for 2001-09-11 to 2001-09-14. HKEX can still be halted for weather after the file was built.
 4. Quote `status` and `source_url` with the answer. Do not describe `unverified` as confirmed. Do not describe `secondary-confirmed` as the exchange's own notice.
 5. For HKEX weather, use a `typhoon_*` or `weather_closure` row only when `status` is `official`. A closure reconstructed from news stays `unverified` and must not be labeled with a weather type.
 
