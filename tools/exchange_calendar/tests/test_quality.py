@@ -1,11 +1,11 @@
 """Data-quality rules for the exchange holiday dataset."""
 
-from datetime import datetime, timezone
-
-import pandas as pd
-import pytest
+import functools
+from datetime import datetime, timedelta, timezone
 
 import exchange_calendars as ec
+import pandas as pd
+import pytest
 
 from tools.exchange_calendar.build import (
     CLOSURE_TYPES,
@@ -18,7 +18,11 @@ from tools.exchange_calendar.build import (
     library_closure_dates,
     validate_rows,
 )
-from tools.exchange_calendar.official import OfficialEvent
+from tools.exchange_calendar.official import (
+    OfficialEvent,
+    official_by_exchange,
+    unverified_by_exchange,
+)
 from tools.exchange_calendar.exchanges import EXCHANGES
 from tools.exchange_calendar.quality import (
     STALENESS_THRESHOLD_DAYS,
@@ -85,17 +89,39 @@ def test_ten_years_without_year_gaps(dataset):
         assert subset["date"].min() <= "2016-10-11"
 
 
-def test_library_closures_have_no_gaps(dataset):
+@functools.lru_cache(maxsize=None)
+def _library_closures(code: str) -> frozenset[str]:
+    return frozenset(library_closure_dates(EXCHANGES[code]))
+
+
+def _official_closure_dates(code: str) -> set[str]:
+    events = official_by_exchange().get(code, []) + unverified_by_exchange().get(code, [])
+    return {event.date for event in events if event.event_type in CLOSURE_TYPES}
+
+
+COVERAGE_CASES = [
+    (code, year)
+    for code, spec in EXCHANGES.items()
+    for year in range(2001, int(spec.end[:4]) + 1)
+]
+
+
+@pytest.mark.parametrize("code,year", COVERAGE_CASES)
+def test_every_library_closure_is_listed_for_the_year(dataset, code, year):
     frame, _ = dataset
-    for code, spec in EXCHANGES.items():
-        expected = library_closure_dates(spec)
-        actual = set(
-            frame[
-                (frame["exchange"] == code) & frame["event_type"].isin(CLOSURE_TYPES)
-            ]["date"]
-        )
-        missing = sorted(expected - actual)
-        assert not missing, f"{code} dropped library closures {missing[:10]}"
+    prefix = f"{year}-"
+    listed = set(
+        frame[
+            (frame["exchange"] == code)
+            & frame["event_type"].isin(CLOSURE_TYPES)
+            & frame["date"].str.startswith(prefix)
+        ]["date"]
+    )
+    library = {day for day in _library_closures(code) if day.startswith(prefix)}
+    missing = sorted(library - listed)
+    assert not missing, f"{code} {year} dropped library closures {missing}"
+    extra = sorted(listed - library - _official_closure_dates(code))
+    assert not extra, f"{code} {year} lists closures no library or sourced event explains: {extra}"
 
 
 def test_closure_names_come_from_sources_or_say_unnamed(dataset):
