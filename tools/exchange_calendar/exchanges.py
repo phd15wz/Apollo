@@ -45,7 +45,8 @@ EXCHANGES: dict[str, Exchange] = {
         code="Nasdaq",
         ec_code="XNAS",
         mcal_codes=("NASDAQ",),
-        independent_mcal=True,
+        # NASDAQ in pandas_market_calendars is NYSEExchangeCalendar, so it is not a second source.
+        independent_mcal=False,
         start=HISTORY_START,
         end="2027-12-31",
         tz="America/New_York",

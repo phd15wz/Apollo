@@ -90,7 +90,8 @@ Unresolved rows in `disagreements.csv` fail those tests. A library and a fetched
 ## Do not
 
 - Do not call `get_calendar` without `start` and `end` and then claim a ten-year history. The default window is shorter.
-- Do not treat Nasdaq as a separate holiday calendar. Both libraries alias it to NYSE.
+- Do not treat Nasdaq as a separate holiday calendar. Both libraries alias it to NYSE, so Nasdaq rows outside 2026 are `unverified` even when the libraries agree.
+- Do not say HKEX typhoon history is complete. `typhoon_closure` rows start at 2016-08-02 and only cover fetched notices.
 - Do not answer a CME product question from the `CME` rows alone. Say the row is the `CMES` calendar and point at the coverage note.
 - Do not add a typhoon or black-rainstorm row from a news article. Fetch the HKEX market-communications notice, or leave the row unverified and not typed as `typhoon_*` or `weather_closure`.
 - Do not type a rainstorm closure as `typhoon_closure`. Use `weather_closure`.

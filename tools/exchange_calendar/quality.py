@@ -55,9 +55,10 @@ OPEN_ITEMS = [
         "and in both native CME calendars."
     ),
     (
-        "Nasdaq is not an independent calendar in either library (alias of NYSE / XNYS). "
-        "Only the 2026 Nasdaq Trader holiday page was fetched, so only 2026 Nasdaq rows "
-        "are official."
+        "Nasdaq is not an independent calendar in either library (alias of NYSE / XNYS), so "
+        "agreement between the libraries is not a second source. Only the 2026 Nasdaq Trader "
+        "holiday page was fetched, so only 2026 Nasdaq rows are official. Every other Nasdaq "
+        "row is unverified, including rows where the two libraries agree."
     ),
     (
         "HKEX regular holidays were not fetched as an annual calendar. Closures are "
@@ -67,7 +68,10 @@ OPEN_ITEMS = [
         "XHKG and open in native HKEX, with no official notice fetched, so it stays "
         "unverified. Morning-only severe-weather sessions that both libraries comment out "
         "are not in the dataset. HKEX Severe Weather Trading, in effect from 23 September "
-        "2024, is not modeled."
+        "2024, is not modeled. HKEX typhoon_closure history starts at 2016-08-02 and is "
+        "incomplete before 2016: no pre-2016 notice was fetched, and no typhoon notice "
+        "between 2016 and 2024 is in the dataset unless it was fetched. A missing typhoon row "
+        "does not mean the market traded that day."
     ),
     (
         "Historical official archives before the pages in the official snapshot were not "

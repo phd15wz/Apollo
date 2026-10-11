@@ -38,6 +38,8 @@ The NYSE holiday page (`https://www.nyse.com/markets/hours-calendars`) was fetch
 
 The Nasdaq Trader 2026 holiday schedule (`https://www.nasdaqtrader.com/trader.aspx?id=calendar`) was fetched. Its closures and 1:00 p.m. early closes match the shared calendar. No other Nasdaq year was on that page, so only 2026 Nasdaq rows are `official`. There is no tested difference between Nasdaq and NYSE in either library.
 
+Because `NASDAQ` in `pandas_market_calendars` is the NYSE class, Nasdaq is never counted as an independent second source. Every Nasdaq row outside the 2026 official set is `unverified`, even where `XNYS` and `XNAS` agree.
+
 ## CME
 
 `exchange_calendars` alias `CME` is `CMES`. `pandas_market_calendars` has no calendar named `CME`. Native calendars that were opened: `CME_Equity` and `CME Globex Equity`. The mirror `CMES` matches `exchange_calendars` and was not treated as confirmation.
@@ -110,5 +112,7 @@ The installed `XKRXExchangeCalendar` docstring says holidays were hardcoded for 
 NYSE 2026–2028, Nasdaq Trader 2026, JPX 2026–2027, SSE English 2024–2025, SSE notice for 2026, and the nine HKEX cancellation notices listed above were fetched and parsed on 2026-10-11. A later `refresh` re-check is stored in `data/exchange_calendar/fetch-log.json`. On that re-check the two SSE URLs timed out during the TLS handshake. Official SSE rows from the earlier successful fetch were kept, and the timeout is listed in `metadata.json` `open_items`. The other snapshot URLs still returned the expected phrase.
 
 ## What this file does not claim
+
+HKEX typhoon history starts at 2016-08-02. Before 2016 no typhoon notice was fetched, so the dataset has no typhoon rows for those years and cannot be used to say the market traded through pre-2016 typhoons. Between 2016 and 2024 only the fetched notice dates are in the dataset.
 
 Lunch breaks are not in the dataset. Partial HKEX weather sessions that the libraries only mention in comments are not in the dataset. CME hours are the `CMES` session, not a full product calendar. `secondary-confirmed` means the two library implementations agreed. It does not mean the exchange website was read for that historical date.
