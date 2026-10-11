@@ -6,4 +6,4 @@ Each skill lives in `skills/<slug>/SKILL.md`. `<slug>` is lowercase and hyphenat
 
 ## Skills
 
-- `exchange-calendar` — Look up NYSE, Nasdaq, CME, HKEX, SSE, JPX, and KRX holidays and refresh the sourced dataset.
+- `exchange-calendar` — Look up NYSE (Nasdaq aliases to NYSE), CME, HKEX, SSE, JPX, and KRX holidays and refresh the sourced dataset.

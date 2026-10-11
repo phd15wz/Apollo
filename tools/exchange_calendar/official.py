@@ -45,7 +45,6 @@ SSE_2026_URL = (
 # on the page are disagreements.
 COMPLETE_CLOSURE_YEARS = {
     "NYSE": frozenset({2026, 2027, 2028}),
-    "Nasdaq": frozenset({2026}),
     "JPX": frozenset({2026, 2027}),
     "SSE": frozenset({2024, 2025, 2026}),
     "HKEX": frozenset(),
@@ -168,9 +167,40 @@ def _nyse_events() -> list[OfficialEvent]:
     return rows
 
 
+def nasdaq_check_events() -> list[OfficialEvent]:
+    """Nasdaq Trader 2026 dates used only as an NYSE equality check.
+
+    These are not written to the dataset. Nasdaq is an alias of NYSE.
+    """
+    return _nasdaq_2026_events()
+
+
+def nasdaq_nyse_mismatches() -> list[str]:
+    """Dates or hours where the Nasdaq 2026 page disagrees with NYSE 2026."""
+    nasdaq = {
+        (event.date, event.event_type, event.open_time, event.close_time)
+        for event in nasdaq_check_events()
+    }
+    nyse_2026 = {
+        (event.date, event.event_type, event.open_time, event.close_time)
+        for event in _nyse_events()
+        if event.date.startswith("2026")
+    }
+    messages = []
+    for date, event_type, open_time, close_time in sorted(nasdaq - nyse_2026):
+        messages.append(
+            f"Nasdaq announces {date} {event_type} {open_time}-{close_time} but NYSE does not"
+        )
+    for date, event_type, open_time, close_time in sorted(nyse_2026 - nasdaq):
+        messages.append(
+            f"NYSE announces {date} {event_type} {open_time}-{close_time} but Nasdaq 2026 does not"
+        )
+    return messages
+
+
 def _nasdaq_2026_events() -> list[OfficialEvent]:
     # Parsed from the Nasdaq Trader 2026 holiday schedule only.
-    # Later years are not on that page and are not marked official.
+    # Later years are not on that page. These events are a fetch check, not rows.
     full = [
         ("2026-01-01", "New Years Day (Observed)"),
         ("2026-01-19", "Martin Luther King, Jr. Day"),
@@ -441,7 +471,6 @@ def unverified_by_exchange() -> dict[str, list[OfficialEvent]]:
 def official_events() -> list[OfficialEvent]:
     return (
         _nyse_events()
-        + _nasdaq_2026_events()
         + _jpx_events()
         + _sse_events()
         + _hkex_events()

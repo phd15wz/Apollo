@@ -9,7 +9,7 @@ import exchange_calendars as ec
 import pandas as pd
 import pandas_market_calendars as mcal
 
-from tools.exchange_calendar.exchanges import EXCHANGES, LIBRARY_SOURCE_URL, Exchange
+from tools.exchange_calendar.exchanges import ALIASES, EXCHANGES, LIBRARY_SOURCE_URL, Exchange
 from tools.exchange_calendar.quality import unresolved_disagreements
 from tools.exchange_calendar.official import (
     COMPLETE_CLOSURE_YEARS,
@@ -370,6 +370,8 @@ def build_disagreements(rows: list[dict]) -> pd.DataFrame:
             )
         )
     for code, exchange in EXCHANGES.items():
+        if code in ALIASES:
+            continue
         complete_years = COMPLETE_CLOSURE_YEARS.get(code, frozenset())
         claims = _library_claims(exchange)
         dates = {date for ex, date in by_key if ex == code}
@@ -477,6 +479,8 @@ def build_dataset(retrieved_at: str | None = None) -> tuple[pd.DataFrame, pd.Dat
     unverified = unverified_by_exchange()
     rows: list[dict] = []
     for exchange in EXCHANGES.values():
+        if exchange.code in ALIASES:
+            continue
         base = _base_rows(exchange)
         events = official.get(exchange.code, []) + unverified.get(exchange.code, [])
         rows.extend(_apply_official(base, events))

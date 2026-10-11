@@ -32,7 +32,12 @@ from pathlib import Path
 import pandas as pd
 
 from tools.exchange_calendar.build import build_dataset
-from tools.exchange_calendar.official import FETCH_CHECKS, official_events
+from tools.exchange_calendar.official import (
+    FETCH_CHECKS,
+    nasdaq_check_events,
+    nasdaq_nyse_mismatches,
+    official_events,
+)
 from tools.exchange_calendar.page_dates import check_page, normalise
 from tools.exchange_calendar.quality import (
     assert_no_unresolved,
@@ -56,6 +61,16 @@ def _today() -> str:
     return datetime.now(timezone.utc).date().isoformat()
 
 
+def _log_nasdaq_nyse_mismatches() -> None:
+    """Warn if Nasdaq's own 2026 page disagrees with NYSE. Nasdaq is not stored."""
+    mismatches = nasdaq_nyse_mismatches()
+    if not mismatches:
+        return
+    print("NASDAQ/NYSE SCHEDULE MISMATCH — Nasdaq is an NYSE alias; these dates differ:", file=sys.stderr)
+    for message in mismatches:
+        print(f"  {message}", file=sys.stderr)
+
+
 def fetch_official_pages(timeout: float = 25.0) -> list[dict]:
     """Re-check snapshot URLs and the dates each page names.
 
@@ -63,7 +78,7 @@ def fetch_official_pages(timeout: float = 25.0) -> list[dict]:
     name a date the dataset lists for it is recorded in ``dates_missing``.
     """
     by_url: dict[str, list] = {}
-    for event in official_events():
+    for event in list(official_events()) + nasdaq_check_events():
         by_url.setdefault(event.source_url, []).append(event)
     results = []
     for url, phrase in FETCH_CHECKS:
@@ -107,10 +122,12 @@ def refresh(*, check_only: bool = False) -> int:
         stale = staleness_warning(metadata["last_refreshed"])
         disagreements = pd.read_csv(DISAGREEMENTS_PATH, dtype=str, keep_default_na=False)
         assert_no_unresolved(disagreements)
+        _log_nasdaq_nyse_mismatches()
         print(f"last_refreshed={metadata['last_refreshed']} stale={stale}")
         return 0
 
     retrieved_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    _log_nasdaq_nyse_mismatches()
     frame, disagreements = build_dataset(retrieved_at=retrieved_at)
     assert_no_unresolved(disagreements)
     fetch_log = fetch_official_pages()

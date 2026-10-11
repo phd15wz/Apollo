@@ -10,7 +10,7 @@ Read `docs/exchange-calendar-coverage.md` before treating a library as complete.
 
 | Column | Meaning |
 | --- | --- |
-| `exchange` | `NYSE`, `Nasdaq`, `CME`, `HKEX`, `SSE`, `JPX`, `KRX` |
+| `exchange` | `NYSE`, `CME`, `HKEX`, `SSE`, `JPX`, `KRX`. `Nasdaq` is an alias of `NYSE` and is not stored. |
 | `date` | Session date `YYYY-MM-DD` |
 | `event_type` | See the event types below |
 | `open_time`, `close_time` | Exchange-local clock. Empty on a full closure. A CME time on the previous evening is `YYYY-MM-DDTHH:MM`. |
@@ -45,8 +45,8 @@ History in the file starts at 2001-01-01 (more than ten years before 2026-10-11)
 ## When you need a date
 
 1. Open `metadata.json`. If `last_refreshed` is more than 35 days before today, tell the user the file is stale and run the refresh below before relying on upcoming dates.
-2. Filter `holidays.csv` to the exchange and date.
-3. No row does not by itself mean the market is open. Weekends are not stored. CME 2001-09-11 to 2001-09-13 have `unverified` rows, and every library calendar tested treats those dates as sessions. Do not present them as confirmed closures. NYSE and Nasdaq have closure rows for 2001-09-11 to 2001-09-14. HKEX can still be halted for weather after the file was built.
+2. Call `load_confirmed(exchange=...)` (or `for_exchange` on a loaded frame). `Nasdaq` resolves to `NYSE`.
+3. No row does not by itself mean the market is open. Weekends are not stored. CME 2001-09-11 to 2001-09-13 have `unverified` rows, and every library calendar tested treats those dates as sessions. Do not present them as confirmed closures. NYSE has closure rows for 2001-09-11 to 2001-09-14; Nasdaq uses those same rows. HKEX can still be halted for weather after the file was built.
 4. Quote `status` and `source_url` with the answer. Do not describe `unverified` as confirmed. Do not describe `secondary-confirmed` as the exchange's own notice.
 5. For HKEX weather, use a `typhoon_*` or `weather_closure` row only when `status` is `official`. A closure reconstructed from news stays `unverified` and must not be labeled with a weather type.
 
@@ -60,7 +60,10 @@ Example:
 from tools.exchange_calendar import load_confirmed
 
 confirmed = load_confirmed()
+nasdaq = load_confirmed(exchange="Nasdaq")  # same rows as NYSE
 ```
+
+`ALIASES` in `tools/exchange_calendar/exchanges.py` is `{"Nasdaq": "NYSE"}`. `resolve_exchange` and `for_exchange` apply it.
 
 ## SSE and KRX next year
 
@@ -98,7 +101,7 @@ A library closure in a year whose fetched official list is complete, and that th
 ## Do not
 
 - Do not call `get_calendar` without `start` and `end` and then claim a ten-year history. The default window is shorter.
-- Do not treat Nasdaq as a separate holiday calendar. Both libraries alias it to NYSE, so Nasdaq rows outside 2026 are `unverified` even when the libraries agree.
+- Do not treat Nasdaq as a separate holiday calendar. It is an alias of NYSE. The CSV has no Nasdaq rows; queries return NYSE data. The Nasdaq Trader page is only a check that Nasdaq's announced 2026 schedule equals NYSE.
 - Do not say HKEX typhoon history is complete. `typhoon_closure` rows start at 2016-08-02 and only cover fetched notices.
 - Do not answer a CME product question from the `CME` rows alone. Say the row is the `CMES` calendar and point at the coverage note.
 - Do not add a typhoon or black-rainstorm row from a news article. Fetch the HKEX market-communications notice, or leave the row unverified and not typed as `typhoon_*` or `weather_closure`.

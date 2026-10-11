@@ -30,6 +30,11 @@ class Exchange:
     note: str = ""
 
 
+# Query names that share another exchange's rows. Nasdaq is not stored: both
+# libraries implement it as NYSE, and its announced 2026 schedule matches NYSE.
+ALIASES: dict[str, str] = {"Nasdaq": "NYSE"}
+
+
 EXCHANGES: dict[str, Exchange] = {
     "NYSE": Exchange(
         code="NYSE",
@@ -40,20 +45,6 @@ EXCHANGES: dict[str, Exchange] = {
         end="2028-12-31",
         tz="America/New_York",
         note="NYSE publishes 2026-2028 on its holiday page. The dataset includes those years.",
-    ),
-    "Nasdaq": Exchange(
-        code="Nasdaq",
-        ec_code="XNAS",
-        mcal_codes=("NASDAQ",),
-        # NASDAQ in pandas_market_calendars is NYSEExchangeCalendar, so it is not a second source.
-        independent_mcal=False,
-        start=HISTORY_START,
-        end="2027-12-31",
-        tz="America/New_York",
-        note=(
-            "exchange_calendars XNAS and pandas_market_calendars NASDAQ are aliases of "
-            "the NYSE calendar classes. There is no distinct Nasdaq implementation."
-        ),
     ),
     "CME": Exchange(
         code="CME",
