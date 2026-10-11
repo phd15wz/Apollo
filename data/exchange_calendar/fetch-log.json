@@ -144,5 +144,23 @@
     "dates_matched": 1,
     "dates_missing": [],
     "dates_unparsed": false
+  },
+  {
+    "url": "https://www.hkex.com.hk/-/media/HKEX-Market/Services/Circulars-and-Notices/Participant-and-Members-Circulars/SEHK/2025/ce_SEHK_CT_166_2025.pdf",
+    "phrase": "no afternoon trading session",
+    "ok": false,
+    "status": 200,
+    "error": "expected phrase not found (PDF or blocked body)",
+    "dates_expected": 3,
+    "dates_matched": 0,
+    "dates_missing": [],
+    "dates_unparsed": true
+  },
+  {
+    "url": "https://investor.cmegroup.com/news-releases/news-release-details/cme-group-announces-trading-hours-us-national-day-mourning-honor",
+    "phrase": "8:30 a.m. CT",
+    "ok": false,
+    "status": 403,
+    "error": "HTTP Error 403: Forbidden"
   }
 ]

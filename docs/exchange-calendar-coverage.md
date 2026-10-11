@@ -52,7 +52,7 @@ Weekday closures from 2001-01-01 through 2026-12-31:
 | `CME_Equity` | 71 |
 | `CME Globex Equity` | 67 |
 
-`CME_Equity` is missing eight `CMES` closures in that window: 2010-04-02, 2012-04-06, 2015-04-03, 2021-04-02, 2023-04-07, 2024-03-29, 2025-04-18, 2026-04-03. `CME Globex Equity` is missing those plus 2004-06-11, 2007-01-02, 2018-12-05, and 2025-01-09. The dataset marks a `CMES` closure `secondary-confirmed` only when both native calendars are also closed. The other `CMES` closures are `unverified`, including 2027-03-26.
+`CME_Equity` is missing eight `CMES` closures in that window: 2010-04-02, 2012-04-06, 2015-04-03, 2021-04-02, 2023-04-07, 2024-03-29, 2025-04-18, 2026-04-03. `CME Globex Equity` is missing those plus 2004-06-11, 2007-01-02, 2018-12-05, and 2025-01-09. The dataset marks a `CMES` closure `secondary-confirmed` only when both native calendars are also closed. The other `CMES` closures are `unverified`, including 2027-03-26, except 2025-01-09: a fetched CME investor press release describes an abbreviated US equity-index session (ended 8:30 a.m. CT, Globex reopen 5 p.m. CT for the 10 January trade date), so that row is official `other`, not a full closure. The CME Group holiday page and clearing notice 25-012 returned HTTP 403 in this run.
 
 For 2016–2026, `CMES` has 83 early closes at 12:00 America/Chicago. Session open on those days is the previous local evening (stored as `YYYY-MM-DDTHH:MM`). `CME_Equity` in the same window has 99 sessions whose close is not 16:00 (94 at 12:00 and 5 at 08:15). Early-close rows are `secondary-confirmed` only when both native calendars show the same close clock. The rest are `unverified`. In this build that split is 82 secondary-confirmed and 123 unverified across 2001–2027.
 
@@ -60,7 +60,7 @@ For 2016–2026, `CMES` has 83 early closes at 12:00 America/Chicago. Session op
 
 The CME early-close clocks for 2026-11-27, 2026-12-24, and 2027-11-26 are set to 12:15 in the dataset because `CME Globex Equity` says 12:15. `CMES` and `CME_Equity` say 12:00. The CME Group pages returned HTTP 403 to every request in this run, so these rows stay `unverified`. The Juneteenth 2027 (2027-06-18) row is an unverified `early_close` at 12:00, the value both native calendars give. `CMES` treats that session as a normal day. The same native pattern holds for the 2026-06-19 session, and earlier Juneteenth dates were not checked. None of those dates are added.
 
-The CME Group holiday page (`https://www.cmegroup.com/trading-hours.html`) was fetched. It is a product-level hour table, not a single session calendar, and it was not parsed into rows.
+The CME Group holiday page (`https://www.cmegroup.com/trading-hours.html`) returned HTTP 403 to urllib in this run (Akamai). It is a product-level hour table, not a single session calendar, and it was not parsed into rows. Close clocks for 2024-11-29, 2024-12-24, and 2025-11-28 stay at the CMES 12:00 value and are unverified; they were not changed from broker (tier C) 12:15 reports and need a CME tier-A check.
 
 ## HKEX
 
@@ -74,9 +74,9 @@ Only in native `HKEX`: 2023-09-01, 2023-09-08.
 
 2023-09-08 is `weather_closure` / `official`, not a typhoon closure. Final typhoon cancellation notices were also fetched for 2016-08-02, 2016-10-21, 2017-08-23 (Signal No. 10), 2020-10-13, 2021-10-13, 2023-07-17, 2023-09-01 (Signal No. 8), and 2024-09-06. Those eight dates are `typhoon_closure` / `official`. Where a library still has the day open, `disagreements.csv` records a resolved conflict. 2021-04-06 is closed only in `XHKG`. No notice was fetched, so that row stays `unverified` `full_closure`.
 
-For 2016–2026, `XHKG` has 23 early closes and native `HKEX` has none: every schedule close is 16:00. The dataset has 52 HKEX early-close rows from 2001 through 2027, all `unverified`. Before 2011-03-07 the library’s early close is 10:00–12:30 (2001-12-24). From 2012-12-24 onward in this build it is 09:30–12:00. Not every year has a weekday early close.
+For 2016–2026, `XHKG` has 23 early closes and native `HKEX` has none: every schedule close is 16:00. The dataset has 52 HKEX early-close rows from 2001 through 2027. Circular CT/166/2025, fetched on 2026-10-11, names no afternoon session on 2025-12-24, 2025-12-31, and 2026-02-16; those three rows are `official` at 09:30–12:00. 2024-12-31 and 2025-01-28 are `secondary-confirmed` from news that names a half-day or shortened session but not the clock. The other 47 early closes stay `unverified`. Before 2011-03-07 the library’s early close is 10:00–12:30 (2001-12-24). From 2012-12-24 onward in this build it is 09:30–12:00. Not every year has a weekday early close.
 
-HKEX half-days were checked against the HKEX Securities trading-hours page (`https://www.hkex.com.hk/Services/Trading-hours-and-Severe-Weather-Arrangements/Trading-Hours/Securities-Market?sc_lang=en`), fetched on 2026-10-11. The page gives a half-day session (morning to 12:00 noon, then a closing auction) and says there is no extended morning or afternoon session on the eves of Christmas, New Year, and Lunar New Year. It does not list dates. The HKEX derivatives calendar lists 2026 and 2027 eve dates, but only for derivatives. The HKEX early closes in the dataset fall on those eve dates, but no fetched securities page dates them, so they stay `unverified`.
+HKEX half-days were also checked against the HKEX Securities trading-hours page (`https://www.hkex.com.hk/Services/Trading-hours-and-Severe-Weather-Arrangements/Trading-Hours/Securities-Market?sc_lang=en`), fetched on 2026-10-11. The page gives a half-day session (morning to 12:00 noon, then a closing auction) and says there is no extended morning or afternoon session on the eves of Christmas, New Year, and Lunar New Year. It does not list dates. The 12:00 clock on the official CT/166 rows comes from that page; the circular itself does not print the clock. The HKEX derivatives calendar lists 2026 and 2027 eve dates, but only for derivatives.
 
 Both libraries contain commented-out morning-only weather dates (for example 2008-06-25 and 2013-09-23 in the installed sources). Those dates are not sessions with a short close, and they were not added. HKEX Severe Weather Trading, which the exchange introduced on 23 September 2024, is not modeled. No full-year HKEX holiday calendar was fetched, so ordinary holidays are `secondary-confirmed` only where the two libraries agree.
 
@@ -103,7 +103,7 @@ The JPX English holiday page (`https://www.jpx.co.jp/english/corporate/about-jpx
 
 ## KRX
 
-`XKRX` in `pandas_market_calendars` is the mirror class in `pandas_market_calendars.calendars.mirror`. Agreement with `exchange_calendars` is the same implementation twice. Every KRX row is `unverified`.
+`XKRX` in `pandas_market_calendars` is the mirror class in `pandas_market_calendars.calendars.mirror`. Agreement with `exchange_calendars` is the same implementation twice. KRX rows stay `unverified` except news rows a secondary review marked `secondary-confirmed`. The library omitted 2026-06-03 (local elections) and 2026-07-17 (Constitution Day, reinstated); both were added as `secondary-confirmed` from Seoul Economic Daily and Asia Business Daily articles that cite KRX. 2026-05-25 is named Buddha's Birthday (substitute holiday).
 
 The installed `XKRXExchangeCalendar` docstring says holidays were hardcoded for 1986–2019. `_latest_precomputed_year` returns 2050, and a calendar ending in 2030 does build, including 2027 sessions. 2027 was not copied. Korea announces the next year around December; as of 2026-10-11 that notice is not in this snapshot.
 
@@ -113,7 +113,7 @@ The installed `XKRXExchangeCalendar` docstring says holidays were hardcoded for 
 
 ## Pages that returned dates
 
-NYSE 2026–2028, Nasdaq Trader 2026, JPX 2026–2027, SSE English 2024–2025, SSE notice for 2026, and the nine HKEX cancellation notices listed above were fetched and parsed on 2026-10-11. A later `refresh` re-check is stored in `data/exchange_calendar/fetch-log.json`. On that re-check the two SSE URLs timed out during the TLS handshake. Official SSE rows from the earlier successful fetch were kept, and the timeout is listed in `metadata.json` `open_items`. The other snapshot URLs still returned the expected phrase.
+NYSE 2026–2028, Nasdaq Trader 2026, JPX 2026–2027, SSE English 2024–2025, SSE notice for 2026, the nine HKEX cancellation notices listed above, HKEX circular CT/166/2025, and the CME investor press release for 2025-01-09 were fetched and parsed on 2026-10-11. Live urllib of the CT/166 PDF returns binary (phrase/date checks do not parse it); the circular body was read through a PDF text extract. CME Group `cmegroup.com` holiday and clearing pages returned HTTP 403. A later `refresh` re-check is stored in `data/exchange_calendar/fetch-log.json`. On that re-check the two SSE URLs timed out during the TLS handshake. Official SSE rows from the earlier successful fetch were kept, and the timeout is listed in `metadata.json` `open_items`. The other snapshot URLs still returned the expected phrase.
 
 ## What this file does not claim
 

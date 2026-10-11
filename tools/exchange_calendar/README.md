@@ -22,7 +22,7 @@ Live fetches that fail stay in `metadata.json` under `open_items`. Official rows
 
 ## Columns
 
-`exchange`, `date`, `event_type`, `open_time`, `close_time`, `name`, `source_url`, `retrieved_at`, `status`.
+`exchange`, `date`, `event_type`, `open_time`, `close_time`, `name`, `source_url`, `retrieved_at`, `status`, `note`.
 
 `event_type` is `full_closure`, `typhoon_closure`, `weather_closure`, `early_close`, `late_open`, `typhoon_partial`, or `other`. The three closure types have empty hours. `early_close`, `late_open`, and `typhoon_partial` must carry both `open_time` and `close_time`. `other` must have a name. `build.validate_rows` enforces this. The definitions are in `skills/exchange-calendar/SKILL.md`.
 
@@ -32,6 +32,6 @@ Live fetches that fail stay in `metadata.json` under `open_items`. Official rows
 
 ## Tests
 
-`tests/test_quality.py` checks required fields, closure names, each exchange's library closures in every year from 2001, disagreement resolutions, the 2001-09 CME rows and the 2023-09-08 HKEX spot check, typhoon provenance, the SSE/KRX 2027 omission, staleness relative to today, and past-date diffs. `tests/test_page_dates.py` checks the official-page date parser and the refresh exit code for a disagreeing page. `tests/test_query.py` checks `load_confirmed`, including that Nasdaq queries equal NYSE and that the CSV has no Nasdaq rows.
+`tests/test_quality.py` checks required fields, closure names, each exchange's library closures in every year from 2001, disagreement resolutions, the 2001-09 CME rows and the 2023-09-08 HKEX spot check, typhoon provenance, the SSE/KRX 2027 omission, staleness relative to today, and past-date diffs. `tests/test_page_dates.py` checks the official-page date parser and the refresh exit code for a disagreeing page. `tests/test_query.py` checks `load_confirmed`, including that Nasdaq queries equal NYSE, that the CSV has no Nasdaq rows, and that an unknown exchange name raises.
 
 `tests/test_coverage.py` recomputes the library facts cited in the coverage note.
