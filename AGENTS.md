@@ -35,9 +35,11 @@ Each skill lives in `skills/<slug>/SKILL.md`.
 - Keep files that belong to that skill in the same directory.
 - Add a one-line entry to `skills/README.md` when you add a skill.
 
-## Standing rule: exchange holidays
+## Data reliability
 
 Data, news, and rumor reliability grades: see `docs/data-source-reliability.md`.
+
+## Standing rule: exchange holidays
 
 Strategies, reminders, and any agent must read exchange-holiday data only through `load_confirmed()` from `tools/exchange_calendar`. Never read `data/exchange_calendar/holidays.csv` directly for scheduling or answers that depend on confirmed closures.
 
