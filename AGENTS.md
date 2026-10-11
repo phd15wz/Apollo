@@ -37,6 +37,8 @@ Each skill lives in `skills/<slug>/SKILL.md`.
 
 ## Standing rule: exchange holidays
 
+Data, news, and rumor reliability grades: see `docs/data-source-reliability.md`.
+
 Strategies, reminders, and any agent must read exchange-holiday data only through `load_confirmed()` from `tools/exchange_calendar`. Never read `data/exchange_calendar/holidays.csv` directly for scheduling or answers that depend on confirmed closures.
 
 - Use only rows returned by `load_confirmed()` (`official` and `secondary-confirmed`). `secondary-confirmed` rows are acceptable.
