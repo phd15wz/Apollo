@@ -50,6 +50,18 @@ History in the file starts at 2001-01-01 (more than ten years before 2026-10-11)
 4. Quote `status` and `source_url` with the answer. Do not describe `unverified` as confirmed. Do not describe `secondary-confirmed` as the exchange's own notice.
 5. For HKEX weather, use a `typhoon_*` or `weather_closure` row only when `status` is `official`. A closure reconstructed from news stays `unverified` and must not be labeled with a weather type.
 
+## Reading rows in code
+
+Strategies and reminders must use `tools.exchange_calendar.load_confirmed()` (defined in `tools/exchange_calendar/query.py`). It returns only `official` and `secondary-confirmed` rows and drops `unverified` and `pending`. Do not read `holidays.csv` directly for scheduling. An unknown status value raises instead of passing through.
+
+Example:
+
+```python
+from tools.exchange_calendar import load_confirmed
+
+confirmed = load_confirmed()
+```
+
 ## SSE and KRX next year
 
 China and Korea publish the next year's schedule around December. Do not fill the following year from `exchange_calendars`, from `pandas_market_calendars`, or from a rule of thumb. `exchange_calendars` 4.13.2 refuses SSE dates after 2026. Its KRX calendar will project through 2050, and `pandas_market_calendars` SSE uses guessed rules from 2027. None of that belongs in the dataset. Leave the year out until an official notice has been read and added to `tools/exchange_calendar/official.py`. If a row is ever added before the notice is final, its status is `pending`.

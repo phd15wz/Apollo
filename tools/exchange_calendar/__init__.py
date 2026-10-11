@@ -1,3 +1,5 @@
 """Exchange holiday calendar dataset builder."""
 
-__all__ = ["build", "quality", "refresh"]
+from tools.exchange_calendar.query import load_confirmed
+
+__all__ = ["build", "load_confirmed", "quality", "refresh"]
