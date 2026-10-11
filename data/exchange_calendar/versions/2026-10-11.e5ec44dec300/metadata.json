@@ -1,0 +1,111 @@
+{
+  "dataset_version": "2026-10-11.e5ec44dec300",
+  "last_refreshed": "2026-10-11T08:37:54Z",
+  "staleness_threshold_days": 35,
+  "history_start": "2001-01-01",
+  "row_count": 2707,
+  "counts_by_exchange": {
+    "CME": 291,
+    "HKEX": 442,
+    "JPX": 436,
+    "KRX": 417,
+    "NYSE": 326,
+    "Nasdaq": 315,
+    "SSE": 480
+  },
+  "counts_by_status": {
+    "official": 148,
+    "secondary-confirmed": 1646,
+    "unverified": 913
+  },
+  "counts_by_event_type": {
+    "early_close": 378,
+    "full_closure": 2272,
+    "late_open": 47,
+    "other": 1,
+    "typhoon_closure": 8,
+    "weather_closure": 1
+  },
+  "libraries": {
+    "exchange_calendars": "4.13.2",
+    "pandas_market_calendars": "5.5.0"
+  },
+  "cme_base_calendar": "CMES",
+  "official_snapshot_parsed_on": "2026-10-11",
+  "windows": {
+    "NYSE": {
+      "start": "2001-01-01",
+      "end": "2028-12-31",
+      "ec_code": "XNYS",
+      "note": "NYSE publishes 2026-2028 on its holiday page. The dataset includes those years."
+    },
+    "Nasdaq": {
+      "start": "2001-01-01",
+      "end": "2027-12-31",
+      "ec_code": "XNAS",
+      "note": "exchange_calendars XNAS and pandas_market_calendars NASDAQ are aliases of the NYSE calendar classes. There is no distinct Nasdaq implementation."
+    },
+    "CME": {
+      "start": "2001-01-01",
+      "end": "2027-12-31",
+      "ec_code": "CMES",
+      "note": "Dataset base is exchange_calendars CMES (alias CME). pandas_market_calendars has no single CME calendar. CME_Equity and CME Globex Equity are the native calendars used for comparison."
+    },
+    "HKEX": {
+      "start": "2001-01-01",
+      "end": "2027-12-31",
+      "ec_code": "XHKG",
+      "note": "Severe-weather rows are typed as typhoon_* only when an HKEX notice was fetched."
+    },
+    "SSE": {
+      "start": "2001-01-01",
+      "end": "2026-12-31",
+      "ec_code": "XSHG",
+      "note": "exchange_calendars records XSHG holidays only through 2026. 2027 is omitted."
+    },
+    "JPX": {
+      "start": "2001-01-01",
+      "end": "2027-12-31",
+      "ec_code": "XTKS",
+      "note": "Tokyo Stock Exchange cash market (TSE), calendar code XTKS / JPX."
+    },
+    "KRX": {
+      "start": "2001-01-01",
+      "end": "2026-12-31",
+      "ec_code": "XKRX",
+      "note": "pandas_market_calendars XKRX is a mirror of exchange_calendars, so agreement is not a second source. 2027 projections are omitted."
+    }
+  },
+  "open_items": [
+    "KRX has no parsed official holiday list. open.krx.co.kr and the KIND market calendar returned page shells without dates. pandas_market_calendars XKRX is a mirror of exchange_calendars, so every KRX row is unverified. 2027 and later are omitted: the exchange announces that year around December, and library projections through 2050 were not copied.",
+    "KRX late opens (first business day of the year, and CSAT days, at 10:00 KST) come from exchange_calendars special offsets. The late_opens property on that calendar is empty even when the schedule open is 10:00. The pandas_market_calendars mirror shows 09:00. CSAT rows also shift the close (16:00 before 2016-08-01, 16:30 after). The last non-January late open in the 2001-2026 schedule is 2020-12-03; 2021-2026 have only the January late open. The 2021 CSAT day and 2025-11-13 were not added because no Korea Exchange page with dates could be read in this run. Those rows are unverified.",
+    "SSE 2027 is omitted. exchange_calendars 4.13.2 refuses dates after 2026. pandas_market_calendars SSE documents its post-2026 rules as guesses and those guesses were not copied. 2024-2026 weekday closures that match the fetched SSE pages are official.",
+    "CME is not one calendar. The dataset uses exchange_calendars CMES. Native pandas_market_calendars CME_Equity and CME Globex Equity disagree on some full closures (several Good Fridays) and on early-close sets; disagreed rows are unverified. The CME Group holiday page is product-specific and was not parsed into session rows. CMES and both native CME calendars treat 2001-09-11 through 2001-09-14 as sessions. The dataset carries reported closures for 2001-09-11 to 2001-09-13 as unverified rows, cited to a fetched Wikipedia article that says US stock exchanges were closed through 2001-09-17. The 2001-09-12 and 2001-09-13 CME details were not found in a fetched source. The CME early-close clocks for 2026-11-27, 2026-12-24, and 2027-11-26 are 12:15 per CME Globex Equity and 12:00 per CMES and CME_Equity; they are unverified. The Juneteenth 2027 early close at 12:00 is unverified: the two native calendars show it and CMES does not. The same native pattern holds for 2026-06-19, and earlier Juneteenth dates were not checked and are not added. CME Group pages returned HTTP 403 in this run.",
+    "Nasdaq is not an independent calendar in either library (alias of NYSE / XNYS), so agreement between the libraries is not a second source. Only the 2026 Nasdaq Trader holiday page was fetched, so only 2026 Nasdaq rows are official. Every other Nasdaq row is unverified, including rows where the two libraries agree.",
+    "HKEX regular holidays were not fetched as an annual calendar. Closures are secondary-confirmed only where exchange_calendars XHKG and pandas_market_calendars HKEX agree. Early closes exist in exchange_calendars (12:00 HKT) and not in the native HKEX calendar, so those rows are unverified. 2021-04-06 is closed in XHKG and open in native HKEX, with no official notice fetched, so it stays unverified. Morning-only severe-weather sessions that both libraries comment out are not in the dataset. HKEX Severe Weather Trading, in effect from 23 September 2024, is not modeled. HKEX typhoon_closure history starts at 2016-08-02 and is incomplete before 2016: no pre-2016 notice was fetched, and no typhoon notice between 2016 and 2024 is in the dataset unless it was fetched. A missing typhoon row does not mean the market traded that day.",
+    "Date checks on the SSE English schedule page and the SSE 2026 notice could not run in this snapshot: both timed out during the TLS handshake. Their SSE rows keep their snapshot status until a refresh can read the pages and check the dates.",
+    "Historical official archives before the pages in the official snapshot were not fetched. A refresh re-checks those URLs and rebuilds the library base. It does not scrape a new December SSE or KRX notice; that notice has to be added to tools/exchange_calendar/official.py after it is read.",
+    "HKEX half-days are not official. The HKEX Securities trading-hours page, fetched on 2026-10-11, gives the half-day session (morning to 12:00 noon, then a closing auction to a random close between 12:08 and 12:10) and says there is no extended morning or afternoon session on the eves of Christmas, New Year, and Lunar New Year. It lists no dates. The HKEX derivatives calendar lists 2026 and 2027 eve dates for derivatives only. HKEX early closes stay unverified until a securities date list is fetched.",
+    "CME native early closes outside CMES are not in the dataset. CME_Equity and CME Globex Equity show 12:00 or 12:15 closes on sessions that CMES treats as normal days, for example Juneteenth 2022 through 2026 and some Good Fridays. Those sessions have no row, so no disagreement is recorded for them. The 2027 Juneteenth row is the only one added.",
+    "The 2001-09-12 and 2001-09-13 CME closure details (Chicago exchanges closed, and equity-index products closed) are reported, not fetched. The fetched Wikipedia article says the US stock exchanges remained closed until 2001-09-17, which does not match the reported reopening of securities markets on 2001-09-14. NYSE and Nasdaq rows for 2001-09-14 stay full closures, because the libraries and the fetched article agree on the NYSE closure. The CME Group pages could not be read in this run (HTTP 403).",
+    "Lunch breaks on HKEX, SSE, JPX, and historical KRX are not columns. open_time and close_time are the session open and the session close in exchange-local time. A CME clock that falls on the previous local date is stored as YYYY-MM-DDTHH:MM.",
+    "Live re-fetch failed for https://english.sse.com.cn/start/trading/schedule/: URLError: <urlopen error _ssl.c:983: The handshake operation timed out>. Official rows from the 2026-10-11 snapshot were kept.",
+    "Live re-fetch failed for https://www.sse.com.cn/disclosure/announcement/general/c/c_20251222_10802507.shtml: URLError: <urlopen error _ssl.c:983: The handshake operation timed out>. Official rows from the 2026-10-11 snapshot were kept."
+  ],
+  "fetch_failures": [
+    {
+      "url": "https://english.sse.com.cn/start/trading/schedule/",
+      "phrase": "Shanghai Stock Exchange",
+      "ok": false,
+      "status": null,
+      "error": "URLError: <urlopen error _ssl.c:983: The handshake operation timed out>"
+    },
+    {
+      "url": "https://www.sse.com.cn/disclosure/announcement/general/c/c_20251222_10802507.shtml",
+      "phrase": "2026",
+      "ok": false,
+      "status": null,
+      "error": "URLError: <urlopen error _ssl.c:983: The handshake operation timed out>"
+    }
+  ]
+}
