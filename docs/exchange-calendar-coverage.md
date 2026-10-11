@@ -76,6 +76,8 @@ Only in native `HKEX`: 2023-09-01, 2023-09-08.
 
 For 2016–2026, `XHKG` has 23 early closes and native `HKEX` has none: every schedule close is 16:00. The dataset has 52 HKEX early-close rows from 2001 through 2027, all `unverified`. Before 2011-03-07 the library’s early close is 10:00–12:30 (2001-12-24). From 2012-12-24 onward in this build it is 09:30–12:00. Not every year has a weekday early close.
 
+HKEX half-days were checked against the HKEX Securities trading-hours page (`https://www.hkex.com.hk/Services/Trading-hours-and-Severe-Weather-Arrangements/Trading-Hours/Securities-Market?sc_lang=en`), fetched on 2026-10-11. The page gives a half-day session (morning to 12:00 noon, then a closing auction) and says there is no extended morning or afternoon session on the eves of Christmas, New Year, and Lunar New Year. It does not list dates. The HKEX derivatives calendar lists 2026 and 2027 eve dates, but only for derivatives. The HKEX early closes in the dataset fall on those eve dates, but no fetched securities page dates them, so they stay `unverified`.
+
 Both libraries contain commented-out morning-only weather dates (for example 2008-06-25 and 2013-09-23 in the installed sources). Those dates are not sessions with a short close, and they were not added. HKEX Severe Weather Trading, which the exchange introduced on 23 September 2024, is not modeled. No full-year HKEX holiday calendar was fetched, so ordinary holidays are `secondary-confirmed` only where the two libraries agree.
 
 ## SSE

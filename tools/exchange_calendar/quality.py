@@ -85,10 +85,37 @@ OPEN_ITEMS = [
         "does not mean the market traded that day."
     ),
     (
+        "Date checks on the SSE English schedule page and the SSE 2026 notice could not run in "
+        "this snapshot: both timed out during the TLS handshake. Their SSE rows keep their "
+        "snapshot status until a refresh can read the pages and check the dates."
+    ),
+    (
         "Historical official archives before the pages in the official snapshot were not "
         "fetched. A refresh re-checks those URLs and rebuilds the library base. It does "
         "not scrape a new December SSE or KRX notice; that notice has to be added to "
         "tools/exchange_calendar/official.py after it is read."
+    ),
+    (
+        "HKEX half-days are not official. The HKEX Securities trading-hours page, fetched on "
+        "2026-10-11, gives the half-day session (morning to 12:00 noon, then a closing auction "
+        "to a random close between 12:08 and 12:10) and says there is no extended morning or "
+        "afternoon session on the eves of Christmas, New Year, and Lunar New Year. It lists no "
+        "dates. The HKEX derivatives calendar lists 2026 and 2027 eve dates for derivatives "
+        "only. HKEX early closes stay unverified until a securities date list is fetched."
+    ),
+    (
+        "CME native early closes outside CMES are not in the dataset. CME_Equity and CME Globex "
+        "Equity show 12:00 or 12:15 closes on sessions that CMES treats as normal days, for "
+        "example Juneteenth 2022 through 2026 and some Good Fridays. Those sessions have no row, "
+        "so no disagreement is recorded for them. The 2027 Juneteenth row is the only one added."
+    ),
+    (
+        "The 2001-09-12 and 2001-09-13 CME closure details (Chicago exchanges closed, and "
+        "equity-index products closed) are reported, not fetched. The fetched Wikipedia article "
+        "says the US stock exchanges remained closed until 2001-09-17, which does not match the "
+        "reported reopening of securities markets on 2001-09-14. NYSE and Nasdaq rows for "
+        "2001-09-14 stay full closures, because the libraries and the fetched article agree on "
+        "the NYSE closure. The CME Group pages could not be read in this run (HTTP 403)."
     ),
     (
         "Lunch breaks on HKEX, SSE, JPX, and historical KRX are not columns. open_time "

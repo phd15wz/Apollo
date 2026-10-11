@@ -26,12 +26,12 @@ Live fetches that fail stay in `metadata.json` under `open_items`. Official rows
 
 `event_type` is `full_closure`, `typhoon_closure`, `weather_closure`, `early_close`, `late_open`, `typhoon_partial`, or `other`. The three closure types have empty hours. `early_close`, `late_open`, and `typhoon_partial` must carry both `open_time` and `close_time`. `other` must have a name. `build.validate_rows` enforces this. The definitions are in `skills/exchange-calendar/SKILL.md`.
 
-`status` is `official`, `secondary-confirmed`, `unverified`, or `pending`.
+`status` is `official`, `secondary-confirmed`, `unverified`, or `pending`. Scheduling code must read the file through `load_confirmed()` (`tools/exchange_calendar/query.py`), which keeps only `official` and `secondary-confirmed`.
 
 `CME` rows are the `CMES` calendar. `JPX` rows are TSE (`XTKS`). Nasdaq rows use the NYSE calendar because that is what both libraries implement. HKEX typhoon and weather rows exist only for fetched HKEX notices.
 
 ## Tests
 
-`tests/test_quality.py` checks required fields, ten continuous years of closures back through 2001, no missing library closure, the 2001-09-11 and 2023-09-08 spot checks, typhoon provenance, the SSE/KRX 2027 omission, staleness, and past-date diffs.
+`tests/test_quality.py` checks required fields, closure names, each exchange's library closures in every year from 2001, disagreement resolutions, the 2001-09 CME rows and the 2023-09-08 HKEX spot check, typhoon provenance, the SSE/KRX 2027 omission, staleness relative to today, and past-date diffs. `tests/test_page_dates.py` checks the official-page date parser and the refresh exit code for a disagreeing page. `tests/test_query.py` checks `load_confirmed`.
 
 `tests/test_coverage.py` recomputes the library facts cited in the coverage note.

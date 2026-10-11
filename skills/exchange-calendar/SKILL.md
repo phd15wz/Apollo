@@ -75,9 +75,11 @@ python3 -m tools.exchange_calendar.refresh
 python3 -m tools.exchange_calendar.refresh --check
 ```
 
-The refresh rebuilds every row from the libraries, reapplies the official snapshot in `tools/exchange_calendar/official.py`, and re-fetches the snapshot URLs. A failed fetch does not delete official rows and does not invent replacements. It is recorded in `fetch-log.json` and added to `open_items`.
+The refresh rebuilds every row from the libraries, reapplies the official snapshot in `tools/exchange_calendar/official.py` and the reported CME closures in the same file, and re-fetches the snapshot URLs. A failed fetch does not delete official rows and does not invent replacements. It is recorded in `fetch-log.json` and added to `open_items`.
 
-`retrieved_at` changes on every refresh. Edits to `name`, hours, `status`, `source_url`, or `event_type` on a date before today are written to `past-changes.json`, and the process exits 2. Review that file before accepting the refresh. `--check` does not rebuild; it warns when `last_refreshed` is older than 35 days and exits 1 if any disagreement is unresolved.
+Each fetched page is also searched for the dates the dataset lists for it (`tools/exchange_calendar/page_dates.py`). If a page names some of those dates but not others, the refresh exits 3 and writes only `fetch-log.json`. A list page with none of the known date layouts is recorded as an open item instead.
+
+`retrieved_at` changes on every refresh. Edits to `name`, hours, `status`, `source_url`, or `event_type` on a date before today are written to `past-changes.json`, and the process exits 2. Review that file before accepting the refresh. `--check` does not rebuild; it warns when `last_refreshed` is older than 35 days and exits 1 if any disagreement is unresolved. Each version folder keeps `holidays.csv`, `metadata.json`, and `disagreements.csv`, and the folder is named with the refresh date.
 
 Tests:
 
@@ -85,7 +87,13 @@ Tests:
 python3 -m pytest tools/exchange_calendar/tests -q
 ```
 
-Unresolved rows in `disagreements.csv` fail those tests. A library and a fetched official source are allowed to disagree only when `resolution` is `resolved` and the dataset follows the official page.
+`disagreements.csv` has one row for each place where a library disagrees with a dataset closure or early close. `resolution` is one of:
+
+- `resolved` — a fetched official fact disagrees with a library, and the pair is listed in `RESOLVED_OFFICIAL_CONFLICTS` in `official.py`. The dataset follows the official page.
+- `labeled-unverified` — the libraries disagree and no official page settles the row. The row must be `unverified`.
+- `unresolved` — anything else. `build_dataset` raises on it, so the build cannot write a dataset that hides it.
+
+A library closure in a year whose fetched official list is complete, and that the list omits, is always `unresolved`. HKEX, CME, and KRX disagreements are never resolved by year.
 
 ## Do not
 
@@ -95,3 +103,5 @@ Unresolved rows in `disagreements.csv` fail those tests. A library and a fetched
 - Do not answer a CME product question from the `CME` rows alone. Say the row is the `CMES` calendar and point at the coverage note.
 - Do not add a typhoon or black-rainstorm row from a news article. Fetch the HKEX market-communications notice, or leave the row unverified and not typed as `typhoon_*` or `weather_closure`.
 - Do not type a rainstorm closure as `typhoon_closure`. Use `weather_closure`.
+- Do not present a reported CME 2001 closure as confirmed. Those rows are `unverified` because every tested CME calendar treats those dates as sessions.
+- Do not mark HKEX half-days or KRX CSAT late opens as `official` without a fetched page that names the date. The HKEX trading-hours page names no dates, and the KRX pages were shells.
