@@ -231,32 +231,29 @@ def _library_claims(exchange: Exchange) -> list[tuple[str, set[str], dict[str, s
 
 
 def _apply_official(rows: list[dict], events: list[OfficialEvent]) -> list[dict]:
-    by_key = {(row["exchange"], row["date"], row["event_type"]): row for row in rows}
+    """Replace every library row on a date that has a sourced event.
+
+    A sourced event describes the whole session for that exchange and date, so a
+    library row of any type on the same date conflicts with it and is dropped,
+    even when the event type differs (for example a library ``early_close`` on a
+    day the exchange says was a ``full_closure``).
+    """
+    overridden = {(event.exchange, event.date) for event in events}
+    kept = [row for row in rows if (row["exchange"], row["date"]) not in overridden]
     for event in events:
-        same_day = [
-            key
-            for key in list(by_key)
-            if key[0] == event.exchange and key[1] == event.date and key[2] in CLOSURE_TYPES | {"early_close"}
-        ]
-        if event.event_type in CLOSURE_TYPES:
-            for key in same_day:
-                if key[2] in CLOSURE_TYPES:
-                    del by_key[key]
-        elif event.event_type == "early_close":
-            for key in same_day:
-                if key[2] == "early_close":
-                    del by_key[key]
-        by_key[(event.exchange, event.date, event.event_type)] = {
-            "exchange": event.exchange,
-            "date": event.date,
-            "event_type": event.event_type,
-            "open_time": event.open_time,
-            "close_time": event.close_time,
-            "name": event.name,
-            "source_url": event.source_url,
-            "status": "official",
-        }
-    return list(by_key.values())
+        kept.append(
+            {
+                "exchange": event.exchange,
+                "date": event.date,
+                "event_type": event.event_type,
+                "open_time": event.open_time,
+                "close_time": event.close_time,
+                "name": event.name,
+                "source_url": event.source_url,
+                "status": "official",
+            }
+        )
+    return kept
 
 
 def _official_claim(event: OfficialEvent) -> str:

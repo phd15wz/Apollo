@@ -5,7 +5,14 @@ from datetime import datetime, timezone
 import pandas as pd
 import pytest
 
-from tools.exchange_calendar.build import CLOSURE_TYPES, COLUMNS, build_dataset, library_closure_dates
+from tools.exchange_calendar.build import (
+    CLOSURE_TYPES,
+    COLUMNS,
+    _apply_official,
+    build_dataset,
+    library_closure_dates,
+)
+from tools.exchange_calendar.official import OfficialEvent
 from tools.exchange_calendar.exchanges import EXCHANGES
 from tools.exchange_calendar.quality import (
     STALENESS_THRESHOLD_DAYS,
@@ -228,6 +235,55 @@ def test_past_date_diff_flags_history_and_ignores_retrieved_at():
         {"exchange": "NYSE", "date": "2016-01-01", "event_type": "full_closure"}
     ]
     assert diff["future"]["changed"][0]["date"] == "2027-01-01"
+
+
+def test_official_event_replaces_library_rows_of_any_type_on_that_date():
+    base = [
+        {
+            "exchange": "CME",
+            "date": "2026-04-03",
+            "event_type": "full_closure",
+            "open_time": "",
+            "close_time": "",
+            "name": "Good Friday",
+            "source_url": "library",
+            "status": "unverified",
+        },
+        {
+            "exchange": "CME",
+            "date": "2026-11-27",
+            "event_type": "early_close",
+            "open_time": "2026-11-26T17:00",
+            "close_time": "12:00",
+            "name": "Early close",
+            "source_url": "library",
+            "status": "unverified",
+        },
+        {
+            "exchange": "CME",
+            "date": "2026-12-25",
+            "event_type": "full_closure",
+            "open_time": "",
+            "close_time": "",
+            "name": "Christmas",
+            "source_url": "library",
+            "status": "secondary-confirmed",
+        },
+    ]
+    events = [
+        OfficialEvent("CME", "2026-04-03", "early_close", "Good Friday", "https://example.test/cme", "2026-04-02T17:00", "08:15"),
+        OfficialEvent("CME", "2026-11-27", "early_close", "Day after Thanksgiving", "https://example.test/cme", "2026-11-26T17:00", "12:15"),
+    ]
+    merged = _apply_official(base, events)
+    keys = [(row["date"], row["event_type"]) for row in merged]
+    assert len(keys) == len(set(keys))
+    by_date = {}
+    for row in merged:
+        by_date.setdefault(row["date"], []).append(row)
+    assert [row["event_type"] for row in by_date["2026-04-03"]] == ["early_close"]
+    assert by_date["2026-04-03"][0]["close_time"] == "08:15"
+    assert [row["close_time"] for row in by_date["2026-11-27"]] == ["12:15"]
+    assert by_date["2026-12-25"][0]["source_url"] == "library"
 
 
 def test_rebuild_matches_committed_facts():
