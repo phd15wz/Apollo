@@ -23,9 +23,9 @@
   {
     "url": "https://english.sse.com.cn/start/trading/schedule/",
     "phrase": "Shanghai Stock Exchange",
-    "ok": true,
-    "status": 200,
-    "error": ""
+    "ok": false,
+    "status": null,
+    "error": "URLError: <urlopen error _ssl.c:983: The handshake operation timed out>"
   },
   {
     "url": "https://www.sse.com.cn/disclosure/announcement/general/c/c_20251222_10802507.shtml",

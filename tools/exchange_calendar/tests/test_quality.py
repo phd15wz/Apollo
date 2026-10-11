@@ -249,13 +249,21 @@ def test_hkex_early_closes_use_library_hours_and_stay_unverified(dataset):
     assert (after["open_time"], after["close_time"]) == ("09:30", "12:00")
 
 
-def test_krx_csat_late_opens_stop_after_2020(dataset):
+def test_krx_late_opens_are_unverified_and_never_official(dataset):
+    frame, _ = dataset
+    late = frame[(frame["exchange"] == "KRX") & (frame["event_type"] == "late_open")]
+    assert set(late["status"]) == {"unverified"}
+    assert set(late["open_time"]) == {"10:00"}
+    assert not frame[(frame["exchange"] == "KRX") & (frame["status"] == "official")].shape[0]
+
+
+def test_krx_non_january_late_opens_come_from_the_csat_offset(dataset):
     frame, _ = dataset
     late = frame[(frame["exchange"] == "KRX") & (frame["event_type"] == "late_open")]
     non_january = late[~late["date"].str[5:7].eq("01")]
-    assert non_january["date"].max() == "2020-12-03"
-    assert set(late["status"]) == {"unverified"}
-    assert set(late["open_time"]) == {"10:00"}
+    assert len(non_january) > 0
+    assert set(non_january["name"]) == {"CSAT day"}
+    assert (non_january["date"] < "2027-01-01").all()
 
 
 def test_unverified_hkex_library_disagreement_stays_unverified(dataset):

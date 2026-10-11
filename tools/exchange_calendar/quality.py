@@ -38,7 +38,9 @@ OPEN_ITEMS = [
         "calendar is empty even when the schedule open is 10:00. The pandas_market_calendars "
         "mirror shows 09:00. CSAT rows also shift the close (16:00 before 2016-08-01, "
         "16:30 after). The last non-January late open in the 2001-2026 schedule is "
-        "2020-12-03; 2021-2026 have only the January late open. Those rows are unverified."
+        "2020-12-03; 2021-2026 have only the January late open. The 2021 CSAT day and "
+        "2025-11-13 were not added because no Korea Exchange page with dates could be read "
+        "in this run. Those rows are unverified."
     ),
     (
         "SSE 2027 is omitted. exchange_calendars 4.13.2 refuses dates after 2026. "
