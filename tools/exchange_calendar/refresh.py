@@ -5,10 +5,18 @@ Usage from the repository root:
     python -m tools.exchange_calendar.refresh
     python -m tools.exchange_calendar.refresh --check
 
-Exit status 2 means a past date (date < today) was added, removed, or changed.
-``retrieved_at`` alone does not count. The new dataset is still written so the
-diff can be reviewed. ``--check`` does not rebuild; it reports staleness and
-fails if any library/official disagreement is unresolved.
+Exit status:
+
+- 0: the dataset was written and nothing needs review.
+- 1: the build or the check failed, for example an unresolved disagreement.
+- 2: a past date (date < today) was added, removed, or changed. The new dataset is
+  still written so the diff can be reviewed. ``retrieved_at`` alone does not count.
+- 3: a fetched official page does not name a date the dataset lists for it. Only
+  ``fetch-log.json`` is written, so the dataset cannot silently follow a page that
+  disagrees with it.
+
+``--check`` does not rebuild; it reports staleness and fails if any
+library/official disagreement is unresolved.
 """
 
 from __future__ import annotations
@@ -24,7 +32,8 @@ from pathlib import Path
 import pandas as pd
 
 from tools.exchange_calendar.build import build_dataset
-from tools.exchange_calendar.official import FETCH_CHECKS
+from tools.exchange_calendar.official import FETCH_CHECKS, official_events
+from tools.exchange_calendar.page_dates import check_page, normalise
 from tools.exchange_calendar.quality import (
     assert_no_unresolved,
     diff_datasets,
@@ -48,7 +57,14 @@ def _today() -> str:
 
 
 def fetch_official_pages(timeout: float = 25.0) -> list[dict]:
-    """Re-check snapshot URLs. A failure does not drop official rows."""
+    """Re-check snapshot URLs and the dates each page names.
+
+    A transport failure does not drop official rows. A page that loads but does not
+    name a date the dataset lists for it is recorded in ``dates_missing``.
+    """
+    by_url: dict[str, list] = {}
+    for event in official_events():
+        by_url.setdefault(event.source_url, []).append(event)
     results = []
     for url, phrase in FETCH_CHECKS:
         item = {"url": url, "phrase": phrase, "ok": False, "status": None, "error": ""}
@@ -60,6 +76,11 @@ def fetch_official_pages(timeout: float = 25.0) -> list[dict]:
                 item["ok"] = phrase.lower() in body.lower()
                 if not item["ok"]:
                     item["error"] = "expected phrase not found"
+                check = check_page(url, normalise(body), by_url.get(url, []))
+                item["dates_expected"] = check.expected
+                item["dates_matched"] = check.matched
+                item["dates_missing"] = check.missing
+                item["dates_unparsed"] = check.unparsed
         except urllib.error.HTTPError as exc:
             item["status"] = exc.code
             item["error"] = str(exc)
@@ -93,6 +114,16 @@ def refresh(*, check_only: bool = False) -> int:
     frame, disagreements = build_dataset(retrieved_at=retrieved_at)
     assert_no_unresolved(disagreements)
     fetch_log = fetch_official_pages()
+    date_failures = [item for item in fetch_log if item.get("dates_missing")]
+    if date_failures:
+        write_json(FETCH_LOG_PATH, fetch_log)
+        for item in date_failures:
+            print(
+                f"official page {item['url']} does not name {item['dates_missing']} "
+                "that the dataset lists for it",
+                file=sys.stderr,
+            )
+        return 3
     previous = _read_holidays(HOLIDAYS_PATH)
     as_of = _today()
     if previous is None:
@@ -116,6 +147,7 @@ def refresh(*, check_only: bool = False) -> int:
     version_dir = DATA_DIR / "versions" / metadata["dataset_version"]
     version_dir.mkdir(parents=True, exist_ok=True)
     frame.to_csv(version_dir / "holidays.csv", index=False)
+    disagreements.to_csv(version_dir / "disagreements.csv", index=False)
     write_json(version_dir / "metadata.json", metadata)
 
     if diff["past_change_count"]:
@@ -144,7 +176,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         return refresh(check_only=args.check)
-    except AssertionError as exc:
+    except (AssertionError, RuntimeError) as exc:
         print(str(exc), file=sys.stderr)
         return 1
 

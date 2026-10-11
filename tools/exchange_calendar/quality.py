@@ -23,6 +23,7 @@ CONTENT_COLUMNS = [
 ]
 
 STALENESS_THRESHOLD_DAYS = 35
+OFFICIAL_SNAPSHOT_DATE = "2026-10-11"
 
 OPEN_ITEMS = [
     (
@@ -203,14 +204,20 @@ def dataset_metadata(frame: pd.DataFrame, *, retrieved_at: str, fetch_log: list[
         for code, spec in EXCHANGES.items()
     }
     failed_fetches = [item for item in (fetch_log or []) if not item.get("ok")]
+    unparsed_pages = [item for item in (fetch_log or []) if item.get("dates_unparsed")]
     open_items = list(OPEN_ITEMS)
+    for item in unparsed_pages:
+        open_items.append(
+            f"Date check could not parse {item.get('url')}: none of the {item.get('dates_expected')} "
+            "dataset dates for it appear in a known layout. The page layout must be read by hand."
+        )
     for item in failed_fetches:
         open_items.append(
             f"Live re-fetch failed for {item.get('url')}: {item.get('error') or item.get('status')}. "
             "Official rows from the 2026-10-11 snapshot were kept."
         )
     return {
-        "dataset_version": f"2026-10-11.{content_hash(frame)}",
+        "dataset_version": f"{retrieved_at[:10]}.{content_hash(frame)}",
         "last_refreshed": retrieved_at,
         "staleness_threshold_days": STALENESS_THRESHOLD_DAYS,
         "history_start": "2001-01-01",
@@ -223,7 +230,7 @@ def dataset_metadata(frame: pd.DataFrame, *, retrieved_at: str, fetch_log: list[
             "pandas_market_calendars": "5.5.0",
         },
         "cme_base_calendar": "CMES",
-        "official_snapshot_parsed_on": "2026-10-11",
+        "official_snapshot_parsed_on": OFFICIAL_SNAPSHOT_DATE,
         "windows": windows,
         "open_items": open_items,
         "fetch_failures": failed_fetches,
