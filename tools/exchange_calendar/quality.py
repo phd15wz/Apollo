@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 
 import pandas as pd
 
-from tools.exchange_calendar.exchanges import EXCHANGES
+from tools.exchange_calendar.exchanges import ALIASES, EXCHANGES
 
 CONTENT_COLUMNS = [
     "exchange",
@@ -66,10 +66,11 @@ OPEN_ITEMS = [
         "pages returned HTTP 403 in this run."
     ),
     (
-        "Nasdaq is not an independent calendar in either library (alias of NYSE / XNYS), so "
-        "agreement between the libraries is not a second source. Only the 2026 Nasdaq Trader "
-        "holiday page was fetched, so only 2026 Nasdaq rows are official. Every other Nasdaq "
-        "row is unverified, including rows where the two libraries agree."
+        "Nasdaq is an alias of NYSE. Both libraries implement XNAS / NASDAQ as the NYSE "
+        "calendar classes, and there is no independent Nasdaq holiday dataset. Queries for "
+        "Nasdaq return NYSE rows. The Nasdaq Trader 2026 holiday page is still fetched as a "
+        "check that Nasdaq's announced closures and 1:00 p.m. early closes equal NYSE 2026; "
+        "a mismatch is logged loudly and is not written as Nasdaq rows."
     ),
     (
         "HKEX regular holidays were not fetched as an annual calendar. Closures are "
@@ -113,9 +114,10 @@ OPEN_ITEMS = [
         "The 2001-09-12 and 2001-09-13 CME closure details (Chicago exchanges closed, and "
         "equity-index products closed) are reported, not fetched. The fetched Wikipedia article "
         "says the US stock exchanges remained closed until 2001-09-17, which does not match the "
-        "reported reopening of securities markets on 2001-09-14. NYSE and Nasdaq rows for "
+        "reported reopening of securities markets on 2001-09-14. NYSE rows for "
         "2001-09-14 stay full closures, because the libraries and the fetched article agree on "
-        "the NYSE closure. The CME Group pages could not be read in this run (HTTP 403)."
+        "the NYSE closure. Nasdaq queries use those NYSE rows. The CME Group pages could not "
+        "be read in this run (HTTP 403)."
     ),
     (
         "Lunch breaks on HKEX, SSE, JPX, and historical KRX are not columns. open_time "
@@ -258,6 +260,7 @@ def dataset_metadata(frame: pd.DataFrame, *, retrieved_at: str, fetch_log: list[
         },
         "cme_base_calendar": "CMES",
         "official_snapshot_parsed_on": OFFICIAL_SNAPSHOT_DATE,
+        "aliases": dict(ALIASES),
         "windows": windows,
         "open_items": open_items,
         "fetch_failures": failed_fetches,

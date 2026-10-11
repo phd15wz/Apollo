@@ -36,9 +36,9 @@ The NYSE holiday page (`https://www.nyse.com/markets/hours-calendars`) was fetch
 
 `XNAS` is the same class as `XNYS`. Their session indexes are equal for 2000-01-01 through 2027-12-31, and their early-close indexes are equal. `pandas_market_calendars` `NASDAQ` is `NYSEExchangeCalendar`, the same object family as `NYSE`.
 
-The Nasdaq Trader 2026 holiday schedule (`https://www.nasdaqtrader.com/trader.aspx?id=calendar`) was fetched. Its closures and 1:00 p.m. early closes match the shared calendar. No other Nasdaq year was on that page, so only 2026 Nasdaq rows are `official`. There is no tested difference between Nasdaq and NYSE in either library.
+The dataset does not store Nasdaq rows. `ALIASES` maps `Nasdaq` to `NYSE`, so `load_confirmed(exchange="Nasdaq")` and `for_exchange` return the NYSE rows. There is no tested difference between Nasdaq and NYSE in either library, and every one of the 315 Nasdaq rows that used to be stored matched NYSE on date, event type, and hours.
 
-Because `NASDAQ` in `pandas_market_calendars` is the NYSE class, Nasdaq is never counted as an independent second source. Every Nasdaq row outside the 2026 official set is `unverified`, even where `XNYS` and `XNAS` agree.
+The Nasdaq Trader 2026 holiday schedule (`https://www.nasdaqtrader.com/trader.aspx?id=calendar`) is still fetched. Its closures and 1:00 p.m. early closes match NYSE 2026. A refresh compares those dates and hours to the NYSE official snapshot and logs any mismatch loudly. The page is not written as a second holiday calendar.
 
 ## CME
 

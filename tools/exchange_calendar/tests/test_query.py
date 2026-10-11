@@ -2,7 +2,8 @@ import pandas as pd
 import pytest
 
 from tools.exchange_calendar.build import COLUMNS
-from tools.exchange_calendar.query import CONFIRMED_STATUSES, HOLIDAYS_PATH, load_confirmed
+from tools.exchange_calendar.exchanges import ALIASES
+from tools.exchange_calendar.query import CONFIRMED_STATUSES, HOLIDAYS_PATH, for_exchange, load_confirmed
 
 
 def _row(status: str, date: str = "2026-01-01") -> dict:
@@ -46,3 +47,14 @@ def test_committed_dataset_has_no_unverified_or_pending_rows_after_filter():
     assert set(kept["status"]) <= set(CONFIRMED_STATUSES)
     raw = pd.read_csv(HOLIDAYS_PATH, dtype=str, keep_default_na=False)
     assert len(kept) == int(raw["status"].isin(CONFIRMED_STATUSES).sum())
+
+
+def test_nasdaq_queries_equal_nyse_and_csv_has_no_nasdaq_rows():
+    raw = pd.read_csv(HOLIDAYS_PATH, dtype=str, keep_default_na=False)
+    assert "Nasdaq" not in set(raw["exchange"])
+    assert ALIASES["Nasdaq"] == "NYSE"
+    nyse = load_confirmed(exchange="NYSE")
+    nasdaq = load_confirmed(exchange="Nasdaq")
+    assert not nyse.empty
+    pd.testing.assert_frame_equal(nyse, nasdaq)
+    pd.testing.assert_frame_equal(for_exchange(raw, "Nasdaq"), for_exchange(raw, "NYSE"))

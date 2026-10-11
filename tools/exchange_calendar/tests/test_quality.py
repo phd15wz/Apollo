@@ -23,6 +23,7 @@ from tools.exchange_calendar.build import build_disagreements
 from tools.exchange_calendar.official import (
     RESOLVED_OFFICIAL_CONFLICTS,
     OfficialEvent,
+    nasdaq_nyse_mismatches,
     official_by_exchange,
     unverified_by_exchange,
 )
@@ -184,13 +185,13 @@ def test_spot_checks(dataset):
     def rows(exchange, date):
         return frame[(frame["exchange"] == exchange) & (frame["date"] == date)]
 
-    for exchange in ("NYSE", "Nasdaq"):
-        for date in ("2001-09-11", "2001-09-12", "2001-09-13", "2001-09-14"):
-            matched = rows(exchange, date)
-            assert len(matched) == 1
-            assert matched.iloc[0]["event_type"] == "full_closure"
-        assert rows(exchange, "2001-09-10").empty
-        assert rows(exchange, "2001-09-17").empty
+    for date in ("2001-09-11", "2001-09-12", "2001-09-13", "2001-09-14"):
+        matched = rows("NYSE", date)
+        assert len(matched) == 1
+        assert matched.iloc[0]["event_type"] == "full_closure"
+    assert rows("NYSE", "2001-09-10").empty
+    assert rows("NYSE", "2001-09-17").empty
+    assert rows("Nasdaq", "2001-09-11").empty
 
     cme_2001 = {
         "2001-09-11": ("full_closure", "unverified"),
@@ -448,6 +449,10 @@ def test_official_event_replaces_library_rows_of_any_type_on_that_date():
     assert by_date["2026-04-03"][0]["close_time"] == "08:15"
     assert [row["close_time"] for row in by_date["2026-11-27"]] == ["12:15"]
     assert by_date["2026-12-25"][0]["source_url"] == "library"
+
+
+def test_nasdaq_2026_page_matches_nyse_hours():
+    assert nasdaq_nyse_mismatches() == []
 
 
 def test_rebuild_matches_committed_facts():
