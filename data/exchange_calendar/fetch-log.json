@@ -369,5 +369,43 @@
     "status": 200,
     "error": "",
     "method": "WebFetch"
+  },
+  {
+    "url": "https://web.archive.org/web/20210405120000/https://www.marketwatch.com/story/dow-set-to-rise-over-200-points-in-stock-markets-first-trading-day-after-good-friday-jobs-report-11617621509",
+    "phrase": "trading in equity futures closed at 9:15 a.m. Eastern",
+    "ok": true,
+    "status": 200,
+    "error": "",
+    "method": "WebFetch"
+  },
+  {
+    "url": "https://www.marketwatch.com/story/dow-set-to-rise-over-200-points-in-stock-markets-first-trading-day-after-good-friday-jobs-report-11617621509",
+    "phrase": "9:15 a.m. Eastern",
+    "ok": false,
+    "status": 401,
+    "error": "HTTP 401 Unauthorized; MarketWatch copy fetched via Wayback 20210405120000"
+  },
+  {
+    "url": "https://www.cnbc.com/2026/04/03/jobs-report-march-2026-.html",
+    "phrase": "Stock market futures were slightly negative",
+    "ok": true,
+    "status": 200,
+    "error": "fetched; does not print 08:15 CT / 9:15 ET halt clock",
+    "method": "WebFetch"
+  },
+  {
+    "url": "https://web.archive.org/web/20260403140000/https://www.marketwatch.com/story/stock-futures-and-bitcoin-slip-treasury-yields-climb-as-hot-jobs-report-raises-more-questions-about-fed-rate-cuts-921ff82f",
+    "phrase": "holiday trading session",
+    "ok": true,
+    "status": 200,
+    "error": "fetched; does not print 08:15 CT / 9:15 ET halt clock",
+    "method": "WebFetch"
+  },
+  {
+    "url": "https://www.marketwatch.com/story/stock-futures-and-bitcoin-slip-treasury-yields-climb-as-hot-jobs-report-raises-more-questions-about-fed-rate-cuts-921ff82f",
+    "phrase": "",
+    "ok": false,
+    "status": 401,
+    "error": "HTTP 401 Unauthorized; Wayback copy fetched but no halt clock printed"
   }
 ]

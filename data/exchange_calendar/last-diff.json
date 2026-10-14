@@ -1,38 +1,10 @@
 {
   "as_of": "2026-10-14",
-  "past_change_count": 18,
+  "past_change_count": 2,
   "past": {
-    "added": [
-      {
-        "exchange": "CME",
-        "date": "2004-06-11",
-        "event_type": "early_close"
-      },
-      {
-        "exchange": "CME",
-        "date": "2007-01-02",
-        "event_type": "early_close"
-      },
-      {
-        "exchange": "CME",
-        "date": "2010-04-02",
-        "event_type": "early_close"
-      },
-      {
-        "exchange": "CME",
-        "date": "2012-04-06",
-        "event_type": "early_close"
-      },
-      {
-        "exchange": "CME",
-        "date": "2015-04-03",
-        "event_type": "early_close"
-      },
-      {
-        "exchange": "CME",
-        "date": "2018-12-05",
-        "event_type": "early_close"
-      },
+    "added": [],
+    "removed": [],
+    "changed": [
       {
         "exchange": "CME",
         "date": "2021-04-02",
@@ -40,63 +12,10 @@
       },
       {
         "exchange": "CME",
-        "date": "2023-04-07",
-        "event_type": "early_close"
-      },
-      {
-        "exchange": "CME",
         "date": "2026-04-03",
         "event_type": "early_close"
       }
-    ],
-    "removed": [
-      {
-        "exchange": "CME",
-        "date": "2004-06-11",
-        "event_type": "other"
-      },
-      {
-        "exchange": "CME",
-        "date": "2007-01-02",
-        "event_type": "other"
-      },
-      {
-        "exchange": "CME",
-        "date": "2010-04-02",
-        "event_type": "other"
-      },
-      {
-        "exchange": "CME",
-        "date": "2012-04-06",
-        "event_type": "other"
-      },
-      {
-        "exchange": "CME",
-        "date": "2015-04-03",
-        "event_type": "other"
-      },
-      {
-        "exchange": "CME",
-        "date": "2018-12-05",
-        "event_type": "other"
-      },
-      {
-        "exchange": "CME",
-        "date": "2021-04-02",
-        "event_type": "other"
-      },
-      {
-        "exchange": "CME",
-        "date": "2023-04-07",
-        "event_type": "other"
-      },
-      {
-        "exchange": "CME",
-        "date": "2026-04-03",
-        "event_type": "other"
-      }
-    ],
-    "changed": []
+    ]
   },
   "future": {
     "added": [],

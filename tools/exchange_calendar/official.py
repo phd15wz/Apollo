@@ -98,6 +98,12 @@ MARKETWATCH_2023_GOOD_FRIDAY_URL = (
     "https://web.archive.org/web/20230407154500/"
     "https://www.marketwatch.com/story/when-do-u-s-markets-reopen-after-easter-aacef663"
 )
+MARKETWATCH_2021_GOOD_FRIDAY_URL = (
+    "https://web.archive.org/web/20210405120000/"
+    "https://www.marketwatch.com/story/"
+    "dow-set-to-rise-over-200-points-in-stock-markets-first-trading-day-after-good-friday-jobs-report-11617621509"
+)
+CNBC_2026_JOBS_URL = "https://www.cnbc.com/2026/04/03/jobs-report-march-2026-.html"
 CFTC_CME_06_120_URL = (
     "https://www.cftc.gov/IndustryOversight/IndustryFilings/TradingOrganizationRules/13650"
 )
@@ -890,8 +896,10 @@ def _cme_equity_index_events() -> list[OfficialEvent]:
     with previous-evening 17:00 CT open, matching other CME early closes.
     2025-01-09 stays ``other`` because Globex reopened the same calendar day.
     Official status is used only when a cmegroup.com notice/advisory fetched
-    in that run states the closure or session. Mondovisione CME-release
-    mirrors are ``secondary-confirmed``. Broker pages are not used to confirm.
+    in that run states the closure or session **and** the stored clock.
+    Weakest-link: a row's status covers everything ``load_confirmed()`` returns.
+    Mondovisione CME-release mirrors are ``secondary-confirmed``. Broker pages
+    are not used to confirm.
     """
     holiday_clearing = (
         "Fetched CME Group clearing advisory 2026-10-14 (WebFetch; urllib of "
@@ -899,16 +907,6 @@ def _cme_equity_index_events() -> list[OfficialEvent]:
         "prior session; trades submitted on the holiday clear the next "
         "business day. Treated as a full Globex holiday. "
         + CME_EQUITY_INDEX_SCOPE_NOTE
-    )
-    abbreviated_clock_unverified = (
-        "Fetched CME Group clearing advisory 2026-10-14 (WebFetch; urllib of "
-        "cmegroup.com was 403). Advisory states an abbreviated equity session "
-        "and does not print the Globex close clock. close_time 08:15 CT is "
-        "unverified: it is the usual Good Friday equity-index halt filled so "
-        "the row can be typed early_close; no fetched tier A/B page prints "
-        "this year's clock. Broker 08:15 CT reports were not used. "
-        "Needs a CME tier-A check. "
-        + CME_ABBREVIATED_EARLY_NOTE
     )
     mondo = (
         "Fetched Mondovisione copy of a CME release 2026-10-14. Mirror of a "
@@ -1044,13 +1042,23 @@ def _cme_equity_index_events() -> list[OfficialEvent]:
             "2021-04-02",
             (
                 "Good Friday: US equity-index abbreviated Globex session "
-                "(not settled; used 2021-04-01 settlement; close_time 08:15 CT "
-                "unverified). Not a full closure."
+                "(ended 08:15 CT / 09:15 ET; not settled; used 2021-04-01 "
+                "settlement). Not a full closure."
             ),
-            CME_2021_GOOD_FRIDAY_URL,
+            MARKETWATCH_2021_GOOD_FRIDAY_URL,
             "08:15",
-            status="official",
-            note=abbreviated_clock_unverified,
+            status="secondary-confirmed",
+            note=(
+                "Fetched 2026-10-14 Wayback copy of MarketWatch: trading in "
+                "equity futures closed at 9:15 a.m. Eastern on 2021-04-02. Live "
+                "marketwatch.com returned 401. CME 2021 Good Friday clearing "
+                f"advisory {CME_2021_GOOD_FRIDAY_URL} fetched the same round "
+                "(WebFetch; urllib 403) states an abbreviated equity session "
+                "and does not print the Globex halt clock. Weakest-link status "
+                "is secondary-confirmed from the MarketWatch clock. Broker "
+                "pages were not used. "
+                + CME_ABBREVIATED_EARLY_NOTE
+            ),
         ),
         _cme_early(
             "2023-04-07",
@@ -1084,19 +1092,6 @@ def _cme_equity_index_events() -> list[OfficialEvent]:
             CME_2025_GOOD_FRIDAY_URL,
             status="official",
             note=holiday_clearing,
-        ),
-        _cme_early(
-            "2026-04-03",
-            (
-                "Good Friday: US equity-index abbreviated Globex session "
-                "(not settled; used 2026-04-02 settlement; close_time 08:15 CT "
-                "unverified). IR/FX/crypto settled. Not a full equity-index "
-                "closure."
-            ),
-            CME_2026_GOOD_FRIDAY_URL,
-            "08:15",
-            status="official",
-            note=abbreviated_clock_unverified,
         ),
         _cme_carter_mourning(),
     ]
@@ -1149,6 +1144,34 @@ def unverified_events() -> list[OfficialEvent]:
                 "resume 2001-09-13 and equity-index no earlier than 2001-09-14; "
                 "it does not by itself type 2001-09-13 as an equity-index close. "
                 + CME_EQUITY_INDEX_SCOPE_NOTE
+            ),
+        ),
+        _unverified(
+            "CME",
+            "2026-04-03",
+            "early_close",
+            (
+                "Good Friday: US equity-index abbreviated Globex session "
+                "(not settled; used 2026-04-02 settlement; close_time 08:15 CT "
+                "unverified). IR/FX/crypto settled. Not a full equity-index "
+                "closure."
+            ),
+            CME_2026_GOOD_FRIDAY_URL,
+            open_time=_cme_prev_evening("2026-04-03"),
+            close_time="08:15",
+            note=(
+                "Fetched CME Group clearing advisory 2026-10-14 (WebFetch; "
+                "urllib of cmegroup.com was 403). Advisory states an abbreviated "
+                "equity session and does not print the Globex close clock. "
+                f"Fetched CNBC jobs wrap {CNBC_2026_JOBS_URL} the same round: "
+                "futures were slightly negative; it does not print 08:15 CT / "
+                "9:15 ET. Wayback MarketWatch 921ff82f and live marketwatch.com "
+                "did not print the halt clock (live 401). close_time 08:15 CT is "
+                "unverified: no fetched tier A/B page states this year's clock. "
+                "Broker 08:15 CT reports were not used. Weakest-link status is "
+                "unverified so load_confirmed() drops the row, including the "
+                "clock. Needs a CME tier-A check. "
+                + CME_ABBREVIATED_EARLY_NOTE
             ),
         ),
         _unverified(
@@ -1256,7 +1279,6 @@ RESOLVED_OFFICIAL_CONFLICTS: frozenset[tuple[str, str, str]] = frozenset(
         ("CME", "2018-12-05", "pandas_market_calendars:CME Globex Equity"),
         ("CME", "2021-04-02", "exchange_calendars:CMES"),
         ("CME", "2023-04-07", "exchange_calendars:CMES"),
-        ("CME", "2026-04-03", "exchange_calendars:CMES"),
         # Official Good Friday full closures: native calendars keep a session.
         ("CME", "2024-03-29", "pandas_market_calendars:CME_Equity"),
         ("CME", "2024-03-29", "pandas_market_calendars:CME Globex Equity"),
