@@ -30,7 +30,7 @@ Event types:
 - `early_close` — the session closed early. `open_time` and `close_time` are the hours that traded.
 - `late_open` — the session opened late. `open_time` and `close_time` are the hours that traded.
 - `typhoon_partial` — HKEX traded only part of the day because of a typhoon or rainstorm. `open_time` and `close_time` are required and give the hours that traded. It is not a closure. No row uses it yet because no partial-day notice has been fetched.
-- `other` — anything else, such as a suspension that does not fit the types above. `name` is required and says what happened. CME abbreviated US equity-index Globex sessions (days of mourning, some Good Fridays) use this type, matching 2025-01-09: they are not a full closure and not a simple `early_close` of every CME product. Hours stay empty; any fetched equity-index close is in `name`.
+- `other` — anything else, such as a suspension that does not fit the types above. `name` is required and says what happened. CME 2025-01-09 (Carter mourning: abbreviated equity session then a same-day Globex reopen) uses this type. Hours stay empty; the fetched equity-index close is in `name`. Short equity-index Globex sessions that halt in the morning without a same-day reopen are `early_close`, not `other`.
 
 `build.validate_rows` rejects unknown types, closures with hours, session rows without both hours, `other` rows without a name, and weather rows that are not backed by an official HKEX notice.
 

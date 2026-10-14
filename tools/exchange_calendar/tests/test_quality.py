@@ -614,23 +614,26 @@ def test_cme_isaac_round_dates(dataset):
         return matched.iloc[0]
 
     abbreviated = {
-        "2004-06-11": ("secondary-confirmed", "08:00", "mondovisione.com"),
-        "2007-01-02": ("secondary-confirmed", "08:15", "mondovisione.com"),
-        "2010-04-02": ("secondary-confirmed", "08:15", "ibtimes.com"),
-        "2012-04-06": ("secondary-confirmed", "08:15", "foxbusiness.com"),
-        "2015-04-03": ("secondary-confirmed", "45-minute", "vcpost.com"),
-        "2018-12-05": ("official", "08:30", "cmegroup.com"),
-        "2021-04-02": ("official", "abbreviated", "cmegroup.com"),
-        "2023-04-07": ("secondary-confirmed", "08:15", "ttm.financial"),
-        "2026-04-03": ("official", "abbreviated", "cmegroup.com"),
+        "2004-06-11": ("secondary-confirmed", "08:00", "08:00", "mondovisione.com"),
+        "2007-01-02": ("secondary-confirmed", "08:15", "08:15", "mondovisione.com"),
+        "2010-04-02": ("secondary-confirmed", "08:15", "08:15", "ibtimes.com"),
+        "2012-04-06": ("secondary-confirmed", "08:15", "08:15", "foxbusiness.com"),
+        "2015-04-03": ("secondary-confirmed", "08:15", "08:15", "cnbc.com"),
+        "2018-12-05": ("official", "08:30", "08:30", "cmegroup.com"),
+        "2021-04-02": ("official", "08:15", "08:15", "cmegroup.com"),
+        "2023-04-07": ("secondary-confirmed", "08:15", "08:15", "marketwatch.com"),
+        "2026-04-03": ("official", "08:15", "08:15", "cmegroup.com"),
     }
-    for date, (status, fragment, host) in abbreviated.items():
+    for date, (status, close_time, fragment, host) in abbreviated.items():
         rec = row(date)
-        assert rec["event_type"] == "other", date
+        assert rec["event_type"] == "early_close", date
         assert rec["status"] == status, date
+        assert rec["close_time"] == close_time, date
+        assert rec["open_time"] == (
+            pd.Timestamp(date) - pd.Timedelta(days=1)
+        ).strftime("%Y-%m-%dT17:00"), date
         assert fragment in rec["name"], date
         assert host in rec["source_url"], date
-        assert rec["open_time"] == "" and rec["close_time"] == "", date
         assert "equity index futures (Globex) hours only" in rec["note"], date
 
     for date in ("2024-03-29", "2025-04-18"):
@@ -643,9 +646,13 @@ def test_cme_isaac_round_dates(dataset):
         assert "equity index futures (Globex) hours only" in rec["note"]
 
     assert "cannontrading" not in row("2015-04-03")["source_url"]
+    assert "vcpost" not in row("2015-04-03")["source_url"]
+    assert "ttm.financial" not in row("2023-04-07")["source_url"]
     assert "Ironbeam" not in row("2026-04-03")["note"]
-    assert "08:15" not in row("2021-04-02")["name"]
-    assert "08:15" not in row("2026-04-03")["name"]
+    assert "unverified" in row("2021-04-02")["name"]
+    assert "unverified" in row("2026-04-03")["name"]
+    assert "close_time 08:15 CT is unverified" in row("2021-04-02")["note"]
+    assert "close_time 08:15 CT is unverified" in row("2026-04-03")["note"]
 
 
 def test_cme_equity_index_scope_note_is_documented(dataset):
