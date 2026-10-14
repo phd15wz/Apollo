@@ -14,6 +14,7 @@ from tools.exchange_calendar.build import (
     _apply_official,
     _holiday_names,
     _native_holiday_names,
+    apply_full_closure_upgrades,
     build_dataset,
     library_closure_dates,
     validate_rows,
@@ -31,8 +32,13 @@ from tools.exchange_calendar.exchanges import EXCHANGES
 from tools.exchange_calendar.quality import (
     STALENESS_THRESHOLD_DAYS,
     diff_datasets,
+    source_is_allowed,
     staleness_warning,
     unresolved_disagreements,
+)
+from tools.exchange_calendar.settlement_upgrades import (
+    FULL_CLOSURE_UPGRADES,
+    TIER_B_TERMINAL_SOURCE,
 )
 
 ROOT_DATA = __import__("pathlib").Path(__file__).resolve().parents[3] / "data" / "exchange_calendar"
@@ -91,17 +97,17 @@ def test_disagreement_resolutions_are_explicit_and_match_the_allow_list(dataset)
 def test_unlisted_official_conflict_is_unresolved_even_outside_complete_years():
     row = {
         "exchange": "HKEX",
-        "date": "2021-04-06",
-        "event_type": "full_closure",
-        "open_time": "",
-        "close_time": "",
-        "name": "Ching Ming Festival",
+        "date": "2001-12-24",
+        "event_type": "early_close",
+        "open_time": "10:00",
+        "close_time": "12:30",
+        "name": "Christmas Eve",
         "source_url": "https://www.hkex.com.hk/News/example",
         "retrieved_at": "2026-10-11T00:00:00Z",
         "status": "official",
     }
     records = build_disagreements([row])
-    hit = records[(records["exchange"] == "HKEX") & (records["date"] == "2021-04-06")]
+    hit = records[(records["exchange"] == "HKEX") & (records["date"] == "2001-12-24")]
     native = hit[hit["library"] == "pandas_market_calendars:HKEX"]
     assert len(native) == 1
     assert native.iloc[0]["resolution"] == "unresolved"
@@ -237,7 +243,8 @@ def test_spot_checks(dataset):
 
     krx = rows("KRX", "2016-03-01")
     assert krx.iloc[0]["event_type"] == "full_closure"
-    assert krx.iloc[0]["status"] == "unverified"
+    assert krx.iloc[0]["status"] == "secondary-confirmed"
+    assert krx.iloc[0]["source_url"] == TIER_B_TERMINAL_SOURCE
 
 
 def test_weather_rows_come_from_hkex_notices(dataset):
@@ -346,12 +353,82 @@ def test_krx_non_january_late_opens_come_from_the_csat_offset(dataset):
     assert (non_january["date"] < "2027-01-01").all()
 
 
-def test_unverified_hkex_library_disagreement_stays_unverified(dataset):
-    frame, _ = dataset
+def test_hkex_2021_04_06_is_secondary_confirmed_from_the_terminal_calendar(dataset):
+    frame, disagreements = dataset
     row = frame[(frame["exchange"] == "HKEX") & (frame["date"] == "2021-04-06")]
     assert len(row) == 1
-    assert row.iloc[0]["status"] == "unverified"
+    assert row.iloc[0]["status"] == "secondary-confirmed"
     assert row.iloc[0]["event_type"] == "full_closure"
+    assert row.iloc[0]["source_url"] == TIER_B_TERMINAL_SOURCE
+    hit = disagreements[
+        (disagreements["exchange"] == "HKEX")
+        & (disagreements["date"] == "2021-04-06")
+        & (disagreements["library"] == "pandas_market_calendars:HKEX")
+    ]
+    assert len(hit) == 1
+    assert hit.iloc[0]["resolution"] == "resolved"
+
+
+def test_krx_year_end_closures_not_on_the_terminal_calendar_stay_unverified(dataset):
+    frame, _ = dataset
+    for date in ("2022-12-30", "2026-12-31"):
+        matched = frame[(frame["exchange"] == "KRX") & (frame["date"] == date)]
+        assert len(matched) == 1, date
+        assert matched.iloc[0]["event_type"] == "full_closure"
+        assert matched.iloc[0]["status"] == "unverified"
+
+
+def test_tier_b_terminal_source_label_is_allowed_without_a_url():
+    assert source_is_allowed(TIER_B_TERMINAL_SOURCE)
+    assert source_is_allowed("https://www.nyse.com/markets/hours-calendars")
+    assert not source_is_allowed("licensed terminal notes, no url")
+    validate_rows(
+        pd.DataFrame(
+            [_row(source_url=TIER_B_TERMINAL_SOURCE, event_type="full_closure", open_time="", close_time="", status="secondary-confirmed")],
+            columns=COLUMNS,
+        )
+    )
+    with pytest.raises(ValueError, match="allowed tier-B source label"):
+        validate_rows(
+            pd.DataFrame(
+                [_row(source_url="not a url", event_type="full_closure", open_time="", close_time="", status="unverified")],
+                columns=COLUMNS,
+            )
+        )
+
+
+def test_full_closure_upgrades_skip_official_and_non_matching_rows():
+    rows = [
+        {
+            "exchange": "KRX",
+            "date": "2016-03-01",
+            "event_type": "full_closure",
+            "open_time": "",
+            "close_time": "",
+            "name": "Independence Movement Day",
+            "source_url": "https://example.test/library",
+            "status": "unverified",
+            "note": "",
+        },
+        {
+            "exchange": "NYSE",
+            "date": "2026-01-01",
+            "event_type": "full_closure",
+            "open_time": "",
+            "close_time": "",
+            "name": "New Year's Day",
+            "source_url": "https://www.nyse.com/markets/hours-calendars",
+            "status": "official",
+            "note": "",
+        },
+    ]
+    updated = apply_full_closure_upgrades(rows)
+    assert updated[0]["status"] == "secondary-confirmed"
+    assert updated[0]["source_url"] == TIER_B_TERMINAL_SOURCE
+    assert updated[0]["name"] == "Independence Movement Day"
+    assert updated[1]["status"] == "official"
+    assert "nyse.com" in updated[1]["source_url"]
+    assert ("HKEX", "2021-04-06", "full_closure") in FULL_CLOSURE_UPGRADES
 
 
 def test_staleness_warns_after_35_days():
@@ -367,7 +444,7 @@ def test_committed_metadata_is_not_stale():
     import json
 
     metadata = json.loads((ROOT_DATA / "metadata.json").read_text(encoding="utf-8"))
-    now = datetime(2026, 10, 11, tzinfo=timezone.utc)
+    now = datetime(2026, 10, 14, tzinfo=timezone.utc)
     assert metadata["staleness_threshold_days"] == 35
     assert staleness_warning(metadata["last_refreshed"], now=now) is False
     assert metadata["open_items"]

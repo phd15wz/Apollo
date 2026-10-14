@@ -26,7 +26,7 @@ Live fetches that fail stay in `metadata.json` under `open_items`. Official rows
 
 `event_type` is `full_closure`, `typhoon_closure`, `weather_closure`, `early_close`, `late_open`, `typhoon_partial`, or `other`. The three closure types have empty hours. `early_close`, `late_open`, and `typhoon_partial` must carry both `open_time` and `close_time`. `other` must have a name. `build.validate_rows` enforces this. The definitions are in `skills/exchange-calendar/SKILL.md`.
 
-`status` is `official`, `secondary-confirmed`, `unverified`, or `pending`. Scheduling code must read the file through `load_confirmed()` (`tools/exchange_calendar/query.py`), which keeps only `official` and `secondary-confirmed`. `load_confirmed(exchange="Nasdaq")` returns the confirmed NYSE rows.
+`status` is `official`, `secondary-confirmed`, `unverified`, or `pending`. Scheduling code must read the file through `load_confirmed()` (`tools/exchange_calendar/query.py`), which keeps only `official` and `secondary-confirmed`. `load_confirmed(exchange="Nasdaq")` returns the confirmed NYSE rows. `source_url` is an http(s) URL, or the allowed tier-B label `Bloomberg settlement calendar (licensed terminal), retrieved 2026-10-13`.
 
 `CME` rows are the `CMES` calendar. `JPX` rows are TSE (`XTKS`). Nasdaq is `ALIASES["Nasdaq"] = "NYSE"`. HKEX typhoon and weather rows exist only for fetched HKEX notices.
 
