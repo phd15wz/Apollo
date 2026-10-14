@@ -206,8 +206,8 @@ def test_spot_checks(dataset):
     assert rows("Nasdaq", "2001-09-11").empty
 
     cme_2001 = {
-        "2001-09-11": ("full_closure", "unverified"),
-        "2001-09-12": ("full_closure", "unverified"),
+        "2001-09-11": ("full_closure", "secondary-confirmed"),
+        "2001-09-12": ("full_closure", "secondary-confirmed"),
         "2001-09-13": ("other", "unverified"),
     }
     for date, (event_type, status) in cme_2001.items():
@@ -215,6 +215,8 @@ def test_spot_checks(dataset):
         assert len(matched) == 1, date
         assert matched.iloc[0]["event_type"] == event_type
         assert matched.iloc[0]["status"] == status
+        if date != "2001-09-13":
+            assert "mondovisione.com" in matched.iloc[0]["source_url"]
     assert rows("CME", "2001-09-14").empty
     christmas = rows("CME", "2001-12-25")
     assert len(christmas) == 1
@@ -601,6 +603,72 @@ def test_cme_2025_01_09_is_abbreviated_session_not_full_closure(dataset):
     assert "investor.cmegroup.com" in row["source_url"]
     assert row["open_time"] == ""
     assert row["close_time"] == ""
+
+
+def test_cme_isaac_round_dates(dataset):
+    frame, _ = dataset
+
+    def row(date):
+        matched = frame[(frame["exchange"] == "CME") & (frame["date"] == date)]
+        assert len(matched) == 1, date
+        return matched.iloc[0]
+
+    abbreviated = {
+        "2004-06-11": ("secondary-confirmed", "08:00", "mondovisione.com"),
+        "2007-01-02": ("secondary-confirmed", "08:15", "mondovisione.com"),
+        "2010-04-02": ("secondary-confirmed", "08:15", "ibtimes.com"),
+        "2012-04-06": ("secondary-confirmed", "08:15", "foxbusiness.com"),
+        "2015-04-03": ("secondary-confirmed", "45-minute", "vcpost.com"),
+        "2018-12-05": ("official", "08:30", "cmegroup.com"),
+        "2021-04-02": ("official", "abbreviated", "cmegroup.com"),
+        "2023-04-07": ("secondary-confirmed", "08:15", "ttm.financial"),
+        "2026-04-03": ("official", "abbreviated", "cmegroup.com"),
+    }
+    for date, (status, fragment, host) in abbreviated.items():
+        rec = row(date)
+        assert rec["event_type"] == "other", date
+        assert rec["status"] == status, date
+        assert fragment in rec["name"], date
+        assert host in rec["source_url"], date
+        assert rec["open_time"] == "" and rec["close_time"] == "", date
+        assert "equity index futures (Globex) hours only" in rec["note"], date
+
+    for date in ("2024-03-29", "2025-04-18"):
+        rec = row(date)
+        assert rec["event_type"] == "full_closure", date
+        assert rec["status"] == "official", date
+        assert rec["name"] == "Good Friday"
+        assert "cmegroup.com" in rec["source_url"]
+        assert rec["open_time"] == "" and rec["close_time"] == ""
+        assert "equity index futures (Globex) hours only" in rec["note"]
+
+    assert "cannontrading" not in row("2015-04-03")["source_url"]
+    assert "Ironbeam" not in row("2026-04-03")["note"]
+    assert "08:15" not in row("2021-04-02")["name"]
+    assert "08:15" not in row("2026-04-03")["name"]
+
+
+def test_cme_equity_index_scope_note_is_documented(dataset):
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[3]
+    needle = "equity index futures (Globex) hours only"
+    skill = (root / "skills" / "exchange-calendar" / "SKILL.md").read_text(encoding="utf-8")
+    coverage = (root / "docs" / "exchange-calendar-coverage.md").read_text(encoding="utf-8")
+    readme = (root / "tools" / "exchange_calendar" / "README.md").read_text(encoding="utf-8")
+    assert needle in skill
+    assert needle in coverage
+    assert needle in readme
+    assert "interest-rate, FX, or crypto" in skill
+    assert "interest-rate, FX, or crypto" in coverage
+    frame, _ = dataset
+    cme_notes = frame.loc[frame["exchange"] == "CME", "note"]
+    assert cme_notes.str.contains(needle, regex=False).any()
+    import json
+
+    metadata = json.loads((root / "data" / "exchange_calendar" / "metadata.json").read_text(encoding="utf-8"))
+    assert needle in metadata["windows"]["CME"]["note"]
+    assert any(needle in item for item in metadata["open_items"])
 
 
 def test_cme_broker_clocks_stay_1200_and_are_flagged(dataset):

@@ -2,7 +2,7 @@
 
 Builds `data/exchange_calendar/holidays.csv` for NYSE, CME, HKEX, SSE, JPX (Tokyo Stock Exchange), and KRX. Nasdaq is an alias of NYSE and is not stored.
 
-The base layer is `exchange_calendars` 4.13.2. `pandas_market_calendars` 5.5.0 is used only as an independent check where it has its own calendar. Official pages that were fetched on 2026-10-11 live in `official.py` and override the libraries. Coverage, including calendars that do not exist or do not agree, is in `docs/exchange-calendar-coverage.md`. Agents should follow `skills/exchange-calendar/SKILL.md`.
+The base layer is `exchange_calendars` 4.13.2. `pandas_market_calendars` 5.5.0 is used only as an independent check where it has its own calendar. Official pages that were fetched on 2026-10-11, plus CME notices fetched on 2026-10-14, live in `official.py` and override the libraries. Coverage, including calendars that do not exist or do not agree, is in `docs/exchange-calendar-coverage.md`. Agents should follow `skills/exchange-calendar/SKILL.md`.
 
 ## Run
 
@@ -28,7 +28,7 @@ Live fetches that fail stay in `metadata.json` under `open_items`. Official rows
 
 `status` is `official`, `secondary-confirmed`, `unverified`, or `pending`. Scheduling code must read the file through `load_confirmed()` (`tools/exchange_calendar/query.py`), which keeps only `official` and `secondary-confirmed`. `load_confirmed(exchange="Nasdaq")` returns the confirmed NYSE rows. `source_url` is an http(s) URL, or the allowed tier-B label `Bloomberg settlement calendar (licensed terminal), retrieved 2026-10-13`.
 
-`CME` rows are the `CMES` calendar. `JPX` rows are TSE (`XTKS`). Nasdaq is `ALIASES["Nasdaq"] = "NYSE"`. HKEX typhoon and weather rows exist only for fetched HKEX notices.
+`CME` rows describe CME equity index futures (Globex) hours only (`CMES`). They are not hours for interest-rate, FX, or crypto futures. `JPX` rows are TSE (`XTKS`). Nasdaq is `ALIASES["Nasdaq"] = "NYSE"`. HKEX typhoon and weather rows exist only for fetched HKEX notices.
 
 ## Tests
 

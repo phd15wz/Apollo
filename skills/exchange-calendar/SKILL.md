@@ -20,7 +20,7 @@ Read `docs/exchange-calendar-coverage.md` before treating a library as complete.
 | `status` | `official`, `secondary-confirmed`, `unverified`, or `pending` |
 | `note` | Provenance flags. Empty on most rows. Weaker-B market-wrap rows and CME clocks that still need a tier-A check are marked here. |
 
-`JPX` is the Tokyo Stock Exchange cash calendar (`XTKS`). `CME` is `exchange_calendars` `CMES` only, not every CME Group product.
+`JPX` is the Tokyo Stock Exchange cash calendar (`XTKS`). `CME` rows describe **CME equity index futures (Globex) hours only**, from `exchange_calendars` `CMES`. They are not a product calendar. Strategies on other CME products (interest-rate, FX, crypto futures) must not rely on these rows until a product column exists.
 
 Event types:
 
@@ -30,14 +30,14 @@ Event types:
 - `early_close` — the session closed early. `open_time` and `close_time` are the hours that traded.
 - `late_open` — the session opened late. `open_time` and `close_time` are the hours that traded.
 - `typhoon_partial` — HKEX traded only part of the day because of a typhoon or rainstorm. `open_time` and `close_time` are required and give the hours that traded. It is not a closure. No row uses it yet because no partial-day notice has been fetched.
-- `other` — anything else, such as a suspension that does not fit the types above. `name` is required and says what happened.
+- `other` — anything else, such as a suspension that does not fit the types above. `name` is required and says what happened. CME abbreviated US equity-index Globex sessions (days of mourning, some Good Fridays) use this type, matching 2025-01-09: they are not a full closure and not a simple `early_close` of every CME product. Hours stay empty; any fetched equity-index close is in `name`.
 
 `build.validate_rows` rejects unknown types, closures with hours, session rows without both hours, `other` rows without a name, and weather rows that are not backed by an official HKEX notice.
 
 Status:
 
 - `official` — a fetched exchange or regulator page states this fact. HKEX `typhoon_closure`, `weather_closure`, and `typhoon_partial` rows are allowed only at this status, and only with an `hkex.com.hk` notice URL.
-- `secondary-confirmed` — `exchange_calendars` and an independent `pandas_market_calendars` calendar agree, a fetched news article cites the exchange notice, or a licensed Bloomberg settlement calendar confirmed an existing unverified `full_closure`. The mirror calendars do not count. A weaker-B market-wrap sentence stays B and is flagged in `note`. A terminal source has no URL; the dataset stores the label `Bloomberg settlement calendar (licensed terminal), retrieved 2026-10-13`.
+- `secondary-confirmed` — `exchange_calendars` and an independent `pandas_market_calendars` calendar agree, a fetched news article cites the exchange notice, a fetched Mondovisione (or similar) copy of an exchange release, or a licensed Bloomberg settlement calendar confirmed an existing unverified `full_closure`. The mirror calendars do not count. A weaker-B market-wrap sentence stays B and is flagged in `note`. A terminal source has no URL; the dataset stores the label `Bloomberg settlement calendar (licensed terminal), retrieved 2026-10-13`. Mondovisione CME mirrors are never `official`.
 - `unverified` — one library only, the libraries disagree, or the only `pandas_market_calendars` calendar is a mirror. Remaining KRX year-end closures not on that settlement calendar, KRX late opens, and disagreed CME rows stay in this bucket.
 - `pending` — reserved for a future SSE or KRX year after an announcement says the schedule is not final. Do not create dated rows for a year that has not been announced.
 
@@ -47,7 +47,7 @@ History in the file starts at 2001-01-01 (more than ten years before 2026-10-11)
 
 1. Open `metadata.json`. If `last_refreshed` is more than 35 days before today, tell the user the file is stale and run the refresh below before relying on upcoming dates.
 2. Call `load_confirmed(exchange=...)` (or `for_exchange` on a loaded frame). Nasdaq must be queried through those helpers; do not filter the CSV for `Nasdaq`. `Nasdaq` resolves to `NYSE`. An unknown exchange name raises.
-3. No row does not by itself mean the market is open. Weekends are not stored. CME 2001-09-11 to 2001-09-13 have `unverified` rows, and every library calendar tested treats those dates as sessions. Do not present them as confirmed closures. NYSE has closure rows for 2001-09-11 to 2001-09-14; Nasdaq uses those same rows. HKEX can still be halted for weather after the file was built.
+3. No row does not by itself mean the market is open. Weekends are not stored. CME 2001-09-11 and 2001-09-12 are `secondary-confirmed` full closures from fetched Mondovisione copies of CME releases (tier B, not official). CME 2001-09-13 remains `unverified`. Every library calendar tested treats 2001-09-11 to 2001-09-14 as sessions. Do not present an `unverified` row as a confirmed closure, and do not describe Mondovisione as CME's own page. NYSE has closure rows for 2001-09-11 to 2001-09-14; Nasdaq uses those same rows. HKEX can still be halted for weather after the file was built. CME answers are equity-index Globex hours only.
 4. Quote `status` and `source_url` with the answer. Do not describe `unverified` as confirmed. Do not describe `secondary-confirmed` as the exchange's own notice.
 5. For HKEX weather, use a `typhoon_*` or `weather_closure` row only when `status` is `official`. A closure reconstructed from news stays `unverified` and must not be labeled with a weather type.
 
@@ -104,8 +104,8 @@ A library closure in a year whose fetched official list is complete, and that th
 - Do not call `get_calendar` without `start` and `end` and then claim a ten-year history. The default window is shorter.
 - Do not treat Nasdaq as a separate holiday calendar. It is an alias of NYSE. The CSV has no Nasdaq rows. Query Nasdaq only through `for_exchange` or `load_confirmed(exchange=...)`. The Nasdaq Trader page is only a check that Nasdaq's announced 2026 schedule equals NYSE.
 - Do not say HKEX typhoon history is complete. `typhoon_closure` rows start at 2016-08-02 and only cover fetched notices.
-- Do not answer a CME product question from the `CME` rows alone. Say the row is the `CMES` calendar and point at the coverage note.
+- Do not answer a CME product question from the `CME` rows alone. Those rows are CME equity index futures (Globex) hours only. Say so, and do not apply them to interest-rate, FX, or crypto futures until a product column exists. Point at the coverage note.
 - Do not add a typhoon or black-rainstorm row from a news article. Fetch the HKEX market-communications notice, or leave the row unverified and not typed as `typhoon_*` or `weather_closure`.
 - Do not type a rainstorm closure as `typhoon_closure`. Use `weather_closure`.
-- Do not present a reported CME 2001 closure as confirmed. Those rows are `unverified` because every tested CME calendar treats those dates as sessions.
+- Do not present CME 2001-09-13 as confirmed. 2001-09-11 and 2001-09-12 are `secondary-confirmed` from Mondovisione CME-release mirrors; they are not `official`. Every tested CME library calendar still treats 2001-09-11 to 2001-09-14 as sessions.
 - Do not mark HKEX half-days or KRX CSAT late opens as `official` without a fetched page that names the date. Circular CT/166/2025 names 2025-12-24, 2025-12-31, and 2026-02-16. The HKEX trading-hours page names no dates. The KRX pages were shells.

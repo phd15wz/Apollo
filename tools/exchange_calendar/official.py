@@ -50,6 +50,56 @@ CME_CARTER_MOURNING_URL = (
     "https://investor.cmegroup.com/news-releases/news-release-details/"
     "cme-group-announces-trading-hours-us-national-day-mourning-honor"
 )
+CME_BUSH_MOURNING_URL = (
+    "https://www.cmegroup.com/notices/clearing/2018/12/Chadv18-474.html"
+)
+CME_2021_GOOD_FRIDAY_URL = (
+    "https://www.cmegroup.com/tools-information/holiday-calendar/files/"
+    "2021-good-friday-advisory.pdf"
+)
+CME_2024_GOOD_FRIDAY_URL = (
+    "https://www.cmegroup.com/tools-information/holiday-calendar/files/"
+    "2024-good-friday-advisory.pdf"
+)
+CME_2025_GOOD_FRIDAY_URL = (
+    "https://www.cmegroup.com/tools-information/holiday-calendar/files/"
+    "2025/2025-good-friday-clearing-advisory.pdf"
+)
+CME_2026_GOOD_FRIDAY_URL = (
+    "https://www.cmegroup.com/tools-information/holiday-calendar/files/"
+    "2026/2026-good-friday-clearing-advisory.pdf"
+)
+MONDO_911_RESUME_URL = (
+    "https://mondovisione.com/news/"
+    "chicago-mercantile-exchange-inc-to-resume-trading-in-us-equity-index-products-no-2011124/"
+)
+MONDO_912_CLOSE_URL = (
+    "https://mondovisione.com/media-and-resources/news/"
+    "cme-cbot-cboe-chx-announce-coordinated-close-of-chicago-financial-markets-sep-12-2011124/"
+)
+MONDO_REAGAN_URL = (
+    "https://mondovisione.com/media-and-resources/news/cme-to-close-on-friday-june-11-2011124/"
+)
+MONDO_FORD_URL = (
+    "https://mondovisione.com/media-and-resources/news/"
+    "cme-national-day-of-mourning-for-former-president-gerald-r-ford-2011124/"
+)
+IBTIMES_2010_GOOD_FRIDAY_URL = "https://www.ibtimes.com/futures-rise-stronger-march-jobs-data-391155"
+FOX_2012_GOOD_FRIDAY_URL = (
+    "https://www.foxbusiness.com/markets/what-happens-when-jobs-friday-clashes-with-good-friday"
+)
+VCPOST_2015_GOOD_FRIDAY_URL = (
+    "https://www.vcpost.com/articles/54865/20150404/"
+    "u-s-treasuries-rally-equity-futures-drop-jobs-data.htm"
+)
+TTM_2023_GOOD_FRIDAY_URL = "https://ttm.financial/news/2325370961"
+CFTC_CME_06_120_URL = (
+    "https://www.cftc.gov/IndustryOversight/IndustryFilings/TradingOrganizationRules/13650"
+)
+CANNON_2015_GOOD_FRIDAY_URL = (
+    "https://www.cannontrading.com/tools/support-resistance-levels/"
+    "good-friday-holiday-futures-trading-schedule-2015/"
+)
 SEDAILY_KRX_2026_ELECTIONS_URL = (
     "https://en.sedaily.com/finance/2026/05/20/"
     "korea-exchange-to-close-on-local-election-day-constitution"
@@ -64,6 +114,16 @@ CME_CLOCK_NOTE = (
     "CMES close 12:00 kept; not changed from the library. Broker bulletins "
     "(Cannon/AMP/RJO, tier C) report 12:15 CT for equity-index. Needs a CME "
     "tier-A check. CME Group holiday pages returned HTTP 403 in this run."
+)
+CME_EQUITY_INDEX_SCOPE_NOTE = (
+    "CME rows describe CME equity index futures (Globex) hours only. "
+    "Do not use them for interest-rate, FX, or crypto futures until a product column exists."
+)
+CME_ABBREVIATED_OTHER_NOTE = (
+    "Typed other, matching 2025-01-09: an abbreviated US equity-index Globex "
+    "session is not a full closure and not a simple early_close of every CME product. "
+    "Hours stay empty; any fetched equity-index close is in name. "
+    + CME_EQUITY_INDEX_SCOPE_NOTE
 )
 
 # Years whose closure list on the fetched page is the full weekday closure set,
@@ -124,6 +184,11 @@ FETCH_CHECKS = (
     ),
     (HKEX_CT_166_2025_URL, "no afternoon trading session"),
     (CME_CARTER_MOURNING_URL, "8:30 a.m. CT"),
+    (CME_BUSH_MOURNING_URL, "8:30 a.m. Central Time"),
+    (CME_2021_GOOD_FRIDAY_URL, "abbreviated session"),
+    (CME_2024_GOOD_FRIDAY_URL, "March 29"),
+    (CME_2025_GOOD_FRIDAY_URL, "April 18"),
+    (CME_2026_GOOD_FRIDAY_URL, "abbreviated session"),
 )
 
 
@@ -779,22 +844,242 @@ def _cme_carter_mourning() -> OfficialEvent:
         note=(
             "Fetched CME Group investor press release 2024-12-30. Clearing "
             "notice 25-012 and cmegroup.com holiday pages returned HTTP 403 "
-            "in this run."
+            "in this run. "
+            + CME_EQUITY_INDEX_SCOPE_NOTE
         ),
     )
 
 
+def _cme_other(
+    date: str,
+    name: str,
+    url: str,
+    *,
+    status: str,
+    note: str,
+) -> OfficialEvent:
+    return OfficialEvent(
+        exchange="CME",
+        date=date,
+        event_type="other",
+        name=name,
+        source_url=url,
+        status=status,
+        note=note,
+    )
+
+
+def _cme_equity_index_events() -> list[OfficialEvent]:
+    """CME equity-index Globex facts from the 2026-10-14 Isaac round.
+
+    Abbreviated sessions use ``other``, matching 2025-01-09, because they are
+    not a full closure and not a venue-wide early_close. Official status is
+    used only when a cmegroup.com notice/advisory fetched in that run states
+    the closure or session. Mondovisione CME-release mirrors are
+    ``secondary-confirmed``. Broker pages are not used to confirm.
+    """
+    holiday_clearing = (
+        "Fetched CME Group clearing advisory 2026-10-14 (WebFetch; urllib of "
+        "cmegroup.com was 403). No ITD cycle; prices carried forward from the "
+        "prior session; trades submitted on the holiday clear the next "
+        "business day. Treated as a full Globex holiday. "
+        + CME_EQUITY_INDEX_SCOPE_NOTE
+    )
+    abbreviated_no_clock = (
+        "Fetched CME Group clearing advisory 2026-10-14 (WebFetch; urllib of "
+        "cmegroup.com was 403). Advisory states an abbreviated equity session "
+        "and does not print the Globex close clock. Broker 08:15 CT reports "
+        "were not used. "
+        + CME_ABBREVIATED_OTHER_NOTE
+    )
+    mondo = (
+        "Fetched Mondovisione copy of a CME release 2026-10-14. Mirror of a "
+        "CME announcement is tier B, not official. "
+        + CME_EQUITY_INDEX_SCOPE_NOTE
+    )
+    return [
+        _closure(
+            "CME",
+            "2001-09-11",
+            "September 11 attacks: CME open outcry and Globex suspended",
+            MONDO_911_RESUME_URL,
+            status="secondary-confirmed",
+            note=(
+                "Mondovisione CME release 2001-09-13: all CME markets remained "
+                "closed until 2001-09-13 morning; Globex equity halted 08:30 CT "
+                "on 2001-09-11; open outcry equity/ag did not trade that day. "
+                + mondo
+            ),
+        ),
+        _closure(
+            "CME",
+            "2001-09-12",
+            "September 12 2001: coordinated close of Chicago financial markets",
+            MONDO_912_CLOSE_URL,
+            status="secondary-confirmed",
+            note=(
+                "Mondovisione CME/CBOT/CBOE/CHX joint release 2001-09-12: open "
+                "outcry and electronic markets closed Wednesday 2001-09-12. "
+                + mondo
+            ),
+        ),
+        _cme_other(
+            "2004-06-11",
+            (
+                "National Day of Mourning for Ronald Reagan: US equity-index "
+                "abbreviated Globex session (ended 08:00 CT; reopen Sunday "
+                "17:00 CT 2004-06-13). Floor closed. Not a full Globex closure."
+            ),
+            MONDO_REAGAN_URL,
+            status="secondary-confirmed",
+            note="Mondovisione CME release 2004-06-07. " + mondo + " " + CME_ABBREVIATED_OTHER_NOTE,
+        ),
+        _cme_other(
+            "2007-01-02",
+            (
+                "National Day of Mourning for Gerald R. Ford: US equity-index "
+                "abbreviated Globex session (ended 08:15 CT; reopen 15:30 CT "
+                "for the next trade date). Floor equities closed. IR/FX closed "
+                "12:00 CT. Not a full equity-index Globex closure."
+            ),
+            MONDO_FORD_URL,
+            status="secondary-confirmed",
+            note=(
+                "Mondovisione CME notice 2006-12-29. CFTC filing CME 06-120 "
+                f"listing fetched at {CFTC_CME_06_120_URL} confirms a certified "
+                "hours change for 2007-01-02 but does not print 08:15. "
+                "Associated PDF rul122906cme001 was not found. "
+                + mondo
+                + " "
+                + CME_ABBREVIATED_OTHER_NOTE
+            ),
+        ),
+        _cme_other(
+            "2010-04-02",
+            (
+                "Good Friday: US equity-index abbreviated Globex session "
+                "(ended 08:15 CT / 09:15 ET). Not a full closure."
+            ),
+            IBTIMES_2010_GOOD_FRIDAY_URL,
+            status="secondary-confirmed",
+            note=(
+                "Fetched IBTimes 2026-10-14; Reuters wire (David Gaffen) reports "
+                "CME Globex abbreviated until 09:15 ET. "
+                + CME_ABBREVIATED_OTHER_NOTE
+            ),
+        ),
+        _cme_other(
+            "2012-04-06",
+            (
+                "Good Friday: US equity-index abbreviated Globex session "
+                "(ended 08:15 CT / 09:15 ET). Not a full closure."
+            ),
+            FOX_2012_GOOD_FRIDAY_URL,
+            status="secondary-confirmed",
+            note=(
+                "Fetched Fox Business 2026-10-14; pre-event schedule: equity "
+                "index futures Thursday evening open until Friday 09:15 ET. "
+                + CME_ABBREVIATED_OTHER_NOTE
+            ),
+        ),
+        _cme_other(
+            "2015-04-03",
+            (
+                "Good Friday: US equity-index abbreviated 45-minute Globex "
+                "session. Not a full closure."
+            ),
+            VCPOST_2015_GOOD_FRIDAY_URL,
+            status="secondary-confirmed",
+            note=(
+                "Fetched Reuters wire via VCPost 2026-10-14: S&P 500 E-mini in "
+                "a 45-minute abbreviated session on Good Friday. Close clock "
+                "not printed (usual Globex halt 08:15 CT after 08:30 ET jobs). "
+                f"Broker page {CANNON_2015_GOOD_FRIDAY_URL} is tier C and was "
+                "not used to confirm. Direct reuters.com returned 401. "
+                + CME_ABBREVIATED_OTHER_NOTE
+            ),
+        ),
+        _cme_other(
+            "2018-12-05",
+            (
+                "National Day of Mourning for George H.W. Bush: US equity-index "
+                "abbreviated session (ended 08:30 CT after overnight trade; "
+                "reopen for the 2018-12-06 trade date). Interest-rate products "
+                "fully closed. Other markets regular hours."
+            ),
+            CME_BUSH_MOURNING_URL,
+            status="official",
+            note=(
+                "Fetched CME Clearing Advisory 18-474 on 2026-10-14 (WebFetch). "
+                + CME_ABBREVIATED_OTHER_NOTE
+            ),
+        ),
+        _cme_other(
+            "2021-04-02",
+            (
+                "Good Friday: US equity-index abbreviated Globex session "
+                "(not settled; used 2021-04-01 settlement). Not a full closure."
+            ),
+            CME_2021_GOOD_FRIDAY_URL,
+            status="official",
+            note=abbreviated_no_clock,
+        ),
+        _cme_other(
+            "2023-04-07",
+            (
+                "Good Friday: US equity-index abbreviated Globex session "
+                "(ended 08:15 CT / 09:15 ET). Not a full closure."
+            ),
+            TTM_2023_GOOD_FRIDAY_URL,
+            status="secondary-confirmed",
+            note=(
+                "Fetched 2026-10-14: Dow Jones / MarketWatch story syndicated "
+                "on ttm.financial. CME stock-index futures trade until 09:15 ET. "
+                "marketwatch.com itself returned 401. "
+                + CME_ABBREVIATED_OTHER_NOTE
+            ),
+        ),
+        _closure(
+            "CME",
+            "2024-03-29",
+            "Good Friday",
+            CME_2024_GOOD_FRIDAY_URL,
+            status="official",
+            note=holiday_clearing,
+        ),
+        _closure(
+            "CME",
+            "2025-04-18",
+            "Good Friday",
+            CME_2025_GOOD_FRIDAY_URL,
+            status="official",
+            note=holiday_clearing,
+        ),
+        _cme_other(
+            "2026-04-03",
+            (
+                "Good Friday: US equity-index abbreviated Globex session "
+                "(not settled; used 2026-04-02 settlement). IR/FX/crypto "
+                "settled. Not a full equity-index closure."
+            ),
+            CME_2026_GOOD_FRIDAY_URL,
+            status="official",
+            note=abbreviated_no_clock,
+        ),
+        _cme_carter_mourning(),
+    ]
+
+
 WIKIPEDIA_9_11_URL = "https://en.wikipedia.org/wiki/September_11_attacks"
 
-# Reported CME closures that no fetched official page confirms. They are kept
-# as unverified rows so a reader can see them, but they never carry official or
-# secondary-confirmed status. Every library calendar here treats these dates as
-# sessions, so the disagreement is recorded in disagreements.csv.
+# Reported CME facts that no fetched official or tier-B page confirms. They are
+# kept as unverified rows so a reader can see them, but they never carry
+# official or secondary-confirmed status. Every library calendar here treats
+# 2001-09-13 as a session, so that disagreement is recorded in disagreements.csv.
 #
-# The fetched Wikipedia article says the stock exchanges did not open on
-# 2001-09-11 and remained closed until 2001-09-17. It does not name CME's
-# 2001-09-12 or 2001-09-13 notices, and the CME Group pages returned HTTP 403
-# to every request in this run.
+# 2001-09-11 and 2001-09-12 were upgraded in the 2026-10-14 round from
+# Mondovisione CME-release mirrors (secondary-confirmed). 2001-09-13 still has
+# no fetched source that states the equity-index-only close.
 def _unverified(
     exchange: str,
     date: str,
@@ -822,24 +1107,17 @@ def unverified_events() -> list[OfficialEvent]:
     return [
         _unverified(
             "CME",
-            "2001-09-11",
-            "full_closure",
-            "September 11 attacks: US markets suspended",
-            WIKIPEDIA_9_11_URL,
-        ),
-        _unverified(
-            "CME",
-            "2001-09-12",
-            "full_closure",
-            "September 12 2001: Chicago exchanges closed (reported, not fetched)",
-            WIKIPEDIA_9_11_URL,
-        ),
-        _unverified(
-            "CME",
             "2001-09-13",
             "other",
             "September 13 2001: equity-index products closed (reported, not fetched)",
             WIKIPEDIA_9_11_URL,
+            note=(
+                "Still unverified after the 2026-10-14 round. Mondovisione CME "
+                "release fetched for 2001-09-11/12 says non-equity floor/Globex "
+                "resume 2001-09-13 and equity-index no earlier than 2001-09-14; "
+                "it does not by itself type 2001-09-13 as an equity-index close. "
+                + CME_EQUITY_INDEX_SCOPE_NOTE
+            ),
         ),
         _unverified(
             "CME",
@@ -923,6 +1201,32 @@ RESOLVED_OFFICIAL_CONFLICTS: frozenset[tuple[str, str, str]] = frozenset(
         # The fetched CME press release describes an abbreviated equity-index session.
         ("CME", "2025-01-09", "exchange_calendars:CMES"),
         ("CME", "2025-01-09", "pandas_market_calendars:CME_Equity"),
+        # 2001-09-11/12: all three calendars treat the dates as sessions.
+        ("CME", "2001-09-11", "exchange_calendars:CMES"),
+        ("CME", "2001-09-11", "pandas_market_calendars:CME_Equity"),
+        ("CME", "2001-09-11", "pandas_market_calendars:CME Globex Equity"),
+        ("CME", "2001-09-12", "exchange_calendars:CMES"),
+        ("CME", "2001-09-12", "pandas_market_calendars:CME_Equity"),
+        ("CME", "2001-09-12", "pandas_market_calendars:CME Globex Equity"),
+        # Abbreviated equity-index sessions: CMES (and sometimes CME_Equity)
+        # still lists a full closure. Dataset follows the sourced ``other`` row.
+        ("CME", "2004-06-11", "exchange_calendars:CMES"),
+        ("CME", "2004-06-11", "pandas_market_calendars:CME_Equity"),
+        ("CME", "2007-01-02", "exchange_calendars:CMES"),
+        ("CME", "2007-01-02", "pandas_market_calendars:CME_Equity"),
+        ("CME", "2010-04-02", "exchange_calendars:CMES"),
+        ("CME", "2012-04-06", "exchange_calendars:CMES"),
+        ("CME", "2015-04-03", "exchange_calendars:CMES"),
+        ("CME", "2018-12-05", "exchange_calendars:CMES"),
+        ("CME", "2018-12-05", "pandas_market_calendars:CME_Equity"),
+        ("CME", "2021-04-02", "exchange_calendars:CMES"),
+        ("CME", "2023-04-07", "exchange_calendars:CMES"),
+        ("CME", "2026-04-03", "exchange_calendars:CMES"),
+        # Official Good Friday full closures: native calendars keep a session.
+        ("CME", "2024-03-29", "pandas_market_calendars:CME_Equity"),
+        ("CME", "2024-03-29", "pandas_market_calendars:CME Globex Equity"),
+        ("CME", "2025-04-18", "pandas_market_calendars:CME_Equity"),
+        ("CME", "2025-04-18", "pandas_market_calendars:CME Globex Equity"),
     }
 )
 
@@ -941,7 +1245,7 @@ def official_events() -> list[OfficialEvent]:
         + _sse_events()
         + _hkex_events()
         + _secondary_news_events()
-        + [_cme_carter_mourning()]
+        + _cme_equity_index_events()
     )
 
 
