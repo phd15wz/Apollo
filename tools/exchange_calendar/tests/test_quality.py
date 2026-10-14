@@ -622,7 +622,7 @@ def test_cme_isaac_round_dates(dataset):
         "2018-12-05": ("official", "08:30", "08:30", "cmegroup.com"),
         "2021-04-02": ("secondary-confirmed", "08:15", "08:15", "marketwatch.com"),
         "2023-04-07": ("secondary-confirmed", "08:15", "08:15", "marketwatch.com"),
-        "2026-04-03": ("unverified", "08:15", "08:15", "cmegroup.com"),
+        "2026-04-03": ("secondary-confirmed", "08:15", "08:15", "sifma.org"),
     }
     for date, (status, close_time, fragment, host) in abbreviated.items():
         rec = row(date)
@@ -651,9 +651,9 @@ def test_cme_isaac_round_dates(dataset):
     assert "Ironbeam" not in row("2026-04-03")["note"]
     assert "cmegroup.com" in row("2021-04-02")["note"]
     assert "9:15 a.m. Eastern" in row("2021-04-02")["note"]
-    assert "unverified" in row("2026-04-03")["name"]
-    assert "close_time 08:15 CT is unverified" in row("2026-04-03")["note"]
-    assert "load_confirmed()" in row("2026-04-03")["note"]
+    assert "cmegroup.com" in row("2026-04-03")["note"]
+    assert "8:15 a.m. CDT" in row("2026-04-03")["note"]
+    assert "GME" in row("2026-04-03")["note"]
 
 
 def test_cme_equity_index_scope_note_is_documented(dataset):

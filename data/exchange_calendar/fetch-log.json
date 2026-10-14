@@ -407,5 +407,21 @@
     "ok": false,
     "status": 401,
     "error": "HTTP 401 Unauthorized; Wayback copy fetched but no halt clock printed"
+  },
+  {
+    "url": "https://www.sifma.org/news/press-releases/sifma-fixed-income-market-close-recommendations-in-the-u-s-the-u-k-and-japan-for-good-friday-easter-monday-holidays-2026/",
+    "phrase": "GME Globex Equities will close at 8:15 a.m. CDT",
+    "ok": true,
+    "status": 200,
+    "error": "",
+    "method": "WebFetch"
+  },
+  {
+    "url": "https://mondovisione.com/media-and-resources/news/sifma-fixed-income-market-close-recommendations-in-the-us-the-uk-and-japan-2026320/",
+    "phrase": "GME Globex Equities will close at 8:15 a.m. CDT",
+    "ok": true,
+    "status": 200,
+    "error": "",
+    "method": "WebFetch"
   }
 ]

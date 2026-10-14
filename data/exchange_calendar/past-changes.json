@@ -1,15 +1,10 @@
 {
   "as_of": "2026-10-14",
-  "past_change_count": 2,
+  "past_change_count": 1,
   "past": {
     "added": [],
     "removed": [],
     "changed": [
-      {
-        "exchange": "CME",
-        "date": "2021-04-02",
-        "event_type": "early_close"
-      },
       {
         "exchange": "CME",
         "date": "2026-04-03",
