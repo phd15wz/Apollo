@@ -79,6 +79,8 @@ def fetch_official_pages(timeout: float = 25.0) -> list[dict]:
     """
     by_url: dict[str, list] = {}
     for event in list(official_events()) + nasdaq_check_events():
+        if "://" not in event.source_url:
+            continue
         by_url.setdefault(event.source_url, []).append(event)
     results = []
     for url, phrase in FETCH_CHECKS:

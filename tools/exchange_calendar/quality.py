@@ -10,6 +10,18 @@ from datetime import datetime, timezone
 import pandas as pd
 
 from tools.exchange_calendar.exchanges import ALIASES, EXCHANGES
+from tools.exchange_calendar.settlement_upgrades import TIER_B_TERMINAL_SOURCE
+
+# source_url is normally a page URL. Licensed terminal calendars have no URL;
+# the exact label below is the only non-URL provenance the quality checks allow.
+ALLOWED_NON_URL_SOURCES = frozenset({TIER_B_TERMINAL_SOURCE})
+
+
+def source_is_allowed(value: str) -> bool:
+    """True when source_url is an http(s) URL or an allowed tier-B source label."""
+    if value.startswith("https://") or value.startswith("http://"):
+        return True
+    return value in ALLOWED_NON_URL_SOURCES
 
 CONTENT_COLUMNS = [
     "exchange",
@@ -34,9 +46,11 @@ OPEN_ITEMS = [
         "News rows Isaac marked secondary-confirmed (and the 2026-06-03 local-election "
         "and 2026-07-17 Constitution Day closures those articles add) are "
         "secondary-confirmed. Weaker-B market-wrap rows stay B and are flagged in "
-        "note. Remaining KRX rows stay unverified. 2027 and later are omitted: the "
-        "exchange announces that year around December, and library projections through "
-        "2050 were not copied."
+        "note. Unverified KRX full_closure rows that match the licensed Bloomberg "
+        "settlement calendar (retrieved 2026-10-13) are secondary-confirmed. Year-end "
+        "KRX closures that calendar does not list, and KRX late opens, stay unverified. "
+        "2027 and later are omitted: the exchange announces that year around December, "
+        "and library projections through 2050 were not copied."
     ),
     (
         "KRX late opens (first business day of the year, and CSAT days, at 10:00 KST) "
@@ -86,8 +100,9 @@ OPEN_ITEMS = [
         "secondary-confirmed only where exchange_calendars XHKG and pandas_market_calendars "
         "HKEX agree. Early closes exist in exchange_calendars (12:00 HKT) and not in the "
         "native HKEX calendar, so those rows are unverified. 2021-04-06 is closed in "
-        "XHKG and open in native HKEX, with no official notice fetched, so it stays "
-        "unverified. Morning-only severe-weather sessions that both libraries comment out "
+        "XHKG and open in native HKEX; no official notice was fetched. The licensed "
+        "Bloomberg settlement calendar (retrieved 2026-10-13) confirms a full closure, "
+        "so the row is secondary-confirmed. Morning-only severe-weather sessions that both libraries comment out "
         "are not in the dataset. HKEX Severe Weather Trading, in effect from 23 September "
         "2024, is not modeled. HKEX typhoon_closure history starts at 2016-08-02 and is "
         "incomplete before 2016: no pre-2016 notice was fetched, and no typhoon notice "

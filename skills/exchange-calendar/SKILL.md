@@ -37,8 +37,8 @@ Event types:
 Status:
 
 - `official` — a fetched exchange or regulator page states this fact. HKEX `typhoon_closure`, `weather_closure`, and `typhoon_partial` rows are allowed only at this status, and only with an `hkex.com.hk` notice URL.
-- `secondary-confirmed` — `exchange_calendars` and an independent `pandas_market_calendars` calendar agree, or a fetched news article cites the exchange notice. The mirror calendars do not count. A weaker-B market-wrap sentence stays B and is flagged in `note`.
-- `unverified` — one library only, the libraries disagree, or the only `pandas_market_calendars` calendar is a mirror. KRX is in this bucket.
+- `secondary-confirmed` — `exchange_calendars` and an independent `pandas_market_calendars` calendar agree, a fetched news article cites the exchange notice, or a licensed Bloomberg settlement calendar confirmed an existing unverified `full_closure`. The mirror calendars do not count. A weaker-B market-wrap sentence stays B and is flagged in `note`. A terminal source has no URL; the dataset stores the label `Bloomberg settlement calendar (licensed terminal), retrieved 2026-10-13`.
+- `unverified` — one library only, the libraries disagree, or the only `pandas_market_calendars` calendar is a mirror. Remaining KRX year-end closures not on that settlement calendar, KRX late opens, and disagreed CME rows stay in this bucket.
 - `pending` — reserved for a future SSE or KRX year after an announcement says the schedule is not final. Do not create dated rows for a year that has not been announced.
 
 History in the file starts at 2001-01-01 (more than ten years before 2026-10-11) and has a closure in every year from 2001 through 2025 for each exchange. Upcoming rows stop at the last year the chosen library can build, except SSE and KRX, which stop at 2026.

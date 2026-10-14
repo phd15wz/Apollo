@@ -907,6 +907,9 @@ RESOLVED_OFFICIAL_CONFLICTS: frozenset[tuple[str, str, str]] = frozenset(
         ("HKEX", "2023-09-01", "exchange_calendars:XHKG"),
         ("HKEX", "2023-09-08", "exchange_calendars:XHKG"),
         ("HKEX", "2024-09-06", "pandas_market_calendars:HKEX"),
+        # HKEX 2021-04-06: XHKG closed, native HKEX open. Licensed Bloomberg
+        # settlement calendar confirms a full closure (tier B).
+        ("HKEX", "2021-04-06", "pandas_market_calendars:HKEX"),
         # HKEX half-days: native HKEX keeps a 16:00 close. Sourced rows are early_close 12:00.
         ("HKEX", "2024-12-31", "pandas_market_calendars:HKEX"),
         ("HKEX", "2025-01-28", "pandas_market_calendars:HKEX"),

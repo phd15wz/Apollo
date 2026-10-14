@@ -10,7 +10,11 @@ import pandas as pd
 import pandas_market_calendars as mcal
 
 from tools.exchange_calendar.exchanges import ALIASES, EXCHANGES, LIBRARY_SOURCE_URL, Exchange
-from tools.exchange_calendar.quality import unresolved_disagreements
+from tools.exchange_calendar.quality import source_is_allowed, unresolved_disagreements
+from tools.exchange_calendar.settlement_upgrades import (
+    FULL_CLOSURE_UPGRADES,
+    TIER_B_TERMINAL_SOURCE,
+)
 from tools.exchange_calendar.official import (
     COMPLETE_CLOSURE_YEARS,
     RESOLVED_OFFICIAL_CONFLICTS,
@@ -300,6 +304,23 @@ def _apply_official(rows: list[dict], events: list[OfficialEvent]) -> list[dict]
     return kept
 
 
+def apply_full_closure_upgrades(rows: list[dict]) -> list[dict]:
+    """Upgrade matching unverified full_closure rows to secondary-confirmed.
+
+    Skips official rows, non-full_closure types, and keys with no matching row.
+    Names, hours, and event types are left unchanged.
+    """
+    for row in rows:
+        key = (row["exchange"], row["date"], row["event_type"])
+        if key not in FULL_CLOSURE_UPGRADES:
+            continue
+        if row["status"] != "unverified" or row["event_type"] != "full_closure":
+            continue
+        row["status"] = "secondary-confirmed"
+        row["source_url"] = TIER_B_TERMINAL_SOURCE
+    return rows
+
+
 def validate_rows(frame: pd.DataFrame) -> None:
     """Reject rows the schema does not allow. Raises ValueError."""
     problems = []
@@ -324,6 +345,10 @@ def validate_rows(frame: pd.DataFrame) -> None:
     unnamed_other = frame[(frame["event_type"] == "other") & (frame["name"] == "")]
     if len(unnamed_other):
         problems.append("event_type other requires a name")
+    bad_sources = frame[~frame["source_url"].map(source_is_allowed)]
+    if len(bad_sources):
+        preview = bad_sources[["exchange", "date", "source_url"]].head(5).values.tolist()
+        problems.append(f"source_url must be an http(s) URL or an allowed tier-B source label: {preview}")
     if problems:
         raise ValueError("; ".join(problems))
 
@@ -490,7 +515,7 @@ def build_dataset(retrieved_at: str | None = None) -> tuple[pd.DataFrame, pd.Dat
             continue
         base = _base_rows(exchange)
         events = official.get(exchange.code, []) + unverified.get(exchange.code, [])
-        rows.extend(_apply_official(base, events))
+        rows.extend(apply_full_closure_upgrades(_apply_official(base, events)))
     for row in rows:
         row["retrieved_at"] = retrieved_at
     frame = pd.DataFrame(rows, columns=COLUMNS)
