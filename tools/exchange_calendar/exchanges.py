@@ -57,7 +57,9 @@ EXCHANGES: dict[str, Exchange] = {
         note=(
             "Dataset base is exchange_calendars CMES (alias CME). "
             "pandas_market_calendars has no single CME calendar. "
-            "CME_Equity and CME Globex Equity are the native calendars used for comparison."
+            "CME_Equity and CME Globex Equity are the native calendars used for comparison. "
+            "CME rows describe CME equity index futures (Globex) hours only; "
+            "do not use them for interest-rate, FX, or crypto futures until a product column exists."
         ),
     ),
     "HKEX": Exchange(

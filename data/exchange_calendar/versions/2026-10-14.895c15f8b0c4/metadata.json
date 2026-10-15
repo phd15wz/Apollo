@@ -1,0 +1,247 @@
+{
+  "dataset_version": "2026-10-14.895c15f8b0c4",
+  "last_refreshed": "2026-10-14T18:00:00Z",
+  "staleness_threshold_days": 35,
+  "history_start": "2001-01-01",
+  "row_count": 2394,
+  "counts_by_exchange": {
+    "CME": 291,
+    "HKEX": 442,
+    "JPX": 436,
+    "KRX": 419,
+    "NYSE": 326,
+    "SSE": 480
+  },
+  "counts_by_status": {
+    "official": 145,
+    "secondary-confirmed": 2009,
+    "unverified": 240
+  },
+  "counts_by_event_type": {
+    "early_close": 328,
+    "full_closure": 2008,
+    "late_open": 47,
+    "other": 2,
+    "typhoon_closure": 8,
+    "weather_closure": 1
+  },
+  "libraries": {
+    "exchange_calendars": "4.13.2",
+    "pandas_market_calendars": "5.5.0"
+  },
+  "cme_base_calendar": "CMES",
+  "official_snapshot_parsed_on": "2026-10-11",
+  "aliases": {
+    "Nasdaq": "NYSE"
+  },
+  "windows": {
+    "NYSE": {
+      "start": "2001-01-01",
+      "end": "2028-12-31",
+      "ec_code": "XNYS",
+      "note": "NYSE publishes 2026-2028 on its holiday page. The dataset includes those years."
+    },
+    "CME": {
+      "start": "2001-01-01",
+      "end": "2027-12-31",
+      "ec_code": "CMES",
+      "note": "Dataset base is exchange_calendars CMES (alias CME). pandas_market_calendars has no single CME calendar. CME_Equity and CME Globex Equity are the native calendars used for comparison. CME rows describe CME equity index futures (Globex) hours only; do not use them for interest-rate, FX, or crypto futures until a product column exists."
+    },
+    "HKEX": {
+      "start": "2001-01-01",
+      "end": "2027-12-31",
+      "ec_code": "XHKG",
+      "note": "Severe-weather rows are typed as typhoon_* only when an HKEX notice was fetched."
+    },
+    "SSE": {
+      "start": "2001-01-01",
+      "end": "2026-12-31",
+      "ec_code": "XSHG",
+      "note": "exchange_calendars records XSHG holidays only through 2026. 2027 is omitted."
+    },
+    "JPX": {
+      "start": "2001-01-01",
+      "end": "2027-12-31",
+      "ec_code": "XTKS",
+      "note": "Tokyo Stock Exchange cash market (TSE), calendar code XTKS / JPX."
+    },
+    "KRX": {
+      "start": "2001-01-01",
+      "end": "2026-12-31",
+      "ec_code": "XKRX",
+      "note": "pandas_market_calendars XKRX is a mirror of exchange_calendars, so agreement is not a second source. 2027 projections are omitted."
+    }
+  },
+  "weaker_b_rows": [
+    {
+      "exchange": "KRX",
+      "date": "2024-05-06",
+      "note": "weaker B: market-wrap sentence (no KRX statement cited); still secondary-confirmed per policy"
+    },
+    {
+      "exchange": "KRX",
+      "date": "2025-05-05",
+      "note": "weaker B: market-wrap sentence (no KRX statement cited); still secondary-confirmed per policy. Article lists Children's Day and Buddha's Birthday for Mon-Tue without assigning each date."
+    },
+    {
+      "exchange": "KRX",
+      "date": "2025-05-06",
+      "note": "weaker B: market-wrap sentence (no KRX statement cited); still secondary-confirmed per policy. Article lists Children's Day and Buddha's Birthday for Mon-Tue without assigning each date."
+    },
+    {
+      "exchange": "KRX",
+      "date": "2025-10-03",
+      "note": "weaker B: market-wrap sentence (no KRX statement cited); still secondary-confirmed per policy. Wrap: reopened after seven-day Chuseok holiday (Oct 3-9)."
+    },
+    {
+      "exchange": "KRX",
+      "date": "2025-10-06",
+      "note": "weaker B: market-wrap sentence (no KRX statement cited); still secondary-confirmed per policy. Wrap: reopened after seven-day Chuseok holiday (Oct 3-9)."
+    },
+    {
+      "exchange": "KRX",
+      "date": "2025-10-07",
+      "note": "weaker B: market-wrap sentence (no KRX statement cited); still secondary-confirmed per policy. Wrap: reopened after seven-day Chuseok holiday (Oct 3-9)."
+    },
+    {
+      "exchange": "KRX",
+      "date": "2025-10-08",
+      "note": "weaker B: market-wrap sentence (no KRX statement cited); still secondary-confirmed per policy. Wrap: reopened after seven-day Chuseok holiday (Oct 3-9)."
+    },
+    {
+      "exchange": "KRX",
+      "date": "2025-10-09",
+      "note": "weaker B: market-wrap sentence (no KRX statement cited); still secondary-confirmed per policy. Wrap: reopened after seven-day Chuseok holiday (Oct 3-9)."
+    },
+    {
+      "exchange": "KRX",
+      "date": "2026-02-16",
+      "note": "weaker B: market-wrap sentence (no KRX statement cited); still secondary-confirmed per policy. Wrap: three-day Lunar New Year break before Feb 19."
+    },
+    {
+      "exchange": "KRX",
+      "date": "2026-02-17",
+      "note": "weaker B: market-wrap sentence (no KRX statement cited); still secondary-confirmed per policy. Wrap: three-day Lunar New Year break before Feb 19."
+    },
+    {
+      "exchange": "KRX",
+      "date": "2026-02-18",
+      "note": "weaker B: market-wrap sentence (no KRX statement cited); still secondary-confirmed per policy. Wrap: three-day Lunar New Year break before Feb 19."
+    },
+    {
+      "exchange": "KRX",
+      "date": "2026-05-01",
+      "note": "weaker B: market-wrap sentence (no KRX statement cited); still secondary-confirmed per policy. Cites financial investment industry; names Labor Day May 1, Children's Day May 5, Buddha's Birthday May 25."
+    },
+    {
+      "exchange": "KRX",
+      "date": "2026-05-05",
+      "note": "weaker B: market-wrap sentence (no KRX statement cited); still secondary-confirmed per policy. Cites financial investment industry; names Labor Day May 1, Children's Day May 5, Buddha's Birthday May 25."
+    },
+    {
+      "exchange": "KRX",
+      "date": "2026-05-25",
+      "note": "weaker B: market-wrap sentence (no KRX statement cited); still secondary-confirmed per policy. Cites financial investment industry; names Buddha's Birthday May 25 (May 24 is Sunday)."
+    }
+  ],
+  "needs_cme_tier_a": [
+    "2021-04-02",
+    "2024-11-29",
+    "2024-12-24",
+    "2025-11-28",
+    "2026-04-03"
+  ],
+  "open_items": [
+    "KRX has no parsed official holiday list. open.krx.co.kr and the KIND market calendar returned page shells without dates. pandas_market_calendars XKRX is a mirror of exchange_calendars, so library agreement is not a second source. News rows Isaac marked secondary-confirmed (and the 2026-06-03 local-election and 2026-07-17 Constitution Day closures those articles add) are secondary-confirmed. Weaker-B market-wrap rows stay B and are flagged in note. Unverified KRX full_closure rows that match the licensed Bloomberg settlement calendar (retrieved 2026-10-13) are secondary-confirmed. Year-end KRX closures that calendar does not list, and KRX late opens, stay unverified. 2027 and later are omitted: the exchange announces that year around December, and library projections through 2050 were not copied.",
+    "KRX late opens (first business day of the year, and CSAT days, at 10:00 KST) come from exchange_calendars special offsets. The late_opens property on that calendar is empty even when the schedule open is 10:00. The pandas_market_calendars mirror shows 09:00. CSAT rows also shift the close (16:00 before 2016-08-01, 16:30 after). The last non-January late open in the 2001-2026 schedule is 2020-12-03; 2021-2026 have only the January late open. The 2021 CSAT day and 2025-11-13 were not added because no Korea Exchange page with dates could be read in this run. Those rows are unverified.",
+    "SSE 2027 is omitted. exchange_calendars 4.13.2 refuses dates after 2026. pandas_market_calendars SSE documents its post-2026 rules as guesses and those guesses were not copied. 2024-2026 weekday closures that match the fetched SSE pages are official.",
+    "CME rows describe CME equity index futures (Globex) hours only. Do not use them for interest-rate, FX, or crypto futures until a product column exists. The dataset uses exchange_calendars CMES. Native pandas_market_calendars CME_Equity and CME Globex Equity disagree on some full closures (several Good Fridays) and on early-close sets. Sourced overrides from the 2026-10-14 round: 2001-09-11 and 2001-09-12 are secondary-confirmed full closures from fetched Mondovisione CME-release mirrors; 2001-09-13 stays unverified. Short equity-index Globex sessions are ``early_close`` (previous-evening 17:00 CT open): official 2018-12-05 (08:30), 2021-04-02 and 2026-04-03 (08:15 clock unverified in the advisory); secondary-confirmed 2004-06-11 (08:00), 2007-01-02, 2010-04-02, 2012-04-06, 2015-04-03 (CNBC), 2023-04-07 (Wayback MarketWatch). 2025-01-09 stays ``other`` (same-day Globex reopen). Official Good Friday full closures from fetched CME clearing advisories: 2024-03-29 and 2025-04-18. Remaining disagreed CMES closures stay unverified, including 2027-03-26. The CME Group holiday page is product-specific and was not parsed into session rows. CMES and both native CME calendars treat 2001-09-11 through 2001-09-14 as sessions. The CME early-close clocks for 2026-11-27, 2026-12-24, and 2027-11-26 are 12:15 per CME Globex Equity and 12:00 per CMES and CME_Equity; they are unverified. The Juneteenth 2027 early close at 12:00 is unverified: the two native calendars show it and CMES does not. The same native pattern holds for 2026-06-19, and earlier Juneteenth dates were not checked and are not added. urllib of cmegroup.com returned HTTP 403 in this run; WebFetch retrieved several CME notices. Close clocks for 2024-11-29, 2024-12-24, and 2025-11-28 stay at the CMES 12:00 value and are unverified; they were not changed from broker (tier C) 12:15 reports and need a CME tier-A check.",
+    "Nasdaq is an alias of NYSE. Both libraries implement XNAS / NASDAQ as the NYSE calendar classes, and there is no independent Nasdaq holiday dataset. Queries for Nasdaq return NYSE rows. The Nasdaq Trader 2026 holiday page is still fetched as a check that Nasdaq's announced closures and 1:00 p.m. early closes equal NYSE 2026; a mismatch is logged loudly and is not written as Nasdaq rows.",
+    "HKEX regular holidays were not fetched as an annual calendar. Closures are secondary-confirmed only where exchange_calendars XHKG and pandas_market_calendars HKEX agree. Early closes exist in exchange_calendars (12:00 HKT) and not in the native HKEX calendar, so those rows are unverified. 2021-04-06 is closed in XHKG and open in native HKEX; no official notice was fetched. The licensed Bloomberg settlement calendar (retrieved 2026-10-13) confirms a full closure, so the row is secondary-confirmed. Morning-only severe-weather sessions that both libraries comment out are not in the dataset. HKEX Severe Weather Trading, in effect from 23 September 2024, is not modeled. HKEX typhoon_closure history starts at 2016-08-02 and is incomplete before 2016: no pre-2016 notice was fetched, and no typhoon notice between 2016 and 2024 is in the dataset unless it was fetched. A missing typhoon row does not mean the market traded that day.",
+    "Date checks on the SSE English schedule page and the SSE 2026 notice could not run in this snapshot: both timed out during the TLS handshake. Their SSE rows keep their snapshot status until a refresh can read the pages and check the dates.",
+    "Historical official archives before the pages in the official snapshot were not fetched. A refresh re-checks those URLs and rebuilds the library base. It does not scrape a new December SSE or KRX notice; that notice has to be added to tools/exchange_calendar/official.py after it is read.",
+    "HKEX half-days 2025-12-24, 2025-12-31, and 2026-02-16 are official from circular CT/166/2025 (no afternoon session) plus the securities trading-hours half-day session (09:30-12:00). The circular does not print 12:00. 2024-12-31 and 2025-01-28 are secondary-confirmed from news that names a half-day or shortened session but not the clock. Other HKEX early closes stay unverified. The trading-hours page still lists no dates. Live urllib of the CT/166/2025 PDF returns binary; phrase/date checks may not parse it.",
+    "CME native early closes outside CMES are not in the dataset. CME_Equity and CME Globex Equity show 12:00 or 12:15 closes on sessions that CMES treats as normal days, for example Juneteenth 2022 through 2026 and some Good Fridays. Those sessions have no row, so no disagreement is recorded for them. The 2027 Juneteenth row is the only one added.",
+    "CME 2001-09-11 and 2001-09-12 are secondary-confirmed from fetched Mondovisione copies of CME releases (tier B, not official). 2001-09-13 remains unverified: the resume notice says non-equity reopens that morning and equity-index no earlier than 2001-09-14, which does not by itself type 2001-09-13. The fetched Wikipedia article says the US stock exchanges remained closed until 2001-09-17, which does not match the reported reopening of securities markets on 2001-09-14. NYSE rows for 2001-09-14 stay full closures, because the libraries and the fetched article agree on the NYSE closure. Nasdaq queries use those NYSE rows. urllib of CME Group pages returned HTTP 403; several notices were read with WebFetch on 2026-10-14.",
+    "Lunch breaks on HKEX, SSE, JPX, and historical KRX are not columns. open_time and close_time are the session open and the session close in exchange-local time. A CME clock that falls on the previous local date is stored as YYYY-MM-DDTHH:MM.",
+    "Date check could not parse https://www.hkex.com.hk/-/media/HKEX-Market/Services/Circulars-and-Notices/Participant-and-Members-Circulars/SEHK/2025/ce_SEHK_CT_166_2025.pdf: none of the 3 dataset dates for it appear in a known layout. The page layout must be read by hand.",
+    "Live re-fetch failed for https://english.sse.com.cn/start/trading/schedule/: URLError: <urlopen error _ssl.c:983: The handshake operation timed out>. Official rows from the 2026-10-11 snapshot were kept.",
+    "Live re-fetch failed for https://www.sse.com.cn/disclosure/announcement/general/c/c_20251222_10802507.shtml: URLError: <urlopen error _ssl.c:983: The handshake operation timed out>. Official rows from the 2026-10-11 snapshot were kept.",
+    "Live re-fetch failed for https://www.hkex.com.hk/-/media/HKEX-Market/Services/Circulars-and-Notices/Participant-and-Members-Circulars/SEHK/2025/ce_SEHK_CT_166_2025.pdf: expected phrase not found (PDF or blocked body). Official rows from the 2026-10-11 snapshot were kept.",
+    "Live re-fetch failed for https://investor.cmegroup.com/news-releases/news-release-details/cme-group-announces-trading-hours-us-national-day-mourning-honor: HTTP Error 403: Forbidden. Official rows from the 2026-10-11 snapshot were kept.",
+    "Live re-fetch failed for https://www.cmegroup.com/tools-information/holiday-calendar/files/2021-good-friday-holiday-schedule.xls: WebFetch 500 then urllib HTTP 403 Forbidden (Akamai scrape block). Official rows from the 2026-10-11 snapshot were kept.",
+    "Live re-fetch failed for https://www.cftc.gov/filings/orgrules/rul122906cme001.pdf: HTTP 404: CFTC PDF for CME 06-120 not found. Official rows from the 2026-10-11 snapshot were kept.",
+    "Live re-fetch failed for https://www.reuters.com/article/business/futures-slump-following-jobs-data-disappointment-in-short-session-idUSKBN0MU0ZM/: HTTP 401 Unauthorized; Reuters copy fetched via VCPost instead. Official rows from the 2026-10-11 snapshot were kept.",
+    "Live re-fetch failed for https://www.marketwatch.com/story/why-good-friday-complicates-how-stock-market-traders-will-digest-march-jobs-report-c4e1e8a9: HTTP 401 Unauthorized; MarketWatch copy fetched via Wayback aacef663. Official rows from the 2026-10-11 snapshot were kept.",
+    "Live re-fetch failed for https://www.cmegroup.com/tools-information/holiday-calendar.html: urllib HTTP 403 Forbidden (Akamai scrape block). Official rows from the 2026-10-11 snapshot were kept."
+  ],
+  "fetch_failures": [
+    {
+      "url": "https://english.sse.com.cn/start/trading/schedule/",
+      "phrase": "Shanghai Stock Exchange",
+      "ok": false,
+      "status": null,
+      "error": "URLError: <urlopen error _ssl.c:983: The handshake operation timed out>"
+    },
+    {
+      "url": "https://www.sse.com.cn/disclosure/announcement/general/c/c_20251222_10802507.shtml",
+      "phrase": "2026",
+      "ok": false,
+      "status": null,
+      "error": "URLError: <urlopen error _ssl.c:983: The handshake operation timed out>"
+    },
+    {
+      "url": "https://www.hkex.com.hk/-/media/HKEX-Market/Services/Circulars-and-Notices/Participant-and-Members-Circulars/SEHK/2025/ce_SEHK_CT_166_2025.pdf",
+      "phrase": "no afternoon trading session",
+      "ok": false,
+      "status": 200,
+      "error": "expected phrase not found (PDF or blocked body)",
+      "dates_expected": 3,
+      "dates_matched": 0,
+      "dates_missing": [],
+      "dates_unparsed": true
+    },
+    {
+      "url": "https://investor.cmegroup.com/news-releases/news-release-details/cme-group-announces-trading-hours-us-national-day-mourning-honor",
+      "phrase": "8:30 a.m. CT",
+      "ok": false,
+      "status": 403,
+      "error": "HTTP Error 403: Forbidden"
+    },
+    {
+      "url": "https://www.cmegroup.com/tools-information/holiday-calendar/files/2021-good-friday-holiday-schedule.xls",
+      "phrase": "",
+      "ok": false,
+      "status": 403,
+      "error": "WebFetch 500 then urllib HTTP 403 Forbidden (Akamai scrape block)"
+    },
+    {
+      "url": "https://www.cftc.gov/filings/orgrules/rul122906cme001.pdf",
+      "phrase": "",
+      "ok": false,
+      "status": 404,
+      "error": "HTTP 404: CFTC PDF for CME 06-120 not found"
+    },
+    {
+      "url": "https://www.reuters.com/article/business/futures-slump-following-jobs-data-disappointment-in-short-session-idUSKBN0MU0ZM/",
+      "phrase": "45-minute",
+      "ok": false,
+      "status": 401,
+      "error": "HTTP 401 Unauthorized; Reuters copy fetched via VCPost instead"
+    },
+    {
+      "url": "https://www.marketwatch.com/story/why-good-friday-complicates-how-stock-market-traders-will-digest-march-jobs-report-c4e1e8a9",
+      "phrase": "",
+      "ok": false,
+      "status": 401,
+      "error": "HTTP 401 Unauthorized; MarketWatch copy fetched via Wayback aacef663"
+    },
+    {
+      "url": "https://www.cmegroup.com/tools-information/holiday-calendar.html",
+      "phrase": "",
+      "ok": false,
+      "status": 403,
+      "error": "urllib HTTP 403 Forbidden (Akamai scrape block)"
+    }
+  ]
+}

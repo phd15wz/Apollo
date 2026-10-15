@@ -162,5 +162,266 @@
     "ok": false,
     "status": 403,
     "error": "HTTP Error 403: Forbidden"
+  },
+  {
+    "url": "https://mondovisione.com/news/chicago-mercantile-exchange-inc-to-resume-trading-in-us-equity-index-products-no-2011124/",
+    "phrase": "suspended as of 8:30 a.m. yesterday",
+    "ok": true,
+    "status": 200,
+    "error": "",
+    "method": "WebFetch",
+    "dates_expected": 1,
+    "dates_matched": 1,
+    "dates_missing": [],
+    "dates_unparsed": false
+  },
+  {
+    "url": "https://mondovisione.com/media-and-resources/news/cme-cbot-cboe-chx-announce-coordinated-close-of-chicago-financial-markets-sep-12-2011124/",
+    "phrase": "markets will be closed Wed., Sep. 12",
+    "ok": true,
+    "status": 200,
+    "error": "",
+    "method": "WebFetch",
+    "dates_expected": 1,
+    "dates_matched": 1,
+    "dates_missing": [],
+    "dates_unparsed": false
+  },
+  {
+    "url": "https://mondovisione.com/media-and-resources/news/cme-to-close-on-friday-june-11-2011124/",
+    "phrase": "closing at 8 a.m.",
+    "ok": true,
+    "status": 200,
+    "error": "",
+    "method": "WebFetch",
+    "dates_expected": 1,
+    "dates_matched": 1,
+    "dates_missing": [],
+    "dates_unparsed": false
+  },
+  {
+    "url": "https://mondovisione.com/media-and-resources/news/cme-national-day-of-mourning-for-former-president-gerald-r-ford-2011124/",
+    "phrase": "close at 8:15 A.M.",
+    "ok": true,
+    "status": 200,
+    "error": "",
+    "method": "WebFetch",
+    "dates_expected": 1,
+    "dates_matched": 1,
+    "dates_missing": [],
+    "dates_unparsed": false
+  },
+  {
+    "url": "https://www.cmegroup.com/notices/clearing/2018/12/Chadv18-474.html",
+    "phrase": "8:30 a.m. Central Time",
+    "ok": true,
+    "status": 200,
+    "error": "urllib HTTP 403 after WebFetch succeeded",
+    "method": "WebFetch",
+    "dates_expected": 1,
+    "dates_matched": 1,
+    "dates_missing": [],
+    "dates_unparsed": false
+  },
+  {
+    "url": "https://www.cmegroup.com/tools-information/holiday-calendar/files/2021-good-friday-advisory.pdf",
+    "phrase": "abbreviated session",
+    "ok": true,
+    "status": 200,
+    "error": "urllib HTTP 403 after WebFetch succeeded",
+    "method": "WebFetch",
+    "dates_expected": 1,
+    "dates_matched": 1,
+    "dates_missing": [],
+    "dates_unparsed": false
+  },
+  {
+    "url": "https://www.cmegroup.com/tools-information/holiday-calendar/files/2024-good-friday-advisory.pdf",
+    "phrase": "March 29",
+    "ok": true,
+    "status": 200,
+    "error": "urllib HTTP 403 after WebFetch succeeded",
+    "method": "WebFetch",
+    "dates_expected": 1,
+    "dates_matched": 1,
+    "dates_missing": [],
+    "dates_unparsed": false
+  },
+  {
+    "url": "https://www.cmegroup.com/tools-information/holiday-calendar/files/2025/2025-good-friday-clearing-advisory.pdf",
+    "phrase": "April 18",
+    "ok": true,
+    "status": 200,
+    "error": "",
+    "method": "WebFetch",
+    "dates_expected": 1,
+    "dates_matched": 1,
+    "dates_missing": [],
+    "dates_unparsed": false
+  },
+  {
+    "url": "https://www.cmegroup.com/tools-information/holiday-calendar/files/2026/2026-good-friday-clearing-advisory.pdf",
+    "phrase": "abbreviated session",
+    "ok": true,
+    "status": 200,
+    "error": "",
+    "method": "WebFetch",
+    "dates_expected": 1,
+    "dates_matched": 1,
+    "dates_missing": [],
+    "dates_unparsed": false
+  },
+  {
+    "url": "https://www.ibtimes.com/futures-rise-stronger-march-jobs-data-391155",
+    "phrase": "abbreviated session on CME Globex until 9:15 a.m.",
+    "ok": true,
+    "status": 200,
+    "error": "",
+    "method": "WebFetch"
+  },
+  {
+    "url": "https://www.foxbusiness.com/markets/what-happens-when-jobs-friday-clashes-with-good-friday",
+    "phrase": "Friday at 9:15 a.m. ET",
+    "ok": true,
+    "status": 200,
+    "error": "",
+    "method": "WebFetch"
+  },
+  {
+    "url": "https://ttm.financial/news/2325370961",
+    "phrase": "CME stock-index futures will trade until 9:15 a.m. ET",
+    "ok": true,
+    "status": 200,
+    "error": "fetched; not a confirming source (tier C). Wayback MarketWatch used instead.",
+    "method": "WebFetch"
+  },
+  {
+    "url": "https://www.vcpost.com/articles/54865/20150404/u-s-treasuries-rally-equity-futures-drop-jobs-data.htm",
+    "phrase": "45-minute abbreviated session",
+    "ok": true,
+    "status": 200,
+    "error": "fetched; not a confirming source (not an established outlet). CNBC used instead.",
+    "method": "WebFetch"
+  },
+  {
+    "url": "https://www.cftc.gov/IndustryOversight/IndustryFilings/TradingOrganizationRules/13650",
+    "phrase": "CME No. 06-120",
+    "ok": true,
+    "status": 200,
+    "error": "listing confirms hours change; clock not printed",
+    "method": "WebFetch"
+  },
+  {
+    "url": "https://www.cmegroup.com/tools-information/holiday-calendar/files/2021-good-friday-holiday-schedule.xls",
+    "phrase": "",
+    "ok": false,
+    "status": 403,
+    "error": "WebFetch 500 then urllib HTTP 403 Forbidden (Akamai scrape block)"
+  },
+  {
+    "url": "https://www.cftc.gov/filings/orgrules/rul122906cme001.pdf",
+    "phrase": "",
+    "ok": false,
+    "status": 404,
+    "error": "HTTP 404: CFTC PDF for CME 06-120 not found"
+  },
+  {
+    "url": "https://www.reuters.com/article/business/futures-slump-following-jobs-data-disappointment-in-short-session-idUSKBN0MU0ZM/",
+    "phrase": "45-minute",
+    "ok": false,
+    "status": 401,
+    "error": "HTTP 401 Unauthorized; Reuters copy fetched via VCPost instead"
+  },
+  {
+    "url": "https://www.marketwatch.com/story/why-good-friday-complicates-how-stock-market-traders-will-digest-march-jobs-report-c4e1e8a9",
+    "phrase": "",
+    "ok": false,
+    "status": 401,
+    "error": "HTTP 401 Unauthorized; MarketWatch copy fetched via Wayback aacef663"
+  },
+  {
+    "url": "https://www.cmegroup.com/tools-information/holiday-calendar.html",
+    "phrase": "",
+    "ok": false,
+    "status": 403,
+    "error": "urllib HTTP 403 Forbidden (Akamai scrape block)"
+  },
+  {
+    "url": "https://www.cnbc.com/2015/04/03/weak-jobs-keeps-fed-at-bay-until-second-half.html",
+    "phrase": "finished at 9:15 a.m. ET",
+    "ok": true,
+    "status": 200,
+    "error": "",
+    "method": "WebFetch"
+  },
+  {
+    "url": "https://www.cnbc.com/2015/04/02/markets-reaction-to-jobs-number-could-be-quite-fierce-trader-warns.html",
+    "phrase": "until 9:15 a.m. EDT",
+    "ok": true,
+    "status": 200,
+    "error": "",
+    "method": "WebFetch"
+  },
+  {
+    "url": "https://web.archive.org/web/20230407154500/https://www.marketwatch.com/story/when-do-u-s-markets-reopen-after-easter-aacef663",
+    "phrase": "stock-index futures on the CME remained open until 9:15 a.m.",
+    "ok": true,
+    "status": 200,
+    "error": "",
+    "method": "WebFetch"
+  },
+  {
+    "url": "https://web.archive.org/web/20210405120000/https://www.marketwatch.com/story/dow-set-to-rise-over-200-points-in-stock-markets-first-trading-day-after-good-friday-jobs-report-11617621509",
+    "phrase": "trading in equity futures closed at 9:15 a.m. Eastern",
+    "ok": true,
+    "status": 200,
+    "error": "",
+    "method": "WebFetch"
+  },
+  {
+    "url": "https://www.marketwatch.com/story/dow-set-to-rise-over-200-points-in-stock-markets-first-trading-day-after-good-friday-jobs-report-11617621509",
+    "phrase": "9:15 a.m. Eastern",
+    "ok": false,
+    "status": 401,
+    "error": "HTTP 401 Unauthorized; MarketWatch copy fetched via Wayback 20210405120000"
+  },
+  {
+    "url": "https://www.cnbc.com/2026/04/03/jobs-report-march-2026-.html",
+    "phrase": "Stock market futures were slightly negative",
+    "ok": true,
+    "status": 200,
+    "error": "fetched; does not print 08:15 CT / 9:15 ET halt clock",
+    "method": "WebFetch"
+  },
+  {
+    "url": "https://web.archive.org/web/20260403140000/https://www.marketwatch.com/story/stock-futures-and-bitcoin-slip-treasury-yields-climb-as-hot-jobs-report-raises-more-questions-about-fed-rate-cuts-921ff82f",
+    "phrase": "holiday trading session",
+    "ok": true,
+    "status": 200,
+    "error": "fetched; does not print 08:15 CT / 9:15 ET halt clock",
+    "method": "WebFetch"
+  },
+  {
+    "url": "https://www.marketwatch.com/story/stock-futures-and-bitcoin-slip-treasury-yields-climb-as-hot-jobs-report-raises-more-questions-about-fed-rate-cuts-921ff82f",
+    "phrase": "",
+    "ok": false,
+    "status": 401,
+    "error": "HTTP 401 Unauthorized; Wayback copy fetched but no halt clock printed"
+  },
+  {
+    "url": "https://www.sifma.org/news/press-releases/sifma-fixed-income-market-close-recommendations-in-the-u-s-the-u-k-and-japan-for-good-friday-easter-monday-holidays-2026/",
+    "phrase": "GME Globex Equities will close at 8:15 a.m. CDT",
+    "ok": true,
+    "status": 200,
+    "error": "",
+    "method": "WebFetch"
+  },
+  {
+    "url": "https://mondovisione.com/media-and-resources/news/sifma-fixed-income-market-close-recommendations-in-the-us-the-uk-and-japan-2026320/",
+    "phrase": "GME Globex Equities will close at 8:15 a.m. CDT",
+    "ok": true,
+    "status": 200,
+    "error": "",
+    "method": "WebFetch"
   }
 ]
