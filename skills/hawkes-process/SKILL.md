@@ -51,13 +51,15 @@ Univariate branching ratio (Theorem 3.1): $n=\int_0^\infty\mu(s)\,ds$. Exponenti
 
 Multivariate: branching matrix $\Phi$ with $\Phi_{k,j}=A_{j,k}/\beta_k$ (expected type-$k$ offspring of one type-$j$ event, ch. 5 indexing). Stationary iff the **spectral radius** $\rho(\Phi)<1$. Near $\rho=1$ (or $n\approx 1$) estimates of $\alpha,\beta$ are poorly identified; report that and do not treat point estimates as sharp.
 
+Fitters emit `HawkesNonStationaryWarning` when the fitted $n$ (or $\rho(\Phi)$) is $\ge 1$. Simulators **raise** for $n\ge 1$ unless `allow_nonstationary=True`, in which case they warn and apply a finite-horizon event cap.
+
 ## Estimation (what to run)
 
 | Method | Use when | Cost / caveat |
 | --- | --- | --- |
 | **MLE (default)** `exp_mle` / `exp_mle_with_grad` | Fully observed event times | $O(N)$ for exponential (Ozaki recursion, eqs. 5.7–5.8). Matches `hawkeslib` likelihood when that package is available; do not depend on `hawkeslib` at runtime (its sampler uses removed `np.float`). |
 | MLE + Hessian | Need intervals | `asymptotic_se` uses observed information $-\nabla^2\ell$. Quote $\hat\theta\pm 1.96\,\mathrm{se}$. Check that $-\nabla^2\ell$ is positive definite. |
-| Power-law MLE `power_mle` | Long memory / aftershock-like decay | Likelihood is $O(N^2)$. Compare to exponential on the same window. |
+| Power-law MLE `power_mle` | Long memory / aftershock-like decay | Likelihood is $O(N^2)$ time with chunked $O(N)$ extra memory. Refuses $N>2000$ unless `allow_large=True`, same cap as EM. Compare to exponential on the same window. |
 | GMM `exp_gmm` | Interval-censored counts, or a check on MLE | Eqs. 7.11–7.13. Weight matrix is $\hat V^{-1}$ from **batch means** of the moment vector (counts are autocorrelated). Do **not** use $W=(gg^\top)^{-1}$ (rank 1). |
 | EM `exp_em` | Small $N$, branching interpretation | Textbook EM is $O(N^2)$ time (ch. 6). This toolkit refuses $N>2000$ unless `allow_large=True`. Prefer MLE. |
 | Bayesian (ch. 8) | Priors, full posterior, $n$ near 1 | Metropolis–Hastings on $(\lambda,\alpha,\beta)$ with the exponential log-likelihood as $p(\mathrm{data}\mid\theta)$. Not implemented as a sampler here; keep chains short and report posterior intervals, not only the MAP. |
@@ -77,7 +79,7 @@ Random time-change (Theorem 9.2): $t_i^*=\Lambda(t_i)$ is unit-rate Poisson iff 
 **Tied timestamps.** Matching engines batch at a tick (often 1 ms). A simple Hawkes process cannot have ties.
 
 - Prefer **aggregating** coincident prints at the same timestamp (one event, optional size mark) over jitter.
-- Uniform jitter of size equal to the tick **biases $\alpha$ and $\beta$**. Lorenzen (and related microstructure work) show that spreading ties looks like extra excitation plus faster decay. If you jitter, say so and treat kernel parameters as contaminated.
+- Filimonov and Sornette added uniform jitter to **second-resolution** timestamps so ties would look like a simple point process. Lorenzen criticised that jitter: it smooths the data and **biases $\alpha$ and $\beta$**. If you jitter, say so and treat kernel parameters as contaminated.
 - The finance chapter of the reference jittered stock trades; do not copy that as best practice.
 
 **Non-stationary baseline.** $\lambda$ is not constant across sessions, weekends, or event windows.
@@ -91,7 +93,7 @@ Random time-change (Theorem 9.2): $t_i^*=\Lambda(t_i)$ is unit-rate Poisson iff 
 
 **Branching ratio near 1.** $\hat n\to 1$ usually means a slow baseline, a missing mark, or a non-stationary window, not “infinite contagion”. Shorten the window, add a piecewise $\lambda$, or stop.
 
-**Confidence intervals.** Report Hessian-based SEs for MLE. GMM SEs come from the sandwich with the same $\hat V$ used as the weight. Simulation envelopes are not a substitute for SEs.
+**Confidence intervals.** Report Hessian-based SEs for MLE (`asymptotic_se`). This toolkit does **not** compute GMM sandwich standard errors. For GMM uncertainty, bootstrap the count bins or prefer MLE with a Hessian. Simulation envelopes are not a substitute for SEs.
 
 ## OKX order-flow recipe
 

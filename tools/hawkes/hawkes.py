@@ -46,6 +46,52 @@ from scipy.optimize import brentq, minimize
 
 EPS = 1e-8
 EM_N_WARN = 2000
+POWER_N_MAX = 2000
+
+
+class HawkesNonStationaryWarning(UserWarning):
+    """Branching ratio or spectral radius is >= 1."""
+
+
+def _warn_if_nonstationary(n, label="branching ratio"):
+    if not np.isfinite(n) or n >= 1.0:
+        warnings.warn(
+            f"Fitted Hawkes {label} is {n:.4g} >= 1; the process is not stationary.",
+            HawkesNonStationaryWarning,
+            stacklevel=3,
+        )
+
+
+def _event_cap_for_horizon(lam, T) -> int:
+    return int(np.ceil(max(2000.0, 100.0 * float(T) * max(float(lam), 1.0))))
+
+
+def _simulation_guard(n, lam, T, *, allow_nonstationary, kind="branching ratio"):
+    """Refuse explosive parameters, or warn and return a finite-horizon event cap."""
+    if np.isfinite(n) and n < 1.0:
+        return None
+    msg = f"Hawkes {kind} is {n:.4g} >= 1"
+    if not allow_nonstationary:
+        raise ValueError(
+            f"{msg}; refusing to simulate an explosive process. "
+            "Pass allow_nonstationary=True to run with a finite-horizon event cap."
+        )
+    warnings.warn(
+        f"{msg}; simulating with a horizon event cap.",
+        HawkesNonStationaryWarning,
+        stacklevel=3,
+    )
+    return _event_cap_for_horizon(lam, T)
+
+
+def _check_power_n(n_events, allow_large):
+    if n_events > POWER_N_MAX and not allow_large:
+        raise ValueError(
+            f"Power-law evaluation is O(N^2) and must not allocate an N×N matrix; "
+            f"N={n_events} exceeds {POWER_N_MAX}. "
+            "Pass allow_large=True to run a chunked O(N) memory path anyway, "
+            "or split the window / use the exponential MLE."
+        )
 
 
 def _as_theta(theta) -> np.ndarray:
@@ -154,26 +200,26 @@ def power_hawkes_compensator(t, history, theta):
     return float(lam * t + np.sum(k / (p - 1.0) * (c ** (1.0 - p) - (c + delta) ** (1.0 - p))))
 
 
-def _tril_deltas(times: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Pairwise ``t_i - t_j`` for ``j < i``, plus a boolean lower-triangular mask."""
-    n = times.size
-    delta = times[:, None] - times[None, :]
-    tril = np.tril(np.ones((n, n), dtype=bool), k=-1)
-    return delta, tril
-
-
-def power_hawkes_compensators(history, theta):
+def power_hawkes_compensators(history, theta, allow_large=False):
+    """Compensator at each event; chunked so peak extra memory is O(chunk × N)."""
     lam, k, c, p = _as_theta(theta)
     t = np.asarray(history, dtype=np.float64).reshape(-1)
     n = t.size
+    _check_power_n(n, allow_large)
     if n == 0:
         return t.copy()
-    delta, tril = _tril_deltas(t)
-    kernel_int = np.zeros((n, n), dtype=np.float64)
-    kernel_int[tril] = (k / (p - 1.0)) * (
-        c ** (1.0 - p) - (c + delta[tril]) ** (1.0 - p)
-    )
-    return lam * t + kernel_int.sum(axis=1)
+    out = lam * t.copy()
+    inv = k / (p - 1.0)
+    cpow = c ** (1.0 - p)
+    chunk = 256
+    for start in range(0, n, chunk):
+        end = min(start + chunk, n)
+        dt = t[start:end, None] - t[None, :]
+        valid = np.arange(n)[None, :] < np.arange(start, end)[:, None]
+        kernel = np.zeros_like(dt)
+        kernel[valid] = inv * (cpow - (c + dt[valid]) ** (1.0 - p))
+        out[start:end] += kernel.sum(axis=1)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -208,16 +254,23 @@ def exp_log_likelihood(times, T, theta):
     )
 
 
-def power_log_likelihood(times, T, theta):
+def power_log_likelihood(times, T, theta, allow_large=False):
+    """Power-law log-likelihood with O(N) extra memory (chunked pairwise sums)."""
     lam, k, c, p = _as_theta(theta)
     t = np.asarray(times, dtype=np.float64).reshape(-1)
     n = t.size
+    _check_power_n(n, allow_large)
     if n == 0:
         return float(-power_hawkes_compensator(T, t, theta))
-    delta, tril = _tril_deltas(t)
-    mu = np.zeros((n, n), dtype=np.float64)
-    mu[tril] = k / (c + delta[tril]) ** p
-    intensity = lam + mu.sum(axis=1)
+    intensity = np.full(n, lam, dtype=np.float64)
+    chunk = 256
+    for start in range(0, n, chunk):
+        end = min(start + chunk, n)
+        dt = t[start:end, None] - t[None, :]
+        valid = np.arange(n)[None, :] < np.arange(start, end)[:, None]
+        mu = np.zeros_like(dt)
+        mu[valid] = k / (c + dt[valid]) ** p
+        intensity[start:end] += mu.sum(axis=1)
     return float(np.log(intensity).sum() - power_hawkes_compensator(T, t, theta))
 
 
@@ -310,7 +363,9 @@ def exp_mle(times, T, theta_start=None):
         return -exp_log_likelihood(t, float(T), th)
 
     res = minimize(loss, theta_start, bounds=_exp_bounds(), method="L-BFGS-B")
-    return np.asarray(res.x, dtype=np.float64)
+    hat = np.asarray(res.x, dtype=np.float64)
+    _warn_if_nonstationary(branching_ratio_exp(hat))
+    return hat
 
 
 def exp_mle_with_grad(times, T, theta_start=None):
@@ -328,7 +383,9 @@ def exp_mle_with_grad(times, T, theta_start=None):
     res = minimize(
         loss, theta_start, bounds=_exp_bounds(), jac=grad, method="L-BFGS-B"
     )
-    return np.asarray(res.x, dtype=np.float64)
+    hat = np.asarray(res.x, dtype=np.float64)
+    _warn_if_nonstationary(branching_ratio_exp(hat))
+    return hat
 
 
 def asymptotic_se(times, T, theta):
@@ -346,8 +403,9 @@ def asymptotic_se(times, T, theta):
     return np.sqrt(diag)
 
 
-def power_mle(times, T, theta_start=None):
+def power_mle(times, T, theta_start=None, allow_large=False):
     t = np.asarray(times, dtype=np.float64)
+    _check_power_n(t.size, allow_large)
     if theta_start is None:
         theta_start = np.array([1.0, 1.0, 1.0, 2.0], dtype=np.float64)
     bounds = ((EPS, None), (EPS, None), (EPS, None), (1.0 + EPS, 20.0))
@@ -356,10 +414,12 @@ def power_mle(times, T, theta_start=None):
         n = branching_ratio_power(th)
         if not np.isfinite(n) or n >= 0.999:
             return 1e12
-        return -power_log_likelihood(t, float(T), th)
+        return -power_log_likelihood(t, float(T), th, allow_large=allow_large)
 
     res = minimize(loss, _as_theta(theta_start), bounds=bounds, method="L-BFGS-B")
-    return np.asarray(res.x, dtype=np.float64)
+    hat = np.asarray(res.x, dtype=np.float64)
+    _warn_if_nonstationary(branching_ratio_power(hat), label="power-law branching ratio")
+    return hat
 
 
 # ---------------------------------------------------------------------------
@@ -367,11 +427,15 @@ def power_mle(times, T, theta_start=None):
 # ---------------------------------------------------------------------------
 
 
-def simulate_exp_by_thinning(theta, T, seed=-1):
+def simulate_exp_by_thinning(theta, T, seed=-1, allow_nonstationary=False):
     """Ogata thinning for an exponential Hawkes process on ``[0, T]``."""
     if seed >= 0:
         np.random.seed(int(seed))
-    lam, alpha, beta = _as_theta(theta)
+    th = _as_theta(theta)
+    lam, alpha, beta = th
+    cap = _simulation_guard(
+        branching_ratio_exp(th), lam, T, allow_nonstationary=allow_nonstationary
+    )
     lamx = float(lam)
     times = []
     t = 0.0
@@ -386,14 +450,25 @@ def simulate_exp_by_thinning(theta, T, seed=-1):
             continue
         times.append(t)
         lamx += alpha
+        if cap is not None and len(times) >= cap:
+            raise RuntimeError(
+                f"non-stationary Hawkes exceeded event cap {cap} before T={T}"
+            )
     return np.asarray(times, dtype=np.float64)
 
 
-def simulate_power_by_thinning(theta, T, seed=-1):
+def simulate_power_by_thinning(theta, T, seed=-1, allow_nonstationary=False):
     if seed >= 0:
         np.random.seed(int(seed))
     th = _as_theta(theta)
     lam, k, c, p = th
+    cap = _simulation_guard(
+        branching_ratio_power(th),
+        lam,
+        T,
+        allow_nonstationary=allow_nonstationary,
+        kind="power-law branching ratio",
+    )
     jump = k / (c**p)
     lamx = float(lam)
     times = []
@@ -411,10 +486,16 @@ def simulate_power_by_thinning(theta, T, seed=-1):
         times.append(t)
         hist = np.asarray(times, dtype=np.float64)
         lamx += jump
+        if cap is not None and hist.size >= cap:
+            raise RuntimeError(
+                f"non-stationary Hawkes exceeded event cap {cap} before T={T}"
+            )
     return hist
 
 
-def simulate_inverse_compensator(theta, n_events, compensator=None, seed=None):
+def simulate_inverse_compensator(
+    theta, n_events, compensator=None, seed=None, allow_nonstationary=False
+):
     """Invert the compensator to obtain ``n_events`` arrival times (ch. 4).
 
     Uses only the filled prefix of the history at each step. The book's sample
@@ -423,6 +504,11 @@ def simulate_inverse_compensator(theta, n_events, compensator=None, seed=None):
     if seed is not None:
         np.random.seed(int(seed))
     th = _as_theta(theta)
+    n = branching_ratio_exp(th)
+    if compensator is not None and compensator is not exp_hawkes_compensator:
+        n = np.nan
+    else:
+        _simulation_guard(n, th[0], 1.0, allow_nonstationary=allow_nonstationary)
     if compensator is None:
         compensator = exp_hawkes_compensator
     history = np.empty(n_events, dtype=np.float64)
@@ -575,6 +661,7 @@ def exp_gmm(
         theta = np.asarray(res.x, dtype=np.float64)
         weight = gmm_weight_matrix(t, T, tau, lag, n_blocks=n_blocks)
         weight = weight / max(np.max(np.abs(weight)), 1.0)
+    _warn_if_nonstationary(branching_ratio_exp(theta))
     return theta
 
 
@@ -608,6 +695,7 @@ def exp_em(times, T, theta_start=None, iters=50, allow_large=False):
     theta = _as_theta(theta_start).copy()
     for _ in range(iters):
         theta = _exp_em_iter(t, float(T), theta)
+    _warn_if_nonstationary(branching_ratio_exp(theta))
     return theta
 
 
@@ -639,7 +727,7 @@ def _exp_em_iter(times, T, theta):
 # ---------------------------------------------------------------------------
 
 
-def time_rescaled_residuals(times, T, theta, kernel="exp"):
+def time_rescaled_residuals(times, T, theta, kernel="exp", allow_large=False):
     """Compensator increments; unit-rate Poisson iff the model is correct (Thm 9.2)."""
     t = np.asarray(times, dtype=np.float64)
     th = _as_theta(theta)
@@ -647,7 +735,7 @@ def time_rescaled_residuals(times, T, theta, kernel="exp"):
         lam = exp_hawkes_compensators(t, th)
         lam_T = exp_hawkes_compensator(float(T), t, th)
     else:
-        lam = power_hawkes_compensators(t, th)
+        lam = power_hawkes_compensators(t, th, allow_large=allow_large)
         lam_T = power_hawkes_compensator(float(T), t, th)
     stamps = np.concatenate([np.array([0.0]), lam, np.array([lam_T])])
     return np.diff(stamps)
@@ -709,13 +797,21 @@ def mutual_exp_hawkes_intensity(t, times, ids, theta_lam, theta_alpha, theta_bet
     return lam + contrib.sum(axis=0)
 
 
-def mutual_exp_simulate_by_thinning(theta, T, seed=None):
+def mutual_exp_simulate_by_thinning(theta, T, seed=None, allow_nonstationary=False):
     if seed is not None:
         np.random.seed(int(seed))
     lam, alpha, beta = theta
     lam = np.asarray(lam, dtype=np.float64).copy()
     alpha = np.asarray(alpha, dtype=np.float64)
     beta = np.asarray(beta, dtype=np.float64)
+    rho = spectral_radius(mutual_branching_matrix((lam, alpha, beta)))
+    cap = _simulation_guard(
+        rho,
+        float(np.max(lam)),
+        T,
+        allow_nonstationary=allow_nonstationary,
+        kind="spectral radius",
+    )
     lamx = lam.copy()
     times = []
     ids = []
@@ -735,6 +831,10 @@ def mutual_exp_simulate_by_thinning(theta, T, seed=None):
         times.append(t)
         ids.append(k)
         lamx = lamx + alpha[k]
+        if cap is not None and len(times) >= cap:
+            raise RuntimeError(
+                f"non-stationary Hawkes exceeded event cap {cap} before T={T}"
+            )
     return np.asarray(times, dtype=np.float64), np.asarray(ids, dtype=np.int64)
 
 
@@ -772,4 +872,8 @@ def mutual_exp_mle(times, ids, T, theta_start):
         return -mutual_exp_log_likelihood(t, d, float(T), lam, alpha, beta)
 
     res = minimize(loss, x0, method="Nelder-Mead", options={"maxiter": 4000})
-    return unflatten_theta(res.x, m), float(-res.fun)
+    hat = unflatten_theta(res.x, m)
+    _warn_if_nonstationary(
+        spectral_radius(mutual_branching_matrix(hat)), label="spectral radius"
+    )
+    return hat, float(-res.fun)

@@ -6,6 +6,7 @@ list of sample-code defects that this package fixes.
 """
 
 from tools.hawkes.hawkes import (
+    HawkesNonStationaryWarning,
     asymptotic_se,
     branching_ratio_exp,
     branching_ratio_power,
@@ -41,6 +42,7 @@ from tools.hawkes.hawkes import (
 )
 
 __all__ = [
+    "HawkesNonStationaryWarning",
     "asymptotic_se",
     "branching_ratio_exp",
     "branching_ratio_power",
