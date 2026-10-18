@@ -1,8 +1,8 @@
 # Hawkes process toolkit
 
-Simulation, O(N) exponential MLE, moments/GMM, and residual checks for linear Hawkes processes. Used by `skills/hawkes-process/SKILL.md`.
+Independent implementation of linear Hawkes formulas from Laub, Lee, and Taimre, *The Elements of Hawkes Processes* (Springer, 2021). Used by `skills/hawkes-process/SKILL.md`. The book's text and any sample programs that shipped with it are not in this repository.
 
-This is an original, corrected rewrite of ideas in the sample code for Laub, Lee, and Taimre, *The Elements of Hawkes Processes* (Springer, 2021). The book's chapters and original `hawkes.py` are not in this repository.
+Layout: `kernels.py`, `likelihood.py`, `simulate.py`, `moments.py`, `estimate.py`, `diagnostics.py`, `multivariate.py`.
 
 ## Run
 
@@ -15,6 +15,6 @@ python3 -m pytest tools/hawkes/tests -q
 
 `numpy` and `scipy` are required.
 
-## Layout
+## Tests
 
-`hawkes.py` is the toolkit. Tests in `tests/` lock the four sample-code fixes (variance 7.12, autocovariance gap, inverse-compensator history, GMM weight rank), plus score vs finite differences, MLE recovery, thinning rate $\lambda/(1-n)$, and power-law compensator vs quadrature.
+`tests/` checks eq. 7.12 variance, eq. 7.13 bin gap, time-change history prefix, GMM batch-means weights, score vs finite differences, MLE recovery, thinning rate $\lambda/(1-n)$, power-law compensator vs quadrature, EM/power-law size caps, and non-stationary guards.

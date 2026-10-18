@@ -1,150 +1,148 @@
-"""Regression tests for defects in the book's sample ``hawkes.py``."""
+"""Formulas that disagree with a widely circulated incorrect sample implementation."""
 
 import numpy as np
 import pytest
 from scipy.optimize import fsolve
 
-from tools.hawkes.hawkes import (
-    empirical_moments,
-    exp_gmm,
-    exp_moments,
-    gmm_weight_matrix,
-    simulate_exp_by_thinning,
-    simulate_inverse_compensator,
+from tools.hawkes import (
+    ExpKernel,
+    batch_mean_weights,
+    count_bin_moments,
+    exponential_count_moments,
+    fit_exponential_gmm,
+    simulate_by_time_change,
+    simulate_thinning,
 )
 
-THETA = np.array([1.0, 0.6, 1.0])
+TRUE = ExpKernel(1.0, 0.6, 1.0)
 
 
-def _orig_exp_moments(theta, tau, lag):
-    """Variance and autocov as in the book's sample (incorrect)."""
-    lam, alpha, beta = theta
-    kappa = beta - alpha
-    delta = lag * tau
-    mean = (lam * beta / kappa) * tau
-    var = (lam * beta / kappa) * (
-        tau * (beta / kappa)
-        + (1 - beta / kappa) * ((1 - np.exp(-kappa * tau)) / kappa)
+def _incorrect_count_moments(baseline, jump, decay, width, lag):
+    """Variance uses decay/kappa; autocov uses lag*width (both disagree with 7.12–7.13)."""
+    kappa = decay - jump
+    gap = lag * width
+    mean = (baseline * decay / kappa) * width
+    var = (baseline * decay / kappa) * (
+        width * (decay / kappa)
+        + (1 - decay / kappa) * ((1 - np.exp(-kappa * width)) / kappa)
     )
     auto = (
-        lam
-        * beta
-        * alpha
-        * (2 * beta - alpha)
-        * (np.exp(-kappa * tau) - 1) ** 2
+        baseline
+        * decay
+        * jump
+        * (2 * decay - jump)
+        * (np.exp(-kappa * width) - 1) ** 2
         / (2 * kappa**4)
-    ) * np.exp(-kappa * delta)
+    ) * np.exp(-kappa * gap)
     return np.array([[mean], [var], [auto]])
 
 
-def _book_compensator_no_slice(t, history, theta):
-    """Book sample: sums every entry of ``history``, including uninitialised ones."""
+def _naive_compensator(t, arrivals, baseline, jump, decay):
+    """Sums every slot of ``arrivals``, including unfilled entries."""
     if t <= 0:
         return 0.0
-    lam, alpha, beta = theta
-    acc = lam * t
-    for t_i in history:
-        acc += (alpha / beta) * (1.0 - np.exp(-beta * (t - t_i)))
-    return acc
+    total = baseline * t
+    for stamp in arrivals:
+        total += (jump / decay) * (1.0 - np.exp(-decay * (t - stamp)))
+    return total
 
 
-def _orig_inverse_compensator(theta, n_events, seed):
-    """Sample-code inverse compensator: Lambda(t_prev, full empty buffer)."""
+def _time_change_on_full_buffer(baseline, jump, decay, n_events, seed):
     np.random.seed(seed)
-    # Sample code used np.empty; zeros reproduce the usual uninitialised buffer.
-    history = np.zeros(n_events, dtype=np.float64)
+    arrivals = np.zeros(n_events, dtype=np.float64)
     target = -np.log(np.random.random())
-    history[0] = fsolve(
-        lambda x: _book_compensator_no_slice(x[0], history[:0], theta) - target,
+    arrivals[0] = fsolve(
+        lambda x: _naive_compensator(x[0], arrivals[:0], baseline, jump, decay) - target,
         1.0,
     )[0]
-    t_prev = history[0]
+    prev = arrivals[0]
     for i in range(1, n_events):
-        increment = -np.log(np.random.random())
-        lam_i = _book_compensator_no_slice(t_prev, history, theta)
-        history[i] = fsolve(
-            lambda x, prev=lam_i, filled=i: _book_compensator_no_slice(
-                x[0], history[:filled], theta
+        step = -np.log(np.random.random())
+        at_prev = _naive_compensator(prev, arrivals, baseline, jump, decay)
+        arrivals[i] = fsolve(
+            lambda x, prev_val=at_prev, filled=i: _naive_compensator(
+                x[0], arrivals[:filled], baseline, jump, decay
             )
-            - prev
-            - increment,
-            t_prev + 1.0,
+            - prev_val
+            - step,
+            prev + 1.0,
         )[0]
-        t_prev = history[i]
-    return history
+        prev = arrivals[i]
+    return arrivals
 
 
-def test_exp_moments_variance_matches_eq_712_not_sample_code():
-    tau = 1.0
-    ours = float(exp_moments(THETA, tau, lag=5)[1, 0])
-    orig = float(_orig_exp_moments(THETA, tau, lag=5)[1, 0])
-    lam, alpha, beta = THETA
-    kappa = beta - alpha
-    eq_712 = (lam * beta / kappa) * (
-        tau * (beta**2 / kappa**2)
-        + (1 - beta**2 / kappa**2) * ((1 - np.exp(-kappa * tau)) / kappa)
+def test_count_variance_matches_eq_712_not_decay_over_kappa():
+    width = 1.0
+    ours = float(exponential_count_moments(TRUE, width, lag=5)[1, 0])
+    wrong = float(_incorrect_count_moments(1.0, 0.6, 1.0, width, lag=5)[1, 0])
+    kappa = TRUE.decay - TRUE.jump
+    eq_712 = (TRUE.baseline * TRUE.decay / kappa) * (
+        width * (TRUE.decay**2 / kappa**2)
+        + (1 - TRUE.decay**2 / kappa**2) * ((1 - np.exp(-kappa * width)) / kappa)
     )
     assert ours == eq_712
-    assert abs(orig - eq_712) > 1.0
+    assert abs(wrong - eq_712) > 1.0
 
-    times = simulate_exp_by_thinning(THETA, 40000.0, seed=0)
-    counts = np.histogram(times, bins=np.arange(0.0, 40000.0 + 1e-12, tau))[0]
+    arrivals = simulate_thinning(TRUE, 40000.0, seed=0)
+    counts = np.histogram(arrivals, bins=np.arange(0.0, 40000.0 + 1e-12, width))[0]
     emp = float(counts.var())
     assert abs(emp - eq_712) < 0.25
-    assert abs(emp - orig) > 0.8
+    assert abs(emp - wrong) > 0.8
 
 
-def test_exp_moments_autocov_uses_gap_not_lag_times_tau():
-    tau, lag = 1.0, 2
-    ours = float(exp_moments(THETA, tau, lag)[2, 0])
-    orig = float(_orig_exp_moments(THETA, tau, lag)[2, 0])
-    lam, alpha, beta = THETA
-    kappa = beta - alpha
-    c = alpha * beta * lam * (2 * beta - alpha) / (2 * kappa**2)
-    gap_corrected = (
-        c
-        * (1 - np.exp(-kappa * tau)) ** 2
-        / kappa**2
-        * np.exp(-kappa * (lag - 1) * tau)
+def test_count_autocov_uses_interior_gap_not_lag_times_width():
+    width, lag = 1.0, 2
+    ours = float(exponential_count_moments(TRUE, width, lag)[2, 0])
+    wrong = float(_incorrect_count_moments(1.0, 0.6, 1.0, width, lag)[2, 0])
+    kappa = TRUE.decay - TRUE.jump
+    prefactor = TRUE.jump * TRUE.decay * TRUE.baseline * (2 * TRUE.decay - TRUE.jump) / (
+        2 * kappa**2
     )
-    assert abs(ours - gap_corrected) < 1e-12
-    assert abs(orig - gap_corrected) > 0.3
+    gap_formula = (
+        prefactor
+        * (1 - np.exp(-kappa * width)) ** 2
+        / kappa**2
+        * np.exp(-kappa * (lag - 1) * width)
+    )
+    assert abs(ours - gap_formula) < 1e-12
+    assert abs(wrong - gap_formula) > 0.3
 
-    times = simulate_exp_by_thinning(THETA, 40000.0, seed=1)
-    emp = float(empirical_moments(times, 40000.0, tau, lag)[2, 0])
-    assert abs(emp - gap_corrected) < 0.15
-    assert abs(emp - orig) > 0.2
+    arrivals = simulate_thinning(TRUE, 40000.0, seed=1)
+    emp = float(count_bin_moments(arrivals, 40000.0, width, lag)[2, 0])
+    assert abs(emp - gap_formula) < 0.15
+    assert abs(emp - wrong) > 0.2
 
 
 @pytest.mark.filterwarnings("ignore:The iteration is not making good progress")
-def test_inverse_compensator_uses_filled_history_only():
+def test_time_change_simulation_uses_filled_prefix_only():
     n_events = 120
-    orig_rates = []
-    fixed_rates = []
+    naive_rates = []
+    ours_rates = []
     for seed in range(6):
         with np.errstate(over="ignore", invalid="ignore"):
-            orig = _orig_inverse_compensator(THETA, n_events, seed)
-        orig_rates.append(n_events / orig[-1])
-        fixed = simulate_inverse_compensator(THETA, n_events, seed=seed)
-        fixed_rates.append(n_events / fixed[-1])
-    theory = 2.5
-    assert np.mean(orig_rates) < 0.5
-    assert abs(np.mean(fixed_rates) - theory) < 0.35
+            naive = _time_change_on_full_buffer(1.0, 0.6, 1.0, n_events, seed)
+        naive_rates.append(n_events / naive[-1])
+        ours = simulate_by_time_change(TRUE, n_events, seed=seed)
+        ours_rates.append(n_events / ours[-1])
+    assert np.mean(naive_rates) < 0.5
+    assert abs(np.mean(ours_rates) - 2.5) < 0.35
 
 
-def test_gmm_weight_matrix_is_full_rank():
-    times = simulate_exp_by_thinning(THETA, 20000.0, seed=2)
-    T = 20000.0
-    tau, lag = 1.0, 2
-    emp = empirical_moments(times, T, tau, lag)
-    g = emp - exp_moments(THETA, tau, lag)
-    s = g @ g.T
-    assert np.linalg.matrix_rank(s) == 1
-    assert np.linalg.cond(s) > 1e10
+def test_gmm_weight_is_full_rank():
+    arrivals = simulate_thinning(TRUE, 20000.0, seed=2)
+    horizon, width, lag = 20000.0, 1.0, 2
+    emp = count_bin_moments(arrivals, horizon, width, lag)
+    g = emp - exponential_count_moments(TRUE, width, lag)
+    outer = g @ g.T
+    assert np.linalg.matrix_rank(outer) == 1
+    assert np.linalg.cond(outer) > 1e10
 
-    weight = gmm_weight_matrix(times, T, tau, lag, n_blocks=40)
+    weight = batch_mean_weights(arrivals, horizon, width, lag, n_blocks=40)
     assert np.linalg.matrix_rank(weight) == 3
     assert np.linalg.cond(weight) < 1e8
 
-    fitted = exp_gmm(times, T, tau=tau, lag=lag, n_blocks=30, iters=1)
-    assert fitted[0] > 0 and fitted[1] > 0 and fitted[2] > fitted[1]
+    fitted = fit_exponential_gmm(
+        arrivals, horizon, width=width, lag=lag, n_blocks=30, rounds=1
+    )
+    vec = fitted.params
+    assert vec[0] > 0 and vec[1] > 0 and vec[2] > vec[1]
