@@ -1518,18 +1518,41 @@ async def test_time_poll_stays_off_message_path_and_guards() -> None:
             await asyncio.sleep(0.01)
         assert started
         first_fetch = started[0]
-        t0 = time.monotonic()
-        for trade_id in range(1, 4):
-            await sock.push(_trade_push(INST, trade_id))
-        got = 0
-        seen: list = []
-        while got < 3:
-            msg = await asyncio.wait_for(anext(stream), timeout=0.1)
-            seen.append(msg)
-            if msg.kind == "data":
-                got += 1
-        assert time.monotonic() - t0 < 0.25
-        assert stream.is_stale("trades", INST) is False
+        max_delay = 0.0
+        probing = True
+
+        async def probe() -> None:
+            nonlocal max_delay
+            loop = asyncio.get_running_loop()
+            last = loop.time()
+            while probing:
+                await asyncio.sleep(0.03)
+                now = loop.time()
+                max_delay = max(max_delay, now - last - 0.03)
+                last = now
+
+        probe_task = asyncio.create_task(probe())
+        try:
+            t0 = time.monotonic()
+            for trade_id in range(1, 4):
+                await sock.push(_trade_push(INST, trade_id))
+            got = 0
+            seen: list = []
+            while got < 3:
+                msg = await asyncio.wait_for(anext(stream), timeout=0.1)
+                seen.append(msg)
+                if msg.kind == "data":
+                    got += 1
+            assert time.monotonic() - t0 < 0.25
+            assert stream.is_stale("trades", INST) is False
+            assert max_delay < 0.08
+        finally:
+            probing = False
+            probe_task.cancel()
+            try:
+                await probe_task
+            except asyncio.CancelledError:
+                pass
         first_fail = first_fetch + 0.45
         while time.monotonic() < first_fail and stream._sync.failures < 1:
             await asyncio.sleep(0.02)
