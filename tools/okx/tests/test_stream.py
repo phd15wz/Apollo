@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import functools
+import inspect
 import json
 from pathlib import Path
 
@@ -20,11 +22,11 @@ from tools.okx.types import Trade
 
 
 def run_async(func):
+    @functools.wraps(func)
     def wrapper(*args, **kwargs):
         return asyncio.run(func(*args, **kwargs))
 
-    wrapper.__name__ = func.__name__
-    wrapper.__doc__ = func.__doc__
+    wrapper.__signature__ = inspect.signature(func)
     return wrapper
 
 
@@ -348,7 +350,7 @@ async def test_book_seq_break_resyncs() -> None:
         await _wait_sent(sock, lambda s: "subscribe" in s)
         await sock.push(_book_push(INST, action="snapshot", bids=bids, asks=asks, seq=10, prev=-1, checksum=0))
         await asyncio.wait_for(anext(stream), timeout=1)
-        await sock.push(_book_push(INST, action="update", bids=bids, asks=asks, seq=20, prev=99, checksum=0))
+        await sock.push(_book_push(INST, action="update", bids=bids, asks=asks, seq=100, prev=99, checksum=0))
         resync = await asyncio.wait_for(anext(stream), timeout=1)
     assert resync.kind == "book_resync"
     assert resync.data["reason"] == "seq_break"
