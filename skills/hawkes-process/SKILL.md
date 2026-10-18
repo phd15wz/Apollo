@@ -125,7 +125,7 @@ stat, pvalue = ks_exponential_residuals(residuals)
 python3 -m pytest tools/hawkes/tests -q
 ```
 
-Dependencies: `numpy`, `scipy`. `numba` is optional (JIT of hot loops; pure NumPy fallback). Do not import `hawkeslib` in production code.
+Dependencies: `numpy` and `scipy` only. Do not import `hawkeslib` in production code.
 
 ## Do not
 

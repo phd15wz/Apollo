@@ -7,7 +7,7 @@ Corrected rewrite inspired by the sample code accompanying
 
 Chapter and equation numbers below refer to that book. This module is original
 code written for the Apollo public repository; it is not a verbatim copy of the
-book's ``hawkes.py``.
+book's ``hawkes.py``. It uses NumPy and SciPy only.
 
 Sample-code defects fixed here
 ------------------------------
@@ -43,8 +43,6 @@ import warnings
 import numpy as np
 from scipy import stats
 from scipy.optimize import brentq, minimize
-
-from tools.hawkes._numba import njit
 
 EPS = 1e-8
 EM_N_WARN = 2000
@@ -87,6 +85,13 @@ def spectral_radius(matrix: np.ndarray) -> float:
     return float(np.max(np.abs(eig)))
 
 
+def _past(history, t: float) -> np.ndarray:
+    h = np.asarray(history, dtype=np.float64).reshape(-1)
+    if h.size == 0:
+        return h
+    return h[h < t]
+
+
 # ---------------------------------------------------------------------------
 # Intensities and compensators
 # ---------------------------------------------------------------------------
@@ -95,12 +100,10 @@ def spectral_radius(matrix: np.ndarray) -> float:
 def exp_hawkes_intensity(t: float, history, theta) -> float:
     """Exponential kernel :math:`\\lambda + \\sum \\alpha e^{-\\beta(t-t_i)}` (eq. 3.3)."""
     lam, alpha, beta = _as_theta(theta)
-    h = np.asarray(history, dtype=np.float64)
+    h = _past(history, t)
     if h.size == 0:
         return float(lam)
-    dt = t - h
-    dt = dt[dt > 0]
-    return float(lam + np.sum(alpha * np.exp(-beta * dt)))
+    return float(lam + np.sum(alpha * np.exp(-beta * (t - h))))
 
 
 def exp_hawkes_compensator(t: float, history, theta) -> float:
@@ -108,64 +111,69 @@ def exp_hawkes_compensator(t: float, history, theta) -> float:
     if t <= 0:
         return 0.0
     lam, alpha, beta = _as_theta(theta)
-    h = np.asarray(history, dtype=np.float64)
-    h = h[h < t]
-    lam_int = lam * t
+    h = _past(history, t)
     if h.size == 0:
-        return float(lam_int)
-    return float(lam_int + np.sum((alpha / beta) * (1.0 - np.exp(-beta * (t - h)))))
+        return float(lam * t)
+    return float(lam * t + np.sum((alpha / beta) * (1.0 - np.exp(-beta * (t - h)))))
 
 
-@njit
 def exp_hawkes_compensators(history, theta):
-    """O(N) compensator at each event time (eq. 9.x / Ozaki recursion)."""
-    lam, alpha, beta = theta
-    n = len(history)
+    """O(N) compensator at each event time (Ozaki recursion)."""
+    lam, alpha, beta = _as_theta(theta)
+    t = np.asarray(history, dtype=np.float64).reshape(-1)
+    n = t.size
+    if n == 0:
+        return t.copy()
+    dt = np.diff(t, prepend=0.0)
+    decay = np.exp(-beta * dt)
     out = np.empty(n, dtype=np.float64)
     lam_prev = lam
-    t_prev = 0.0
     acc = 0.0
     for i in range(n):
-        t_i = history[i]
-        acc += lam * (t_i - t_prev) + ((lam_prev - lam) / beta) * (
-            1.0 - np.exp(-beta * (t_i - t_prev))
-        )
+        acc += lam * dt[i] + ((lam_prev - lam) / beta) * (1.0 - decay[i])
         out[i] = acc
-        lam_prev = lam + (lam_prev - lam) * np.exp(-beta * (t_i - t_prev)) + alpha
-        t_prev = t_i
+        lam_prev = lam + (lam_prev - lam) * decay[i] + alpha
     return out
 
 
-@njit
 def power_hawkes_intensity(t, history, theta):
-    lam, k, c, p = theta
-    val = lam
-    for t_i in history:
-        if t_i < t:
-            val += k / (c + (t - t_i)) ** p
-    return val
+    lam, k, c, p = _as_theta(theta)
+    h = _past(history, t)
+    if h.size == 0:
+        return float(lam)
+    return float(lam + np.sum(k / (c + (t - h)) ** p))
 
 
-@njit
 def power_hawkes_compensator(t, history, theta):
     """Antiderivative of :math:`k(c+s)^{-p}`: :math:`\\frac{k}{p-1}[c^{1-p}-(c+t)^{1-p}]`."""
-    lam, k, c, p = theta
-    acc = lam * t
-    inv = 1.0 / (p - 1.0)
-    for t_i in history:
-        if t_i < t:
-            delta = t - t_i
-            acc += k * inv * (c ** (1.0 - p) - (c + delta) ** (1.0 - p))
-    return acc
+    lam, k, c, p = _as_theta(theta)
+    h = _past(history, t)
+    if h.size == 0:
+        return float(lam * t)
+    delta = t - h
+    return float(lam * t + np.sum(k / (p - 1.0) * (c ** (1.0 - p) - (c + delta) ** (1.0 - p))))
 
 
-@njit
+def _tril_deltas(times: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Pairwise ``t_i - t_j`` for ``j < i``, plus a boolean lower-triangular mask."""
+    n = times.size
+    delta = times[:, None] - times[None, :]
+    tril = np.tril(np.ones((n, n), dtype=bool), k=-1)
+    return delta, tril
+
+
 def power_hawkes_compensators(history, theta):
-    n = len(history)
-    out = np.empty(n, dtype=np.float64)
-    for i in range(n):
-        out[i] = power_hawkes_compensator(history[i], history[:i], theta)
-    return out
+    lam, k, c, p = _as_theta(theta)
+    t = np.asarray(history, dtype=np.float64).reshape(-1)
+    n = t.size
+    if n == 0:
+        return t.copy()
+    delta, tril = _tril_deltas(t)
+    kernel_int = np.zeros((n, n), dtype=np.float64)
+    kernel_int[tril] = (k / (p - 1.0)) * (
+        c ** (1.0 - p) - (c + delta[tril]) ** (1.0 - p)
+    )
+    return lam * t + kernel_int.sum(axis=1)
 
 
 # ---------------------------------------------------------------------------
@@ -173,114 +181,114 @@ def power_hawkes_compensators(history, theta):
 # ---------------------------------------------------------------------------
 
 
-@njit
+def _ozaki_a(times: np.ndarray, beta: float) -> np.ndarray:
+    """A(i) = exp(-β Δt_i) (1 + A(i-1)), A(0)=0 (eq. 5.7)."""
+    n = times.size
+    a = np.empty(n, dtype=np.float64)
+    a[0] = 0.0
+    if n == 1:
+        return a
+    decay = np.exp(-beta * np.diff(times))
+    for i in range(1, n):
+        a[i] = decay[i - 1] * (1.0 + a[i - 1])
+    return a
+
+
 def exp_log_likelihood(times, T, theta):
     """Ozaki O(N) exponential log-likelihood (eq. 5.7–5.8)."""
-    lam, alpha, beta = theta
-    n = len(times)
-    if n == 0:
-        return -lam * T
-    a_rec = 0.0
-    ll = -lam * T
-    t_prev = times[0]
-    ll += np.log(lam) - (alpha / beta) * (1.0 - np.exp(-beta * (T - times[0])))
-    for i in range(1, n):
-        t_i = times[i]
-        a_rec = np.exp(-beta * (t_i - t_prev)) * (1.0 + a_rec)
-        ll += np.log(lam + alpha * a_rec) - (alpha / beta) * (
-            1.0 - np.exp(-beta * (T - t_i))
-        )
-        t_prev = t_i
-    return ll
+    lam, alpha, beta = _as_theta(theta)
+    t = np.asarray(times, dtype=np.float64).reshape(-1)
+    if t.size == 0:
+        return float(-lam * T)
+    a = _ozaki_a(t, beta)
+    return float(
+        -lam * T
+        + np.log(lam + alpha * a).sum()
+        - (alpha / beta) * np.sum(1.0 - np.exp(-beta * (T - t)))
+    )
 
 
-@njit
 def power_log_likelihood(times, T, theta):
-    ll = 0.0
-    n = len(times)
-    for i in range(n):
-        ll += np.log(power_hawkes_intensity(times[i], times[:i], theta))
-    ll -= power_hawkes_compensator(T, times, theta)
-    return ll
+    lam, k, c, p = _as_theta(theta)
+    t = np.asarray(times, dtype=np.float64).reshape(-1)
+    n = t.size
+    if n == 0:
+        return float(-power_hawkes_compensator(T, t, theta))
+    delta, tril = _tril_deltas(t)
+    mu = np.zeros((n, n), dtype=np.float64)
+    mu[tril] = k / (c + delta[tril]) ** p
+    intensity = lam + mu.sum(axis=1)
+    return float(np.log(intensity).sum() - power_hawkes_compensator(T, t, theta))
 
 
-@njit
 def ozaki_recursion(times, beta, power):
-    n = len(times)
+    t = np.asarray(times, dtype=np.float64).reshape(-1)
+    n = t.size
     a_n = np.empty(n, dtype=np.float64)
     a_n[0] = 0.0
+    if n == 1:
+        return a_n
+    decay = np.exp(-beta * np.diff(t))
+    lagged = t[:-1] ** power
     for i in range(1, n):
-        a_n[i] = np.exp(-beta * (times[i] - times[i - 1])) * (
-            times[i - 1] ** power + a_n[i - 1]
-        )
+        a_n[i] = decay[i - 1] * (lagged[i - 1] + a_n[i - 1])
     return a_n
 
 
-@njit
 def deriv_exp_log_likelihood(times, T, theta):
     """Score of the exponential log-likelihood (Ozaki; ch. 5)."""
-    lam, alpha, beta = theta
-    n = len(times)
-    dlam = -T
-    dalpha = 0.0
-    dbeta = 0.0
+    lam, alpha, beta = _as_theta(theta)
+    t = np.asarray(times, dtype=np.float64).reshape(-1)
+    n = t.size
     if n == 0:
-        out = np.empty(3, dtype=np.float64)
-        out[0] = dlam
-        out[1] = 0.0
-        out[2] = 0.0
-        return out
-    a0 = ozaki_recursion(times, beta, 0)
-    a1 = ozaki_recursion(times, beta, 1)
-    for i in range(n):
-        t_i = times[i]
-        den = lam + alpha * a0[i]
-        b_i = t_i * a0[i] - a1[i]
-        dalpha += (1.0 / beta) * (np.exp(-beta * (T - t_i)) - 1.0) + a0[i] / den
-        dbeta += (
-            -alpha
-            * (
-                (1.0 / beta) * (T - t_i) * np.exp(-beta * (T - t_i))
-                + (1.0 / beta**2) * (np.exp(-beta * (T - t_i)) - 1.0)
-            )
-            - (alpha * b_i / den)
-        )
-        dlam += 1.0 / den
-    out = np.empty(3, dtype=np.float64)
-    out[0] = dlam
-    out[1] = dalpha
-    out[2] = dbeta
-    return out
+        return np.array([-T, 0.0, 0.0], dtype=np.float64)
+    a0 = ozaki_recursion(t, beta, 0)
+    a1 = ozaki_recursion(t, beta, 1)
+    den = lam + alpha * a0
+    b = t * a0 - a1
+    remain = T - t
+    e = np.exp(-beta * remain)
+    dlam = -T + np.sum(1.0 / den)
+    dalpha = np.sum((1.0 / beta) * (e - 1.0) + a0 / den)
+    dbeta = np.sum(
+        -alpha * ((1.0 / beta) * remain * e + (1.0 / beta**2) * (e - 1.0))
+        - (alpha * b / den)
+    )
+    return np.array([dlam, dalpha, dbeta], dtype=np.float64)
 
 
-@njit
 def hess_exp_log_likelihood(times, T, theta):
-    lam, alpha, beta = theta
-    n = len(times)
+    lam, alpha, beta = _as_theta(theta)
+    t = np.asarray(times, dtype=np.float64).reshape(-1)
+    n = t.size
     h = np.zeros((3, 3), dtype=np.float64)
     if n == 0:
         return h
-    a0 = ozaki_recursion(times, beta, 0)
-    a1 = ozaki_recursion(times, beta, 1)
-    a2 = ozaki_recursion(times, beta, 2)
-    for i in range(n):
-        t_i = times[i]
-        den = lam + alpha * a0[i]
-        b_i = t_i * a0[i] - a1[i]
-        c_i = t_i**2 * a0[i] - 2.0 * t_i * a1[i] + a2[i]
-        h[1, 1] += -(a0[i] / den) ** 2
-        h[1, 2] += -(
-            (1.0 / beta) * (T - t_i) * np.exp(-beta * (T - t_i))
-            + (1.0 / beta**2) * (np.exp(-beta * (T - t_i)) - 1.0)
-        ) + (-b_i / den + (alpha * a0[i] * b_i) / den**2)
-        h[2, 2] += alpha * (
-            (1.0 / beta) * (T - t_i) ** 2 * np.exp(-beta * (T - t_i))
-            + (2.0 / beta**2) * (T - t_i) * np.exp(-beta * (T - t_i))
-            + (2.0 / beta**3) * (np.exp(-beta * (T - t_i)) - 1.0)
-        ) + (alpha * c_i / den - (alpha * b_i / den) ** 2)
-        h[0, 0] += -1.0 / den**2
-        h[0, 1] += -a0[i] / den**2
-        h[0, 2] += alpha * b_i / den**2
+    a0 = ozaki_recursion(t, beta, 0)
+    a1 = ozaki_recursion(t, beta, 1)
+    a2 = ozaki_recursion(t, beta, 2)
+    den = lam + alpha * a0
+    b = t * a0 - a1
+    c = t**2 * a0 - 2.0 * t * a1 + a2
+    remain = T - t
+    e = np.exp(-beta * remain)
+    h[1, 1] = np.sum(-(a0 / den) ** 2)
+    h[1, 2] = np.sum(
+        -((1.0 / beta) * remain * e + (1.0 / beta**2) * (e - 1.0))
+        + (-b / den + (alpha * a0 * b) / den**2)
+    )
+    h[2, 2] = np.sum(
+        alpha
+        * (
+            (1.0 / beta) * remain**2 * e
+            + (2.0 / beta**2) * remain * e
+            + (2.0 / beta**3) * (e - 1.0)
+        )
+        + (alpha * c / den - (alpha * b / den) ** 2)
+    )
+    h[0, 0] = np.sum(-1.0 / den**2)
+    h[0, 1] = np.sum(-a0 / den**2)
+    h[0, 2] = np.sum(alpha * b / den**2)
     h[1, 0] = h[0, 1]
     h[2, 0] = h[0, 2]
     h[2, 1] = h[1, 2]
@@ -359,64 +367,51 @@ def power_mle(times, T, theta_start=None):
 # ---------------------------------------------------------------------------
 
 
-@njit
 def simulate_exp_by_thinning(theta, T, seed=-1):
     """Ogata thinning for an exponential Hawkes process on ``[0, T]``."""
     if seed >= 0:
-        np.random.seed(seed)
-    lam, alpha, beta = theta
-    lamx = lam
+        np.random.seed(int(seed))
+    lam, alpha, beta = _as_theta(theta)
+    lamx = float(lam)
     times = []
     t = 0.0
     while True:
-        m = lamx
-        dt = np.random.exponential(1.0) / m
-        t = t + dt
+        bound = lamx
+        dt = np.random.exponential(1.0) / bound
+        t += dt
         if t > T:
             break
         lamx = lam + (lamx - lam) * np.exp(-beta * dt)
-        u = m * np.random.random()
-        if u > lamx:
+        if bound * np.random.random() > lamx:
             continue
         times.append(t)
-        lamx = lamx + alpha
-    out = np.empty(len(times), dtype=np.float64)
-    for i in range(len(times)):
-        out[i] = times[i]
-    return out
+        lamx += alpha
+    return np.asarray(times, dtype=np.float64)
 
 
-@njit
 def simulate_power_by_thinning(theta, T, seed=-1):
     if seed >= 0:
-        np.random.seed(seed)
-    lam, k, c, p = theta
+        np.random.seed(int(seed))
+    th = _as_theta(theta)
+    lam, k, c, p = th
     jump = k / (c**p)
-    lamx = lam
+    lamx = float(lam)
     times = []
     t = 0.0
     hist = np.empty(0, dtype=np.float64)
     while True:
-        m = lamx
-        dt = np.random.exponential(1.0) / m
-        t = t + dt
+        bound = lamx
+        dt = np.random.exponential(1.0) / bound
+        t += dt
         if t > T:
             break
-        lamx = power_hawkes_intensity(t, hist, theta)
-        u = m * np.random.random()
-        if u > lamx:
+        lamx = power_hawkes_intensity(t, hist, th)
+        if bound * np.random.random() > lamx:
             continue
         times.append(t)
-        new_hist = np.empty(hist.size + 1, dtype=np.float64)
-        for i in range(hist.size):
-            new_hist[i] = hist[i]
-        new_hist[hist.size] = t
-        hist = new_hist
-        lamx = lamx + jump
-    out = np.empty(len(times), dtype=np.float64)
-    for i in range(len(times)):
-        out[i] = times[i]
-    return out
+        hist = np.asarray(times, dtype=np.float64)
+        lamx += jump
+    return hist
 
 
 def simulate_inverse_compensator(theta, n_events, compensator=None, seed=None):
@@ -616,43 +611,27 @@ def exp_em(times, T, theta_start=None, iters=50, allow_large=False):
     return theta
 
 
-@njit
 def _exp_em_iter(times, T, theta):
     lam, alpha, beta = theta
-    n = len(times)
-    resp0_sum = 0.0
+    n = times.size
+    resp0_sum = 1.0 if n else 0.0
     resp_off_sum = 0.0
     time_weighted = 0.0
-    for i in range(n):
-        if i == 0:
-            resp0_sum += 1.0
-            continue
-        row0 = lam
-        row_sum = lam
-        # unnormalised offspring masses stored on the fly
-        # first pass: row sum
-        for j in range(i):
-            mass = alpha * np.exp(-beta * (times[i] - times[j]))
-            row_sum += mass
-        resp0_sum += row0 / row_sum
-        for j in range(i):
-            mass = alpha * np.exp(-beta * (times[i] - times[j])) / row_sum
-            resp_off_sum += mass
-            time_weighted += (times[i] - times[j]) * mass
+    for i in range(1, n):
+        dt = times[i] - times[:i]
+        masses = alpha * np.exp(-beta * dt)
+        row_sum = lam + masses.sum()
+        resp0_sum += lam / row_sum
+        probs = masses / row_sum
+        resp_off_sum += probs.sum()
+        time_weighted += np.dot(dt, probs)
+    e = np.exp(-beta * (T - times))
+    denom_alpha = np.sum(1.0 - e)
+    numer_beta = np.sum((1.0 - e) / beta - (T - times) * e)
     lam = resp0_sum / T
-    denom_alpha = 0.0
-    numer_beta = 0.0
-    for i in range(n):
-        e = np.exp(-beta * (T - times[i]))
-        denom_alpha += 1.0 - e
-        numer_beta += (1.0 - e) / beta - (T - times[i]) * e
     alpha = beta * resp_off_sum / denom_alpha
     beta = alpha * numer_beta / time_weighted
-    out = np.empty(3, dtype=np.float64)
-    out[0] = lam
-    out[1] = alpha
-    out[2] = beta
-    return out
+    return np.array([lam, alpha, beta], dtype=np.float64)
 
 
 # ---------------------------------------------------------------------------
@@ -706,10 +685,9 @@ def mutual_branching_matrix(theta):
     ``A[source, target]`` follows chapter 5, opposite to chapter 3's
     :math:`\\alpha_{i,j}` (target, source).
     """
-    lam, alpha, beta = theta
+    _lam, alpha, beta = theta
     beta = np.asarray(beta, dtype=np.float64)
     alpha = np.asarray(alpha, dtype=np.float64)
-    # Phi[target, source] = A[source, target] / beta[target]
     return (alpha.T) / beta[:, None]
 
 
@@ -717,19 +695,18 @@ def mutual_is_stationary(theta) -> bool:
     return spectral_radius(mutual_branching_matrix(theta)) < 1.0
 
 
-@njit
 def mutual_exp_hawkes_intensity(t, times, ids, theta_lam, theta_alpha, theta_beta):
-    m = len(theta_lam)
-    lamx = theta_lam.copy()
-    n = len(times)
-    for i in range(n):
-        t_i = times[i]
-        if t_i >= t:
-            break
-        d_i = ids[i]
-        for k in range(m):
-            lamx[k] = lamx[k] + theta_alpha[d_i, k] * np.exp(-theta_beta[k] * (t - t_i))
-    return lamx
+    lam = np.asarray(theta_lam, dtype=np.float64)
+    alpha = np.asarray(theta_alpha, dtype=np.float64)
+    beta = np.asarray(theta_beta, dtype=np.float64)
+    times = np.asarray(times, dtype=np.float64)
+    ids = np.asarray(ids, dtype=np.int64)
+    past = times < t
+    if not np.any(past):
+        return lam.copy()
+    dt = t - times[past]
+    contrib = alpha[ids[past]] * np.exp(-beta * dt[:, None])
+    return lam + contrib.sum(axis=0)
 
 
 def mutual_exp_simulate_by_thinning(theta, T, seed=None):
@@ -739,58 +716,48 @@ def mutual_exp_simulate_by_thinning(theta, T, seed=None):
     lam = np.asarray(lam, dtype=np.float64).copy()
     alpha = np.asarray(alpha, dtype=np.float64)
     beta = np.asarray(beta, dtype=np.float64)
-    m = lam.size
     lamx = lam.copy()
     times = []
     ids = []
     t = 0.0
     while True:
-        total = float(np.sum(lamx))
+        total = float(lamx.sum())
         dt = np.random.exponential(1.0) / total
         t += dt
         if t > T:
             break
         lamx = lam + (lamx - lam) * np.exp(-beta * dt)
         u = total * np.random.random()
-        if u > float(np.sum(lamx)):
+        if u > float(lamx.sum()):
             continue
-        cdf = 0.0
-        for k in range(m):
-            cdf += lamx[k]
-            if u < cdf:
-                times.append(t)
-                ids.append(k)
-                lamx = lamx + alpha[k]
-                break
+        k = int(np.searchsorted(np.cumsum(lamx), u))
+        k = min(k, lam.size - 1)
+        times.append(t)
+        ids.append(k)
+        lamx = lamx + alpha[k]
     return np.asarray(times, dtype=np.float64), np.asarray(ids, dtype=np.int64)
 
 
-@njit
 def mutual_exp_log_likelihood(times, ids, T, lam, alpha, beta):
+    lam = np.asarray(lam, dtype=np.float64)
+    alpha = np.asarray(alpha, dtype=np.float64)
+    beta = np.asarray(beta, dtype=np.float64)
+    times = np.asarray(times, dtype=np.float64)
+    ids = np.asarray(ids, dtype=np.int64)
     if np.min(lam) <= 0 or np.min(alpha) < 0 or np.min(beta) <= 0:
         return -np.inf
-    n = len(times)
-    m = len(lam)
+    n = times.size
     ll = 0.0
     lamx = lam.copy()
     t_prev = 0.0
     for i in range(n):
-        t_i = times[i]
-        d_i = ids[i]
-        for k in range(m):
-            lamx[k] = lam[k] + (lamx[k] - lam[k]) * np.exp(-beta[k] * (t_i - t_prev))
-        ll += np.log(lamx[d_i])
-        for k in range(m):
-            lamx[k] = lamx[k] + alpha[d_i, k]
-        t_prev = t_i
-    # compensator to T
-    for i in range(n):
-        t_i = times[i]
-        d_i = ids[i]
-        for k in range(m):
-            ll -= (alpha[d_i, k] / beta[k]) * (1.0 - np.exp(-beta[k] * (T - t_i)))
-    for k in range(m):
-        ll -= lam[k] * T
+        lamx = lam + (lamx - lam) * np.exp(-beta * (times[i] - t_prev))
+        ll += np.log(lamx[ids[i]])
+        lamx = lamx + alpha[ids[i]]
+        t_prev = times[i]
+    remain = T - times
+    ll -= float(np.sum(lam * T))
+    ll -= float(np.sum((alpha[ids] / beta) * (1.0 - np.exp(-beta * remain[:, None]))))
     return ll
 
 

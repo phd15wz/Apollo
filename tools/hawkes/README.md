@@ -13,7 +13,7 @@ python3 -m pip install -r requirements.txt
 python3 -m pytest tools/hawkes/tests -q
 ```
 
-`numpy` and `scipy` are required. `numba` is optional.
+`numpy` and `scipy` are required.
 
 ## Layout
 
