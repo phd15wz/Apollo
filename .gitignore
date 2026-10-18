@@ -1,2 +1,14 @@
 __pycache__/
 .pytest_cache/
+
+# OKX bulk market data — several GB/month; never commit.
+# Default cache is ~/.cache/apollo/okx (OKX_DATA_DIR). These entries catch
+# accidental in-repo downloads.
+.okx-data/
+okx-data/
+data/okx/
+tools/okx/data/
+tools/okx/cache/
+*.okx.zip
+*.zip.part
+

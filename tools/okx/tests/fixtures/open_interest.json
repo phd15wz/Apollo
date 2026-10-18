@@ -1,0 +1,13 @@
+{
+  "code": "0",
+  "msg": "",
+  "data": [
+    {
+      "instType": "SWAP",
+      "instId": "BTC-USDT-SWAP",
+      "oi": "12345",
+      "oiCcy": "123.45",
+      "ts": "1700000000000"
+    }
+  ]
+}

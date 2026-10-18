@@ -5,6 +5,7 @@ pyarrow
 akshare
 yfinance
 requests
+# tools/okx stage-1 public client uses requests + numpy only (already listed).
 python-dateutil
 tenacity
 exchange_calendars==4.13.2

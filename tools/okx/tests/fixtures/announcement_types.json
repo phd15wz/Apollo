@@ -1,0 +1,8 @@
+{
+  "code": "0",
+  "msg": "",
+  "data": [
+    {"annType": "announcements-delistings", "annTypeDesc": "Delistings"},
+    {"annType": "announcements-latest-okx-news", "annTypeDesc": "Latest news"}
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "code": "0",
+  "msg": "",
+  "data": [
+    {
+      "instId": "BTC-USDT-SWAP",
+      "side": "sell",
+      "sz": "1",
+      "source": "0",
+      "px": "100.0",
+      "tradeId": "30",
+      "ts": "1700000030000"
+    },
+    {
+      "instId": "BTC-USDT-SWAP",
+      "side": "buy",
+      "sz": "1",
+      "source": "0",
+      "px": "99.0",
+      "tradeId": "20",
+      "ts": "1700000020000"
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "code": "0",
+  "msg": "",
+  "data": [
+    {
+      "details": [
+        {
+          "title": "BTC-USDT-SWAP maintenance",
+          "annType": "maintenance",
+          "pTime": "1700000000000",
+          "url": "https://www.okx.com/help/ann-1"
+        }
+      ],
+      "totalPage": "1"
+    }
+  ]
+}
