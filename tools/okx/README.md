@@ -201,8 +201,9 @@ python3 -m tools.okx.stream_demo --inst SPCX-USDT-SWAP --channels trades,books5 
 2. **Stale-feed timeout.** Configurable per stream (`stale_timeout`,
    default 60 s). Silence emits `stale` and sets a flag
    (`stream.is_stale(...)` / `stream.stale_subscriptions`). The next data
-   message emits `recovered` and clears the flag. Writer backlog older
-   than `lag_threshold` (default 5 s) emits `lag` / `lag_cleared` and is
+   message emits `recovered` and clears the flag. End-to-end lag (monotonic
+   processed-minus-receive, plus a drift-corrected OKX `ts` check) above
+   `lag_threshold` (default 5 s) emits `lag` / `lag_cleared` and is
    exposed as `stream.writer_lag` / `stream.writer_lagging`.
 3. **Size caps and bounded queues.** Recording is **off by default**.
    `--record-channels trades` (or `record_channels=`) records a subset.
@@ -219,18 +220,20 @@ python3 -m tools.okx.stream_demo --inst SPCX-USDT-SWAP --channels trades,books5 
    still require `wss` unless `allow_insecure=True`.
 
 **Overflow policy (in-memory consumer queue):** default 10_000 *data*
-events. Alerts (`stale`, `recovered`, `lag`, …) live in a capped lane
-(64): repeats of the same `(kind, channel, instId)` keep the latest
-state plus a repeat count. Gap events keep exact trade-id or timestamp
-ranges and merge only when those ranges touch; extra pending gaps spill
-rather than widen. When the data lane is full, the oldest data event is
-folded into one overflow `gap` (invariant:
+events. Alerts live in a capped lane (64). `stale`/`recovered` for one
+feed keep a single current state (a feed that ends stale delivers
+`stale` last). Other kinds merge repeats of `(kind, channel, instId)`.
+Gap events keep exact trade-id or timestamp ranges and merge only when
+those ranges touch, up to 256 pending holes; beyond that one summary
+gap is emitted (`precise=false`, hole count, trades missed, overall
+first/last). When the data lane is full, the oldest data event is
+folded into an overflow `gap` (invariant:
 `overflow_count == sum(gap.dropped)`). Consumer overflow is **not**
 written to disk. The recorder enqueues whole WebSocket/backfill batches
 and waits up to 2s for writer-queue space without blocking the
-event-loop thread. If that timeout expires, drops become a
-`writer_overflow` gap that **is** written. `stop()` drains the writer
-(bounded `shutdown_timeout`, default 8 s); anything still unwritten
+event-loop thread. Only the writer thread opens, writes, or closes
+recording files. `stop()` waits for in-flight offers, then a shutdown
+sentinel lets the writer drain and close. Anything still unwritten
 becomes a recorded gap. Downstream Hawkes fits must treat `kind='gap'`
 as a hole in the tape, never as a quiet period.
 

@@ -15,7 +15,7 @@ from tools.okx.record import (
     recording_dest,
     recording_period_key,
 )
-from tools.okx.stream import CONTROL_MAX, EventQueue, GapInfo, StreamMessage
+from tools.okx.stream import CONTROL_MAX, EventQueue, GapInfo, MAX_PENDING_GAPS, StreamMessage
 
 
 class WallClock:
@@ -476,17 +476,34 @@ def test_alert_cap_merges_repeated_flaps() -> None:
     assert CONTROL_MAX == 64
     assert queue.control_max == CONTROL_MAX
     assert len(queue.alerts) <= CONTROL_MAX
-    assert len(queue.alerts) == 4
+    assert len(queue.alerts) == 3
     latest = {item.kind: item for item in queue.alerts}
-    assert latest["stale"].ts_ms == 9996
+    assert "stale" not in latest
     assert latest["recovered"].ts_ms == 9997
+    assert latest["recovered"].stale is False
     assert latest["book_resync"].ts_ms == 9998
     assert latest["record_error"].ts_ms == 9999
     assert latest["record_error"].data == {"i": 9999}
-    assert all(item.repeats == 2500 for item in latest.values())
+    assert latest["recovered"].repeats == 5000
+    assert latest["book_resync"].repeats == 2500
+    assert latest["record_error"].repeats == 2500
     assert sum(item.repeats for item in queue.alerts) == 10_000
-    assert queue.merged_alerts == 10_000 - 4
+    assert queue.merged_alerts == 10_000 - 3
     assert len(queue.alerts) + queue.merged_alerts == 10_000
+
+
+def test_feed_state_delivers_latest_stale() -> None:
+    queue = EventQueue(maxsize=10)
+    for kind, ts in (("stale", 1), ("recovered", 2), ("stale", 3)):
+        queue.put(
+            StreamMessage(kind=kind, channel="trades", inst_id="BTC-USDT-SWAP", ts_ms=ts, stale=kind == "stale"),
+            control=True,
+        )
+    assert len(queue.alerts) == 1
+    assert queue.alerts[0].kind == "stale"
+    assert queue.alerts[0].stale is True
+    assert queue.alerts[0].ts_ms == 3
+    assert queue.alerts[0].repeats == 3
 
 
 def test_non_adjacent_gaps_stay_separate() -> None:
@@ -511,24 +528,55 @@ def test_non_adjacent_gaps_stay_separate() -> None:
             ),
             control=True,
         )
-    pending = [item for item in queue.items if item is not None and item.kind == "gap"]
-    assert len(pending) == 1000
-    widths = [
-        int(item.gap.last_missing_trade_id) - int(item.gap.first_missing_trade_id) + 1
-        for item in pending
-        if item.gap is not None
-        and item.gap.first_missing_trade_id is not None
-        and item.gap.last_missing_trade_id is not None
-    ]
-    assert widths == [10] * 1000
-    starts = sorted(
-        item.gap.first_missing_trade_id
-        for item in pending
-        if item.gap is not None and item.gap.first_missing_trade_id is not None
+    pending = [item for item in queue.items if item is not None and item.kind == "gap" and item.gap is not None]
+    exact = [item for item in pending if item.gap.precise]
+    summaries = [item for item in pending if not item.gap.precise]
+    assert len(exact) == MAX_PENDING_GAPS
+    assert len(summaries) == 1
+    assert all(
+        int(item.gap.last_missing_trade_id) - int(item.gap.first_missing_trade_id) + 1 == 10
+        for item in exact
+        if item.gap.first_missing_trade_id is not None and item.gap.last_missing_trade_id is not None
     )
-    assert starts == [i * 20 + 1 for i in range(1000)]
-    assert max(item.gap.last_missing_trade_id or 0 for item in pending) == 19990
-    assert min(item.gap.first_missing_trade_id or 0 for item in pending) == 1
+    summary = summaries[0].gap
+    assert summary.precise is False
+    assert summary.holes == 1000 - MAX_PENDING_GAPS
+    assert summary.dropped == 10 * (1000 - MAX_PENDING_GAPS)
+    assert sum(item.gap.dropped for item in pending) == 10_000
+
+
+def test_overflow_gap_cap_emits_summary() -> None:
+    queue = EventQueue(maxsize=10)
+    for i in range(100_000):
+        start = i * 20 + 1
+        queue.put(
+            StreamMessage(
+                kind="gap",
+                channel="trades",
+                inst_id="BTC-USDT-SWAP",
+                ts_ms=start + 9,
+                gap=GapInfo(
+                    channel="trades",
+                    inst_id="BTC-USDT-SWAP",
+                    reason="overflow",
+                    first_missing_trade_id=start,
+                    last_missing_trade_id=start + 9,
+                    dropped=10,
+                ),
+            ),
+            control=True,
+        )
+    pending = [item for item in queue.items if item is not None and item.kind == "gap" and item.gap is not None]
+    assert len(pending) == MAX_PENDING_GAPS + 1
+    exact = [item for item in pending if item.gap.precise]
+    summaries = [item for item in pending if not item.gap.precise]
+    assert len(exact) == MAX_PENDING_GAPS
+    assert len(summaries) == 1
+    assert summaries[0].gap.precise is False
+    assert summaries[0].gap.holes == 100_000 - MAX_PENDING_GAPS
+    assert summaries[0].gap.dropped == 10 * (100_000 - MAX_PENDING_GAPS)
+    assert sum(item.gap.dropped for item in pending) == 1_000_000
+    assert MAX_PENDING_GAPS == 256
 
 
 def test_writer_non_adjacent_gaps_stay_separate(tmp_path: Path) -> None:
@@ -559,14 +607,19 @@ def test_writer_non_adjacent_gaps_stay_separate(tmp_path: Path) -> None:
     rows = []
     for path in rec.files_written:
         rows.extend(_read_jsonl(path))
-    gaps = [row for row in rows if row.get("reason") == "writer_overflow"]
-    assert len(gaps) >= 1000
+    gaps = [row for row in rows if row.get("event") == "gap"]
+    exact = [row for row in gaps if row.get("precise", True)]
+    summaries = [row for row in gaps if row.get("precise") is False]
     widths = [
         int(row["lastMissingTradeId"]) - int(row["firstMissingTradeId"]) + 1
-        for row in gaps
+        for row in exact
         if row.get("firstMissingTradeId") is not None
     ]
+    assert widths
     assert max(widths) <= 10
+    if summaries:
+        assert summaries[0]["precise"] is False
+        assert int(summaries[0]["holes"]) >= 1
 
 
 def test_retention_still_counts_archive_bytes(tmp_path: Path) -> None:
@@ -587,3 +640,15 @@ def test_retention_still_counts_archive_bytes(tmp_path: Path) -> None:
     assert rec2._used >= 2000
     assert rec2._used == cache_usage_bytes(tmp_path)
     assert (tmp_path / "trades" / "old.zip").exists()
+
+
+def test_only_writer_thread_writes_files(tmp_path: Path) -> None:
+    rec = StreamRecorder(cache_dir=tmp_path, enabled=True, sync=False)
+    rec.start()
+    rec.offer({"ts": 1, "event": "data", "channel": "trades", "instId": "BTC-USDT-SWAP", "data": {"tradeId": "1"}})
+    rec.close()
+    assert rec._writer_ident is not None
+    with pytest.raises(RuntimeError, match="writer thread"):
+        rec._write_batch(
+            [{"ts": 2, "event": "data", "channel": "trades", "instId": "BTC-USDT-SWAP", "data": {"tradeId": "2"}}]
+        )

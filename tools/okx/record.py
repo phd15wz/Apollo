@@ -158,8 +158,10 @@ def _gap_from_batch(batch: Sequence[dict[str, Any]]) -> dict[str, Any]:
     first = last = start = end = None
     channel = str(batch[0].get("channel") or "") if batch else ""
     inst_id = str(batch[0].get("instId") or "") if batch else ""
+    holes = 0
     for rec in batch:
         extra += _drop_count(rec)
+        holes += int(rec.get("holes") or 1) if rec.get("event") == "gap" else 1
         f, l = _trade_ids(rec)
         first = _min_opt(first, f)
         last = _max_opt(last, l)
@@ -180,7 +182,17 @@ def _gap_from_batch(batch: Sequence[dict[str, Any]]) -> dict[str, Any]:
         "startTs": start,
         "endTs": end,
         "dropped": extra,
+        "precise": True,
+        "holes": max(1, holes),
     }
+
+
+def _fold_summary_gap(existing: dict[str, Any], incoming: dict[str, Any]) -> None:
+    extra = int(incoming.get("dropped") or 0)
+    _merge_gap(existing, incoming, extra)
+    existing["precise"] = False
+    existing["holes"] = int(existing.get("holes") or 1) + int(incoming.get("holes") or 1)
+    existing["reason"] = incoming.get("reason") or existing.get("reason") or "writer_overflow"
 
 
 class RecordWriteQueue:
@@ -194,10 +206,11 @@ class RecordWriteQueue:
         self.max_depth = 0
         self._data: deque[tuple[float, list[dict[str, Any]]]] = deque()
         self._gaps: list[dict[str, Any]] = []
-        self._spill: deque[dict[str, Any]] = deque()
         self._waiting: list[float] = []
         self._cv = threading.Condition()
         self._closed = False
+        self._sentinel = False
+        self.last_pop_age = 0.0
 
     def wait_put(self, batch: list[dict[str, Any]], timeout: float) -> bool:
         """Wait for a data slot. On timeout or close, fold the batch into a gap."""
@@ -232,45 +245,26 @@ class RecordWriteQueue:
     def get(self, timeout: float | None = None) -> Any:
         with self._cv:
             deadline = None if timeout is None else time.monotonic() + timeout
-            while not self._data and not self._gaps and not self._spill:
-                if self._closed:
+            while not self._data and not self._gaps:
+                if self._sentinel:
                     return _WRITER_SENTINEL
                 remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
                 if remaining == 0:
                     return None
                 self._cv.wait(timeout=remaining if deadline is not None else None)
-            if self._spill:
-                return [self._spill.popleft()]
             if self._gaps:
+                self.last_pop_age = 0.0
                 return [self._gaps.pop(0)]
-            _recv_at, batch = self._data.popleft()
+            recv_at, batch = self._data.popleft()
+            self.last_pop_age = max(0.0, time.monotonic() - recv_at)
             self._cv.notify_all()
             return batch
 
-    def take_all(self) -> tuple[list[list[dict[str, Any]]], list[dict[str, Any]]]:
+    def put_sentinel(self) -> None:
         with self._cv:
-            batches = [batch for _recv, batch in self._data]
-            gaps = list(self._spill) + list(self._gaps)
-            self._data.clear()
-            self._gaps.clear()
-            self._spill.clear()
-            return batches, gaps
-
-    def drain(self, timeout: float) -> None:
-        """Wait until queued work and wait_put callers have cleared, or time out."""
-        deadline = time.monotonic() + max(0.0, timeout)
-        while time.monotonic() < deadline:
-            with self._cv:
-                idle = not self._data and not self._gaps and not self._spill and not self._waiting
-            if idle:
-                return
-            time.sleep(0.005)
-
-    def wait_no_waiters(self, timeout: float) -> None:
-        deadline = time.monotonic() + max(0.0, timeout)
-        with self._cv:
-            while self._waiting and time.monotonic() < deadline:
-                self._cv.wait(timeout=max(0.001, deadline - time.monotonic()))
+            self._closed = True
+            self._sentinel = True
+            self._cv.notify_all()
 
     def backlog_age(self, now: float | None = None) -> float:
         now = time.monotonic() if now is None else now
@@ -287,7 +281,7 @@ class RecordWriteQueue:
 
     def __len__(self) -> int:
         with self._cv:
-            return len(self._data) + len(self._gaps) + len(self._spill)
+            return len(self._data) + len(self._gaps)
 
     def _drop_batch(self, batch: Sequence[dict[str, Any]]) -> None:
         if not batch:
@@ -295,13 +289,23 @@ class RecordWriteQueue:
         gap = _gap_from_batch(batch)
         self.dropped += int(gap["dropped"])
         for existing in self._gaps:
-            if _gap_dicts_adjacent(existing, gap):
+            if existing.get("precise", True) and _gap_dicts_adjacent(existing, gap):
                 _merge_gap(existing, gap, int(gap["dropped"]))
                 self._cv.notify_all()
                 return
-        if len(self._gaps) >= MAX_PENDING_GAPS:
-            self._spill.append(self._gaps.pop(0))
-        self._gaps.append(gap)
+        exact = sum(1 for item in self._gaps if item.get("precise", True))
+        if exact < MAX_PENDING_GAPS:
+            self._gaps.append(gap)
+            self._cv.notify_all()
+            return
+        for existing in self._gaps:
+            if existing.get("precise") is False and existing.get("channel") == gap.get("channel") and existing.get("instId") == gap.get("instId"):
+                _fold_summary_gap(existing, gap)
+                self._cv.notify_all()
+                return
+        summary = dict(gap)
+        summary["precise"] = False
+        self._gaps.append(summary)
         self._cv.notify_all()
 
 
@@ -356,8 +360,13 @@ class StreamRecorder:
         self._started_at = self.clock()
         self._queue = RecordWriteQueue(self.write_queue_maxsize)
         self._writer: threading.Thread | None = None
+        self._writer_ident: int | None = None
         self._lock = threading.Lock()
-        self._in_flight: list[dict[str, Any]] | None = None
+        self._offer_cv = threading.Condition()
+        self._offers = 0
+        self.accepted = 0
+        self._write_lag = 0.0
+        self._writing = 0
         if self.enabled:
             self._scan_usage()
             self.apply_retention()
@@ -420,33 +429,22 @@ class StreamRecorder:
         self._writer.start()
 
     def _writer_loop(self) -> None:
+        self._writer_ident = threading.get_ident()
         try:
             while True:
                 item = self._queue.get(timeout=0.2)
                 if item is _WRITER_SENTINEL:
                     break
                 if item is None:
-                    if (
-                        self._queue._closed
-                        and not self._queue._data
-                        and not self._queue._gaps
-                        and not self._queue._spill
-                    ):
-                        break
                     continue
-                with self._lock:
-                    self._in_flight = item
+                if self.write_sleep > 0 and not self._closed:
+                    until = time.monotonic() + self.write_sleep
+                    while time.monotonic() < until and not self._closed:
+                        time.sleep(0.01)
+                self._write_lag = max(self._write_lag, self._queue.last_pop_age)
+                self._writing += 1
                 try:
-                    if self.write_sleep > 0:
-                        until = time.monotonic() + self.write_sleep
-                        while time.monotonic() < until and not self._closed:
-                            time.sleep(0.01)
-                    if self._closed:
-                        break
                     self._write_batch(item)
-                    with self._lock:
-                        if self._in_flight is item:
-                            self._in_flight = None
                 except BaseException as exc:
                     self._error = exc
                     if isinstance(exc, LowDiskError):
@@ -456,31 +454,49 @@ class StreamRecorder:
                     else:
                         self._stopped = "write_error"
                     break
+                finally:
+                    self._writing -= 1
         finally:
             self._close_handles()
 
     def backlog_age(self) -> float:
-        if not self.enabled or self._closed:
+        if not self.enabled:
             return 0.0
-        return self._queue.backlog_age()
+        return max(self._queue.backlog_age(), self._write_lag)
+
+    def service_lag(self) -> float:
+        return self.backlog_age()
+
+    def _begin_offer(self) -> None:
+        with self._offer_cv:
+            self._offers += 1
+
+    def _end_offer(self) -> None:
+        with self._offer_cv:
+            self._offers -= 1
+            self._offer_cv.notify_all()
 
     def offer_batch_sync(self, records: list[dict[str, Any]], timeout: float | None = None) -> bool:
         kept = [rec for rec in records if self.accept(str(rec.get("channel") or ""), str(rec.get("instId") or ""))]
         if not kept:
             return False
-        if self._closed:
-            with self._queue._cv:
-                self._queue._drop_batch(kept)
+        self._begin_offer()
+        try:
+            self.accepted += sum(_drop_count(rec) for rec in kept)
+            if self._closed:
+                with self._queue._cv:
+                    self._queue._drop_batch(kept)
+                self.writer_dropped = self._queue.dropped
+                return False
+            self._maybe_rescan()
+            self._assert_disk()
+            self._assert_budgets(0)
+            self._ensure_writer()
+            accepted = self._queue.wait_put(kept, timeout if timeout is not None else self.offer_timeout)
             self.writer_dropped = self._queue.dropped
-            self._write_pending_gaps()
-            return False
-        self._maybe_rescan()
-        self._assert_disk()
-        self._assert_budgets(0)
-        self._ensure_writer()
-        accepted = self._queue.wait_put(kept, timeout if timeout is not None else self.offer_timeout)
-        self.writer_dropped = self._queue.dropped
-        return accepted
+            return accepted
+        finally:
+            self._end_offer()
 
     async def offer_batch(self, records: list[dict[str, Any]], timeout: float | None = None) -> bool:
         """Enqueue a batch without blocking the event-loop thread."""
@@ -554,12 +570,8 @@ class StreamRecorder:
         if self._writer is None:
             return
         deadline = time.monotonic() + timeout
-        while len(self._queue) > 0 and time.monotonic() < deadline:
+        while (len(self._queue) > 0 or self._writing > 0) and time.monotonic() < deadline:
             time.sleep(0.005)
-        with self._lock:
-            for _period, path, handle in self._handles.values():
-                handle.flush()
-                self._note_file(path)
 
     def _raise_pending(self) -> None:
         if self._error is not None:
@@ -597,55 +609,21 @@ class StreamRecorder:
                 changed = True
         self._scan_usage()
 
-    def _write_pending_gaps(self) -> None:
-        with self._queue._cv:
-            gaps = list(self._queue._spill) + list(self._queue._gaps)
-            self._queue._spill.clear()
-            self._queue._gaps.clear()
-        for gap in gaps:
-            try:
-                self._write_batch([gap])
-            except Exception:
-                pass
-
     def close(self, timeout: float = 10.0) -> None:
-        if self._closed:
+        if self._writer is None and self._closed:
             return
         deadline = time.monotonic() + max(0.0, timeout)
-        if self.enabled and self._writer is not None:
-            self._queue.drain(max(0.0, deadline - time.monotonic()) * 0.7)
         self._closed = True
         self._queue.close()
-        # In-flight wait_put must fold into a gap before take_all; give
-        # those callers a beat even when the overall timeout is already 0.
-        self._queue.wait_no_waiters(max(0.05, deadline - time.monotonic()))
+        with self._offer_cv:
+            while self._offers > 0 and time.monotonic() < deadline:
+                self._offer_cv.wait(timeout=max(0.001, deadline - time.monotonic()))
+        self._queue.put_sentinel()
         if self._writer is not None:
-            remaining = max(0.2, deadline - time.monotonic())
+            remaining = max(0.05, deadline - time.monotonic())
             self._writer.join(timeout=remaining)
             self._writer = None
-        with self._lock:
-            in_flight = self._in_flight
-            self._in_flight = None
-        batches, gaps = self._queue.take_all()
-        if in_flight:
-            batches.insert(0, in_flight)
-        for batch in batches:
-            if time.monotonic() < deadline:
-                try:
-                    self._write_batch(batch)
-                    continue
-                except Exception:
-                    pass
-            gap = _gap_from_batch(batch)
-            self._queue.dropped += int(gap["dropped"])
-            gaps.append(gap)
         self.writer_dropped = self._queue.dropped
-        for gap in gaps:
-            try:
-                self._write_batch([gap])
-            except Exception:
-                pass
-        self._close_handles()
         elapsed = max(1e-6, self.clock() - self._started_at)
         for stats in self.throughput.values():
             stats.elapsed_s = elapsed
@@ -672,6 +650,8 @@ class StreamRecorder:
         return report
 
     def _write_batch(self, records: list[dict[str, Any]]) -> None:
+        if self._writer_ident is not None and threading.get_ident() != self._writer_ident:
+            raise RuntimeError("only the writer thread may open or write recording files")
         grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
         for record in records:
             channel = str(record.get("channel") or "")
@@ -688,7 +668,8 @@ class StreamRecorder:
             raw = 0
             before = dest.stat().st_size if dest.exists() else 0
             for record in group:
-                line = json.dumps(record, separators=(",", ":")).encode("utf-8") + b"\n"
+                payload = {key: value for key, value in record.items() if not str(key).startswith("_")}
+                line = json.dumps(payload, separators=(",", ":")).encode("utf-8") + b"\n"
                 raw += len(line)
                 handle.write(line)
             handle.flush()

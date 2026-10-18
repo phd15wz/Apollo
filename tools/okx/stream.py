@@ -83,6 +83,8 @@ class GapInfo:
     start_ts_ms: int | None = None
     end_ts_ms: int | None = None
     dropped: int = 0
+    precise: bool = True
+    holes: int = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -227,7 +229,37 @@ class LocalBook:
 
 CONTROL_MAX = 64
 ALERT_KINDS = frozenset({"stale", "recovered", "book_resync", "low_disk", "record_error", "lag", "lag_cleared"})
+FEED_STATE_KINDS = frozenset({"stale", "recovered"})
 MAX_PENDING_GAPS = 256
+LAG_OFFSET_WINDOW = 128
+
+
+class LagTracker:
+    """Primary: monotonic processed-recv. Secondary: drift-corrected OKX ts."""
+
+    def __init__(self, *, window: int = LAG_OFFSET_WINDOW, seed_offset: float | None = None) -> None:
+        self._offsets: deque[float] = deque(maxlen=window)
+        if seed_offset is not None:
+            self._offsets.append(float(seed_offset))
+        self.primary = 0.0
+        self.secondary = 0.0
+
+    def observe(
+        self,
+        *,
+        recv_mono: float,
+        recv_wall: float,
+        okx_ts_ms: int | None,
+        processed_mono: float | None = None,
+    ) -> float:
+        processed = time.monotonic() if processed_mono is None else processed_mono
+        self.primary = max(0.0, processed - recv_mono)
+        if okx_ts_ms not in (None, 0, ""):
+            offset = recv_wall - (int(okx_ts_ms) / 1000.0)
+            self._offsets.append(offset)
+            baseline = min(self._offsets)
+            self.secondary = max(0.0, offset - baseline)
+        return max(self.primary, self.secondary)
 
 
 class EventQueue:
@@ -284,23 +316,23 @@ class EventQueue:
         self.control.append(msg)
 
     def _put_alert(self, msg: StreamMessage) -> None:
-        key = (msg.kind, msg.channel, msg.inst_id)
         for index, item in enumerate(self.alerts):
-            if (item.kind, item.channel, item.inst_id) == key:
-                self.merged_alerts += 1
-                first = item.first_ts_ms or item.ts_ms
-                self.alerts[index] = StreamMessage(
-                    kind=msg.kind,
-                    channel=msg.channel,
-                    inst_id=msg.inst_id,
-                    ts_ms=msg.ts_ms,
-                    data=msg.data,
-                    stale=msg.stale,
-                    raw=msg.raw,
-                    repeats=item.repeats + 1,
-                    first_ts_ms=first,
-                )
-                return
+            if not _alert_same_slot(item, msg):
+                continue
+            self.merged_alerts += 1
+            first = item.first_ts_ms or item.ts_ms
+            self.alerts[index] = StreamMessage(
+                kind=msg.kind,
+                channel=msg.channel,
+                inst_id=msg.inst_id,
+                ts_ms=msg.ts_ms,
+                data=msg.data,
+                stale=msg.stale,
+                raw=msg.raw,
+                repeats=item.repeats + 1,
+                first_ts_ms=first,
+            )
+            return
         if len(self.alerts) >= self.control_max:
             self.merged_alerts += 1
             return
@@ -321,14 +353,31 @@ class EventQueue:
     def _put_gap(self, msg: StreamMessage) -> None:
         if msg.gap is None:
             return
-        for index, item in enumerate(self.gaps):
-            if item.gap is not None and _gaps_adjacent(item.gap, msg.gap):
-                self.gaps[index] = _merged_gap_message(item.gap, msg.gap)
+        if msg.gap.precise:
+            for index, item in enumerate(self.gaps):
+                if item.gap is not None and item.gap.precise and _gaps_adjacent(item.gap, msg.gap):
+                    self.gaps[index] = _merged_gap_message(item.gap, msg.gap)
+                    return
+            exact = sum(1 for item in self.gaps if item.gap is not None and item.gap.precise)
+            if exact < MAX_PENDING_GAPS:
+                self.gaps.append(msg)
                 return
-        if len(self.gaps) >= MAX_PENDING_GAPS:
-            spilled = self.gaps.popleft()
-            self.control.append(spilled)
-        self.gaps.append(msg)
+        self._fold_summary_gap(msg)
+
+    def _fold_summary_gap(self, msg: StreamMessage) -> None:
+        gap = msg.gap
+        if gap is None:
+            return
+        for index, item in enumerate(self.gaps):
+            if (
+                item.gap is not None
+                and not item.gap.precise
+                and item.gap.channel == gap.channel
+                and item.gap.inst_id == gap.inst_id
+            ):
+                self.gaps[index] = _summary_gap_message(item.gap, gap)
+                return
+        self.gaps.append(_summary_gap_message(None, gap))
 
     def _absorb_data(self, dropped: StreamMessage) -> None:
         gap = _gap_from_message(dropped, reason="overflow", dropped=1)
@@ -492,6 +541,7 @@ class OkxPublicStream:
         self.shutdown_timeout = shutdown_timeout
         self.writer_lag = 0.0
         self.writer_lagging = False
+        self._lag = LagTracker()
         self.fallbacks: list[tuple[str, str]] = []
         self._url_override: dict[str, str] = {}
         self._clock = clock or time.monotonic
@@ -564,7 +614,6 @@ class OkxPublicStream:
     async def stop(self) -> None:
         self._running = False
         self._cancel.set()
-        await asyncio.to_thread(self.recorder.close, self.shutdown_timeout)
         for task in self._tasks:
             task.cancel()
         for task in self._tasks:
@@ -573,6 +622,7 @@ class OkxPublicStream:
             except (asyncio.CancelledError, Exception):
                 pass
         self._tasks.clear()
+        await asyncio.to_thread(self.recorder.close, self.shutdown_timeout)
         self._queue.put(None, control=True)
 
     async def _connect(self, url: str) -> WsConnection:
@@ -707,9 +757,9 @@ class OkxPublicStream:
                 continue
             if isinstance(raw, bytes):
                 raw = raw.decode("utf-8", "replace")
-            await self._dispatch(raw, conn)
+            await self._dispatch(raw, conn, recv_mono=time.monotonic(), recv_wall=time.time())
 
-    async def _dispatch(self, raw: str, conn: WsConnection) -> None:
+    async def _dispatch(self, raw: str, conn: WsConnection, *, recv_mono: float | None = None, recv_wall: float | None = None) -> None:
         try:
             payload = json.loads(raw)
         except json.JSONDecodeError:
@@ -726,6 +776,7 @@ class OkxPublicStream:
         if not self._known(channel, inst_id):
             self.rejected_messages += 1
             return
+        self._observe_message_lag(rows, recv_mono=recv_mono, recv_wall=recv_wall)
         if channel == "trades":
             await self._on_trades(inst_id, rows, payload)
             return
@@ -766,46 +817,48 @@ class OkxPublicStream:
         seen = self._seen_trade_ids.setdefault(inst_id, set())
         last = self._last_trade_id.get(inst_id)
         recorded: list[dict[str, Any]] = []
-        for trade, count in parsed:
-            if trade.trade_id in seen or (last is not None and trade.trade_id <= last):
-                continue
-            # ``trades`` aggregates: tradeId is the last id, ``count`` is how
-            # many consecutive ids the message already covers.
-            covered_start = trade.trade_id - count + 1
-            if last is not None and covered_start > last + 1:
-                filled = await self._backfill(inst_id, last + 1, covered_start - 1)
-                if filled is None:
-                    gap = GapInfo(
-                        channel="trades",
-                        inst_id=inst_id,
-                        reason="backfill_failed",
-                        first_missing_trade_id=last + 1,
-                        last_missing_trade_id=covered_start - 1,
-                        start_ts_ms=None,
-                        end_ts_ms=trade.ts_ms,
-                        dropped=covered_start - last - 1,
-                    )
-                    self._emit_gap(gap)
-                else:
-                    for item in filled:
-                        if item.trade_id in seen or (last is not None and item.trade_id <= last):
-                            continue
-                        self._emit_trade(item, raw)
-                        recorded.append(_trade_payload(item))
-                        seen.add(item.trade_id)
-                        last = item.trade_id
-            self._emit_trade(trade, raw)
-            recorded.append(_trade_payload(trade))
-            seen.add(trade.trade_id)
-            last = trade.trade_id
-            if len(seen) > self._seen_cap:
-                seen.clear()
-                if last is not None:
-                    seen.add(last)
-        if last is not None:
-            self._last_trade_id[inst_id] = last
-        if recorded:
-            await self._record_batch("trades", inst_id, recorded)
+        try:
+            for trade, count in parsed:
+                if trade.trade_id in seen or (last is not None and trade.trade_id <= last):
+                    continue
+                # ``trades`` aggregates: tradeId is the last id, ``count`` is how
+                # many consecutive ids the message already covers.
+                covered_start = trade.trade_id - count + 1
+                if last is not None and covered_start > last + 1:
+                    filled = await self._backfill(inst_id, last + 1, covered_start - 1)
+                    if filled is None:
+                        gap = GapInfo(
+                            channel="trades",
+                            inst_id=inst_id,
+                            reason="backfill_failed",
+                            first_missing_trade_id=last + 1,
+                            last_missing_trade_id=covered_start - 1,
+                            start_ts_ms=None,
+                            end_ts_ms=trade.ts_ms,
+                            dropped=covered_start - last - 1,
+                        )
+                        self._emit_gap(gap)
+                    else:
+                        for item in filled:
+                            if item.trade_id in seen or (last is not None and item.trade_id <= last):
+                                continue
+                            self._emit_trade(item, raw)
+                            recorded.append(_trade_payload(item))
+                            seen.add(item.trade_id)
+                            last = item.trade_id
+                self._emit_trade(trade, raw)
+                recorded.append(_trade_payload(trade))
+                seen.add(trade.trade_id)
+                last = trade.trade_id
+                if len(seen) > self._seen_cap:
+                    seen.clear()
+                    if last is not None:
+                        seen.add(last)
+            if last is not None:
+                self._last_trade_id[inst_id] = last
+        finally:
+            if recorded:
+                await self._record_batch("trades", inst_id, recorded)
 
     def _emit_trade(self, trade: Trade, raw: dict[str, Any] | None = None) -> None:
         msg = StreamMessage(
@@ -924,30 +977,7 @@ class OkxPublicStream:
                             stale=True,
                         )
                     )
-            age = self.recorder.backlog_age()
-            self.writer_lag = age
-            if age >= self.lag_threshold and not self.writer_lagging:
-                self.writer_lagging = True
-                self._emit(
-                    StreamMessage(
-                        kind="lag",
-                        channel="",
-                        inst_id="",
-                        ts_ms=int(now * 1000),
-                        data={"backlog_s": age},
-                    )
-                )
-            elif age < self.lag_threshold and self.writer_lagging:
-                self.writer_lagging = False
-                self._emit(
-                    StreamMessage(
-                        kind="lag_cleared",
-                        channel="",
-                        inst_id="",
-                        ts_ms=int(now * 1000),
-                        data={"backlog_s": age},
-                    )
-                )
+            self._refresh_lag()
 
     def _emit(self, msg: StreamMessage) -> None:
         self._queue.put(msg, control=msg.kind != "data")
@@ -969,9 +999,54 @@ class OkxPublicStream:
                 self.record_error = exc
                 self._emit_record_error(exc)
 
+    def _observe_message_lag(
+        self,
+        rows: Any,
+        *,
+        recv_mono: float | None,
+        recv_wall: float | None,
+    ) -> None:
+        recv_mono = time.monotonic() if recv_mono is None else recv_mono
+        recv_wall = time.time() if recv_wall is None else recv_wall
+        okx_ts_ms = _first_okx_ts_ms(rows)
+        self._lag.observe(recv_mono=recv_mono, recv_wall=recv_wall, okx_ts_ms=okx_ts_ms)
+        self._refresh_lag()
+
+    def _refresh_lag(self) -> None:
+        age = max(self._lag.primary, self._lag.secondary, self.recorder.service_lag())
+        self.writer_lag = age
+        now_ms = int(time.time() * 1000)
+        if age >= self.lag_threshold and not self.writer_lagging:
+            self.writer_lagging = True
+            self._emit(
+                StreamMessage(
+                    kind="lag",
+                    channel="",
+                    inst_id="",
+                    ts_ms=now_ms,
+                    data={
+                        "backlog_s": age,
+                        "primary_s": self._lag.primary,
+                        "secondary_s": self._lag.secondary,
+                    },
+                )
+            )
+        elif age < self.lag_threshold and self.writer_lagging:
+            self.writer_lagging = False
+            self._emit(
+                StreamMessage(
+                    kind="lag_cleared",
+                    channel="",
+                    inst_id="",
+                    ts_ms=now_ms,
+                    data={"backlog_s": age},
+                )
+            )
+
     async def _record_batch(self, channel: str, inst_id: str, rows: list[dict[str, Any]]) -> None:
         if not rows or not self.recorder.accept(channel, inst_id):
             return
+        recv_mono = time.monotonic()
         records = [
             {
                 "ts": row.get("ts"),
@@ -979,14 +1054,25 @@ class OkxPublicStream:
                 "channel": channel,
                 "instId": inst_id,
                 "data": row,
+                "_recv_mono": recv_mono,
             }
             for row in rows
         ]
+        offered = False
+        lock = threading.Lock()
+
+        def _offer(timeout: float | None = None) -> bool:
+            nonlocal offered
+            with lock:
+                if offered:
+                    return False
+                offered = True
+            return self.recorder.offer_batch_sync(records, timeout)
+
         try:
-            await self.recorder.offer_batch(records)
+            await asyncio.to_thread(_offer)
         except asyncio.CancelledError:
-            if not self.recorder._closed:
-                self.recorder.offer_batch_sync(records, timeout=0.0)
+            _offer(0.0)
             raise
         except (LowDiskError, CacheBudgetExceeded) as exc:
             self.record_error = exc
@@ -1035,6 +1121,26 @@ def _gaps_adjacent(left: GapInfo, right: GapInfo) -> bool:
     return False
 
 
+def _alert_same_slot(existing: StreamMessage, incoming: StreamMessage) -> bool:
+    if existing.channel != incoming.channel or existing.inst_id != incoming.inst_id:
+        return False
+    if existing.kind in FEED_STATE_KINDS and incoming.kind in FEED_STATE_KINDS:
+        return True
+    return existing.kind == incoming.kind
+
+
+def _first_okx_ts_ms(rows: Any) -> int | None:
+    if isinstance(rows, Mapping):
+        raw = rows.get("ts")
+        return None if raw in (None, "") else int(raw)
+    if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes)):
+        return None
+    for row in rows:
+        if isinstance(row, Mapping) and row.get("ts") not in (None, ""):
+            return int(row["ts"])
+    return None
+
+
 def _merged_gap_message(left: GapInfo, right: GapInfo) -> StreamMessage:
     merged = GapInfo(
         channel=left.channel,
@@ -1045,7 +1151,46 @@ def _merged_gap_message(left: GapInfo, right: GapInfo) -> StreamMessage:
         start_ts_ms=_min_opt(left.start_ts_ms, right.start_ts_ms),
         end_ts_ms=_max_opt(left.end_ts_ms, right.end_ts_ms),
         dropped=left.dropped + right.dropped,
+        precise=left.precise and right.precise,
+        holes=left.holes + right.holes,
     )
+    return StreamMessage(
+        kind="gap",
+        channel=merged.channel,
+        inst_id=merged.inst_id,
+        ts_ms=merged.end_ts_ms or 0,
+        gap=merged,
+        data=merged,
+    )
+
+
+def _summary_gap_message(left: GapInfo | None, right: GapInfo) -> StreamMessage:
+    if left is None:
+        merged = GapInfo(
+            channel=right.channel,
+            inst_id=right.inst_id,
+            reason=right.reason,
+            first_missing_trade_id=right.first_missing_trade_id,
+            last_missing_trade_id=right.last_missing_trade_id,
+            start_ts_ms=right.start_ts_ms,
+            end_ts_ms=right.end_ts_ms,
+            dropped=right.dropped,
+            precise=False,
+            holes=right.holes,
+        )
+    else:
+        merged = GapInfo(
+            channel=left.channel,
+            inst_id=left.inst_id,
+            reason=left.reason,
+            first_missing_trade_id=_min_opt(left.first_missing_trade_id, right.first_missing_trade_id),
+            last_missing_trade_id=_max_opt(left.last_missing_trade_id, right.last_missing_trade_id),
+            start_ts_ms=_min_opt(left.start_ts_ms, right.start_ts_ms),
+            end_ts_ms=_max_opt(left.end_ts_ms, right.end_ts_ms),
+            dropped=left.dropped + right.dropped,
+            precise=False,
+            holes=left.holes + right.holes,
+        )
     return StreamMessage(
         kind="gap",
         channel=merged.channel,
