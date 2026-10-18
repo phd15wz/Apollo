@@ -1079,12 +1079,12 @@ async def test_slow_disk_backpressure_keeps_pinging(tmp_path: Path) -> None:
             await _wait_sent(sock, lambda s: "subscribe" in s)
             for trade_id in range(1, 13):
                 await sock.push(_trade_push(INST, trade_id))
-            await asyncio.sleep(0.7)
+            await _collect(stream, 12, timeout=8)
+            await asyncio.sleep(0.3)
             pings = [item for item in sock.sent if item == "ping"]
             assert pings
             assert broker._i == 1
             assert stream._reconnect_generation == 1
-            await asyncio.sleep(1.0)
         finally:
             probing = False
             probe_task.cancel()
@@ -1147,6 +1147,7 @@ async def test_stop_never_loses_batch_without_gap(tmp_path: Path) -> None:
                 ],
             }
             await sock.push(payload)
+            await asyncio.wait_for(anext(stream), timeout=2)
             await asyncio.sleep(rng.uniform(0.0, 0.08))
         finally:
             await stream.stop()

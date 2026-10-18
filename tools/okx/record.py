@@ -357,6 +357,7 @@ class StreamRecorder:
         self._queue = RecordWriteQueue(self.write_queue_maxsize)
         self._writer: threading.Thread | None = None
         self._lock = threading.Lock()
+        self._in_flight: list[dict[str, Any]] | None = None
         if self.enabled:
             self._scan_usage()
             self.apply_retention()
@@ -433,10 +434,19 @@ class StreamRecorder:
                     ):
                         break
                     continue
-                if self.write_sleep > 0 and not self._closed:
-                    time.sleep(self.write_sleep)
+                with self._lock:
+                    self._in_flight = item
                 try:
+                    if self.write_sleep > 0:
+                        until = time.monotonic() + self.write_sleep
+                        while time.monotonic() < until and not self._closed:
+                            time.sleep(0.01)
+                    if self._closed:
+                        break
                     self._write_batch(item)
+                    with self._lock:
+                        if self._in_flight is item:
+                            self._in_flight = None
                 except BaseException as exc:
                     self._error = exc
                     if isinstance(exc, LowDiskError):
@@ -610,10 +620,15 @@ class StreamRecorder:
         # those callers a beat even when the overall timeout is already 0.
         self._queue.wait_no_waiters(max(0.05, deadline - time.monotonic()))
         if self._writer is not None:
-            remaining = max(0.0, deadline - time.monotonic())
+            remaining = max(0.2, deadline - time.monotonic())
             self._writer.join(timeout=remaining)
             self._writer = None
+        with self._lock:
+            in_flight = self._in_flight
+            self._in_flight = None
         batches, gaps = self._queue.take_all()
+        if in_flight:
+            batches.insert(0, in_flight)
         for batch in batches:
             if time.monotonic() < deadline:
                 try:
