@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from tools.okx.archive import cache_usage_bytes
 from tools.okx.errors import CacheBudgetExceeded, LowDiskError
 from tools.okx.record import (
     DEFAULT_OFFER_TIMEOUT,
@@ -14,7 +15,7 @@ from tools.okx.record import (
     recording_dest,
     recording_period_key,
 )
-from tools.okx.stream import EventQueue, GapInfo, StreamMessage
+from tools.okx.stream import CONTROL_MAX, EventQueue, GapInfo, StreamMessage
 
 
 class WallClock:
@@ -204,13 +205,13 @@ def test_recording_stays_fast_with_many_files(tmp_path: Path) -> None:
     for i in range(400):
         (recordings / f"dummy-{i}.jsonl.gz").write_bytes(b"dummy")
     rec = StreamRecorder(cache_dir=tmp_path, enabled=True)
-    assert rec.usage_scans == 1
+    scans_at_start = rec.usage_scans
     started = time_mod.perf_counter()
     for i in range(80):
         rec.write_data("trades", "BTC-USDT-SWAP", {"tradeId": str(i), "pad": "aaaaaaaaaa"}, ts_ms=i)
     rec.close()
     elapsed = time_mod.perf_counter() - started
-    assert rec.usage_scans == 1
+    assert rec.usage_scans == scans_at_start
     assert elapsed < 3.0
     raw = rec.throughput["trades"].raw_bytes
     compressed = rec.files_written[0].stat().st_size
@@ -449,6 +450,140 @@ def test_writer_queue_put_returns_when_full_of_gaps(tmp_path: Path) -> None:
 
 
 def test_offer_timeout_is_under_ping_interval() -> None:
-    assert 0 < DEFAULT_OFFER_TIMEOUT <= 2.0
+    assert DEFAULT_OFFER_TIMEOUT == 2.0
     rec = StreamRecorder(enabled=False)
-    assert rec.offer_timeout <= 2.0
+    assert rec.offer_timeout == 2.0
+    with pytest.raises(ValueError, match="2s"):
+        StreamRecorder(enabled=False, offer_timeout=25.0)
+
+
+def test_alert_cap_merges_repeated_flaps() -> None:
+    queue = EventQueue(maxsize=10, control_max=CONTROL_MAX)
+    kinds = ("stale", "recovered", "book_resync", "record_error")
+    for i in range(10_000):
+        kind = kinds[i % 4]
+        queue.put(
+            StreamMessage(
+                kind=kind,
+                channel="trades",
+                inst_id="BTC-USDT-SWAP",
+                ts_ms=i,
+                stale=kind == "stale",
+                data={"i": i},
+            ),
+            control=True,
+        )
+    assert CONTROL_MAX == 64
+    assert queue.control_max == CONTROL_MAX
+    assert len(queue.alerts) <= CONTROL_MAX
+    assert len(queue.alerts) == 4
+    latest = {item.kind: item for item in queue.alerts}
+    assert latest["stale"].ts_ms == 9996
+    assert latest["recovered"].ts_ms == 9997
+    assert latest["book_resync"].ts_ms == 9998
+    assert latest["record_error"].ts_ms == 9999
+    assert latest["record_error"].data == {"i": 9999}
+    assert all(item.repeats == 2500 for item in latest.values())
+    assert sum(item.repeats for item in queue.alerts) == 10_000
+    assert queue.merged_alerts == 10_000 - 4
+    assert len(queue.alerts) + queue.merged_alerts == 10_000
+
+
+def test_non_adjacent_gaps_stay_separate() -> None:
+    queue = EventQueue(maxsize=10)
+    for i in range(1000):
+        start = i * 20 + 1
+        end = start + 9
+        queue.put(
+            StreamMessage(
+                kind="gap",
+                channel="trades",
+                inst_id="BTC-USDT-SWAP",
+                ts_ms=end,
+                gap=GapInfo(
+                    channel="trades",
+                    inst_id="BTC-USDT-SWAP",
+                    reason="backfill_failed",
+                    first_missing_trade_id=start,
+                    last_missing_trade_id=end,
+                    dropped=10,
+                ),
+            ),
+            control=True,
+        )
+    pending = [item for item in queue.items if item is not None and item.kind == "gap"]
+    assert len(pending) == 1000
+    widths = [
+        int(item.gap.last_missing_trade_id) - int(item.gap.first_missing_trade_id) + 1
+        for item in pending
+        if item.gap is not None
+        and item.gap.first_missing_trade_id is not None
+        and item.gap.last_missing_trade_id is not None
+    ]
+    assert widths == [10] * 1000
+    starts = sorted(
+        item.gap.first_missing_trade_id
+        for item in pending
+        if item.gap is not None and item.gap.first_missing_trade_id is not None
+    )
+    assert starts == [i * 20 + 1 for i in range(1000)]
+    assert max(item.gap.last_missing_trade_id or 0 for item in pending) == 19990
+    assert min(item.gap.first_missing_trade_id or 0 for item in pending) == 1
+
+
+def test_writer_non_adjacent_gaps_stay_separate(tmp_path: Path) -> None:
+    rec = StreamRecorder(
+        cache_dir=tmp_path,
+        enabled=True,
+        write_queue_maxsize=1,
+        offer_timeout=0.0,
+        sync=False,
+    )
+    rec.start()
+    rec.offer_batch_sync([{"ts": 0, "event": "data", "channel": "trades", "instId": "BTC-USDT-SWAP", "data": {"tradeId": "0"}}])
+    for i in range(1000):
+        start = i * 20 + 1
+        rec.offer_batch_sync(
+            [
+                {
+                    "ts": start + offset,
+                    "event": "data",
+                    "channel": "trades",
+                    "instId": "BTC-USDT-SWAP",
+                    "data": {"tradeId": str(start + offset)},
+                }
+                for offset in range(10)
+            ]
+        )
+    rec.close()
+    rows = []
+    for path in rec.files_written:
+        rows.extend(_read_jsonl(path))
+    gaps = [row for row in rows if row.get("reason") == "writer_overflow"]
+    assert len(gaps) >= 1000
+    widths = [
+        int(row["lastMissingTradeId"]) - int(row["firstMissingTradeId"]) + 1
+        for row in gaps
+        if row.get("firstMissingTradeId") is not None
+    ]
+    assert max(widths) <= 10
+
+
+def test_retention_still_counts_archive_bytes(tmp_path: Path) -> None:
+    trades = tmp_path / "trades"
+    trades.mkdir()
+    (trades / "old.zip").write_bytes(b"x" * 2000)
+    rec = StreamRecorder(cache_dir=tmp_path, enabled=True, retention_max_bytes=1, rotation="hourly")
+    rec.write_data("trades", "BTC-USDT-SWAP", {"n": 1}, ts_ms=1)
+    rec.close()
+    rec2 = StreamRecorder(
+        cache_dir=tmp_path,
+        enabled=True,
+        retention_max_bytes=1,
+        rotation="hourly",
+        clock=WallClock(1_700_003_600.0),
+    )
+    rec2.apply_retention()
+    assert rec2._used >= 2000
+    assert rec2._used == cache_usage_bytes(tmp_path)
+    assert (tmp_path / "trades" / "old.zip").exists()

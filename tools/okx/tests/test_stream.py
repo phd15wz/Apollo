@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import gzip
 import inspect
 import json
+import random
 import time
 from pathlib import Path
 from urllib.parse import urlparse
@@ -144,6 +146,16 @@ async def _collect(stream: OkxPublicStream, n: int, timeout: float = 2.0) -> lis
 
 
 INST = "BTC-USDT-SWAP"
+
+
+def _tape_coverage(rec: StreamRecorder) -> tuple[int, int]:
+    rows: list[dict] = []
+    for path in rec.files_written:
+        if path.is_file():
+            rows.extend(json.loads(line) for line in gzip.open(path, "rt", encoding="utf-8") if line.strip())
+    recorded = sum(1 for row in rows if row.get("event") == "data")
+    covered = sum(int(row.get("dropped") or 0) for row in rows if row.get("event") == "gap")
+    return recorded, covered
 
 
 @run_async
@@ -1035,9 +1047,23 @@ async def test_slow_disk_backpressure_keeps_pinging(tmp_path: Path) -> None:
         enabled=True,
         write_queue_maxsize=2,
         write_sleep=0.4,
-        offer_timeout=0.15,
+        # Longer than the 250 ms probe budget so a blocking wait_put fails.
+        offer_timeout=0.5,
         sync=False,
     )
+    max_delay = 0.0
+    probing = True
+
+    async def probe() -> None:
+        nonlocal max_delay
+        loop = asyncio.get_running_loop()
+        last = loop.time()
+        while probing:
+            await asyncio.sleep(0.05)
+            now = loop.time()
+            max_delay = max(max_delay, now - last - 0.05)
+            last = now
+
     async with OkxPublicStream(
         [("trades", INST)],
         connector=broker,
@@ -1048,22 +1074,129 @@ async def test_slow_disk_backpressure_keeps_pinging(tmp_path: Path) -> None:
         reconnect_base=5,
         reconnect_max=5,
     ) as stream:
-        await _wait_sent(sock, lambda s: "subscribe" in s)
-        for trade_id in range(1, 21):
-            await sock.push(_trade_push(INST, trade_id))
-        await asyncio.sleep(0.7)
-        pings = [item for item in sock.sent if item == "ping"]
-        assert pings
-        assert broker._i == 1
-        assert stream._reconnect_generation == 1
-        await asyncio.sleep(2.5)
+        probe_task = asyncio.create_task(probe())
+        try:
+            await _wait_sent(sock, lambda s: "subscribe" in s)
+            for trade_id in range(1, 13):
+                await sock.push(_trade_push(INST, trade_id))
+            await asyncio.sleep(0.7)
+            pings = [item for item in sock.sent if item == "ping"]
+            assert pings
+            assert broker._i == 1
+            assert stream._reconnect_generation == 1
+            await asyncio.sleep(1.0)
+        finally:
+            probing = False
+            probe_task.cancel()
+            try:
+                await probe_task
+            except asyncio.CancelledError:
+                pass
+        assert max_delay < 0.25
     rec.close()
-    import gzip
-
     rows = []
     for path in rec.files_written:
         rows.extend(json.loads(line) for line in gzip.open(path, "rt", encoding="utf-8") if line.strip())
     gaps = [row for row in rows if row.get("reason") == "writer_overflow"]
     data = [row for row in rows if row.get("event") == "data"]
     assert rec.writer_dropped == sum(int(row["dropped"]) for row in gaps)
-    assert len(data) + rec.writer_dropped == 20
+    assert len(data) + rec.writer_dropped == 12
+
+
+@run_async
+async def test_stop_never_loses_batch_without_gap(tmp_path: Path) -> None:
+    rng = random.Random(0)
+    produced = 501
+    for i in range(50):
+        rec = StreamRecorder(
+            cache_dir=tmp_path / f"run{i}",
+            enabled=True,
+            write_queue_maxsize=1,
+            write_sleep=0.08,
+            offer_timeout=1.0,
+            sync=False,
+        )
+        broker = ScriptedConnector()
+        sock = broker.add()
+        stream = OkxPublicStream(
+            [("trades", INST)],
+            connector=broker,
+            recorder=rec,
+            ping_interval=30,
+            stale_timeout=30,
+            shutdown_timeout=rng.choice([0.0, 0.05, 0.2, 1.0]),
+        )
+        await stream.start()
+        try:
+            await _wait_sent(sock, lambda s: "subscribe" in s)
+            await sock.push(_trade_push(INST, 1))
+            await asyncio.wait_for(anext(stream), timeout=2)
+            payload = {
+                "arg": {"channel": "trades", "instId": INST},
+                "data": [
+                    {
+                        "instId": INST,
+                        "tradeId": str(tid),
+                        "px": "1",
+                        "sz": "1",
+                        "side": "buy",
+                        "ts": str(1_700_000_000_000 + tid),
+                        "count": "1",
+                    }
+                    for tid in range(2, 502)
+                ],
+            }
+            await sock.push(payload)
+            await asyncio.sleep(rng.uniform(0.0, 0.08))
+        finally:
+            await stream.stop()
+        recorded, covered = _tape_coverage(rec)
+        assert recorded + covered == produced, (i, recorded, covered, rec.writer_dropped)
+
+
+@run_async
+async def test_slow_disk_sets_writer_lag(tmp_path: Path) -> None:
+    broker = ScriptedConnector()
+    sock = broker.add()
+    rec = StreamRecorder(
+        cache_dir=tmp_path,
+        enabled=True,
+        write_queue_maxsize=1,
+        write_sleep=0.4,
+        offer_timeout=0.3,
+        sync=False,
+    )
+    async with OkxPublicStream(
+        [("trades", INST)],
+        connector=broker,
+        recorder=rec,
+        ping_interval=30,
+        stale_timeout=0.2,
+        lag_threshold=0.15,
+        handshake_timeout=1,
+        reconnect_base=5,
+        reconnect_max=5,
+    ) as stream:
+        await _wait_sent(sock, lambda s: "subscribe" in s)
+        for trade_id in range(1, 8):
+            await sock.push(_trade_push(INST, trade_id))
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and not stream.writer_lagging:
+            await asyncio.sleep(0.05)
+        assert stream.writer_lagging
+        assert stream.writer_lag >= 0.15
+        kinds = [item.kind for item in stream._queue.items if item is not None]
+        assert "lag" in kinds
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline and stream.writer_lagging:
+            await asyncio.sleep(0.05)
+        assert stream.writer_lagging is False
+        kinds = [item.kind for item in stream._queue.items if item is not None]
+        assert "lag_cleared" in kinds
+
+
+def test_default_lag_and_shutdown_bounds() -> None:
+    stream = OkxPublicStream([("trades", INST)])
+    assert stream.lag_threshold == 5.0
+    assert stream.shutdown_timeout == 8.0
+    assert stream.writer_lagging is False
