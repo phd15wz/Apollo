@@ -55,7 +55,7 @@ Univariate branching ratio (Theorem 3.1): $n=\int_0^\infty\mu(s)\,ds$. Exponenti
 
 Multivariate: branching matrix $\Phi$ with $\Phi_{k,j}=A_{j,k}/\beta_k$ (expected type-$k$ offspring of one type-$j$ event, ch. 5 indexing). Stationary iff the **spectral radius** $\rho(\Phi)<1$. Near $\rho=1$ (or $n\approx 1$) estimates of $\alpha,\beta$ are poorly identified; report that and do not treat point estimates as sharp.
 
-Fitters emit `NonstationaryWarning` when the fitted $n$ (or $\rho(\Phi)$) is $\ge 1$. Simulators **raise** for $n\ge 1$ unless `allow_nonstationary=True`, in which case they warn and apply a finite-horizon event cap.
+Fitters emit `NonstationaryWarning` when the fitted $n$ (or $\rho(\Phi)$) is $\ge 1$. Simulators **raise** `ValueError` for $n\ge 1$ unless `allow_nonstationary=True`. In that mode they warn and apply a finite-horizon event cap (`max(2000, 100 \times T \times \max(\lambda, 1))` by default). Hitting the cap raises **`RuntimeError`** and does **not** return a truncated path. Raise the cap with `max_events=...` on `simulate_thinning` / `simulate_marked_thinning`.
 
 ## Estimation (what to run)
 

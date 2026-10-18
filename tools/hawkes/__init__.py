@@ -13,6 +13,7 @@ from tools.hawkes._limits import MAX_QUADRATIC_EVENTS
 from tools.hawkes._stationarity import NonstationaryWarning, matrix_spectral_radius
 from tools.hawkes.diagnostics import compensator_increments, ks_unit_exponential
 from tools.hawkes.estimate import (
+    DEFAULT_POWERLAW_START,
     FitResult,
     fit_exponential_em,
     fit_exponential_gmm,
@@ -41,6 +42,7 @@ from tools.hawkes.multivariate import (
 from tools.hawkes.simulate import simulate_by_time_change, simulate_thinning
 
 __all__ = [
+    "DEFAULT_POWERLAW_START",
     "ExpKernel",
     "FitResult",
     "MAX_QUADRATIC_EVENTS",

@@ -13,23 +13,44 @@ from tools.hawkes._stationarity import require_or_cap
 from tools.hawkes.kernels import ExpKernel, PowerLawKernel, as_exp, as_power
 
 
-def simulate_thinning(kernel, horizon: float, seed: int = -1, allow_nonstationary: bool = False):
-    """Ogata thinning on ``[0, horizon]``. Accepts ExpKernel or PowerLawKernel."""
+def simulate_thinning(
+    kernel,
+    horizon: float,
+    seed: int = -1,
+    allow_nonstationary: bool = False,
+    max_events: int | None = None,
+):
+    """Ogata thinning on ``[0, horizon]``. Accepts ExpKernel or PowerLawKernel.
+
+    Non-stationary kernels (branching ratio >= 1) raise ``ValueError`` unless
+    ``allow_nonstationary=True``. In that mode a finite event cap still applies.
+    Hitting the cap raises ``RuntimeError``; the function does **not** return a
+    truncated path. Default cap is ``max(2000, 100 * horizon * max(baseline, 1))``.
+    Pass a larger ``max_events`` to raise it.
+    """
     if seed >= 0:
         np.random.seed(int(seed))
     if isinstance(kernel, PowerLawKernel) or (
         not isinstance(kernel, ExpKernel) and np.asarray(kernel).size == 4
     ):
-        return _thin_power(as_power(kernel), horizon, allow_nonstationary)
-    return _thin_exp(as_exp(kernel), horizon, allow_nonstationary)
+        return _thin_power(
+            as_power(kernel), horizon, allow_nonstationary, max_events
+        )
+    return _thin_exp(as_exp(kernel), horizon, allow_nonstationary, max_events)
 
 
-def _thin_exp(model: ExpKernel, horizon: float, allow_nonstationary: bool) -> np.ndarray:
+def _thin_exp(
+    model: ExpKernel,
+    horizon: float,
+    allow_nonstationary: bool,
+    max_events: int | None,
+) -> np.ndarray:
     cap = require_or_cap(
         model.branching_ratio(),
         model.baseline,
         horizon,
         allow_nonstationary=allow_nonstationary,
+        max_events=max_events,
     )
     rate = float(model.baseline)
     arrivals = []
@@ -53,7 +74,10 @@ def _thin_exp(model: ExpKernel, horizon: float, allow_nonstationary: bool) -> np
 
 
 def _thin_power(
-    model: PowerLawKernel, horizon: float, allow_nonstationary: bool
+    model: PowerLawKernel,
+    horizon: float,
+    allow_nonstationary: bool,
+    max_events: int | None,
 ) -> np.ndarray:
     cap = require_or_cap(
         model.branching_ratio(),
@@ -61,6 +85,7 @@ def _thin_power(
         horizon,
         allow_nonstationary=allow_nonstationary,
         kind="power-law branching ratio",
+        max_events=max_events,
     )
     bump = model.amplitude / (model.offset**model.exponent)
     rate = float(model.baseline)
@@ -92,7 +117,14 @@ def simulate_by_time_change(
     seed=None,
     allow_nonstationary: bool = False,
 ) -> np.ndarray:
-    """Invert Lambda until ``n_events`` arrivals exist. Uses history[:i] only."""
+    """Invert Lambda until ``n_events`` arrivals exist. Uses history[:i] only.
+
+    Non-stationary kernels raise ``ValueError`` unless
+    ``allow_nonstationary=True``. This path asks for a fixed event count, so it
+    has no horizon event cap; thinning simulators still raise ``RuntimeError``
+    (and do not return a truncated path) if their cap is hit. Raise that cap
+    with ``max_events`` on ``simulate_thinning`` / ``simulate_marked_thinning``.
+    """
     if seed is not None:
         np.random.seed(int(seed))
     model = as_exp(kernel)

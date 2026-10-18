@@ -3,6 +3,7 @@ import pytest
 from scipy.integrate import quad
 
 from tools.hawkes import (
+    DEFAULT_POWERLAW_START,
     ExpKernel,
     MarkedExpKernel,
     PowerLawKernel,
@@ -11,6 +12,8 @@ from tools.hawkes import (
     exponential_score,
     fit_exponential_em,
     fit_exponential_mle,
+    fit_powerlaw_mle,
+    powerlaw_loglik,
     simulate_marked_thinning,
     simulate_thinning,
 )
@@ -70,6 +73,19 @@ def test_powerlaw_compensator_matches_numerical_integral():
         )
         numeric += piece
     assert abs(analytic - numeric) < 1e-6
+
+
+def test_powerlaw_mle_default_start_is_stationary_and_moves():
+    start = PowerLawKernel.from_vector(DEFAULT_POWERLAW_START)
+    assert start.branching_ratio() < 1.0
+    truth = PowerLawKernel(0.5, 0.4, 1.0, 2.0)
+    horizon = 80.0
+    arrivals = simulate_thinning(truth, horizon, seed=9)
+    fitted = fit_powerlaw_mle(arrivals, horizon)
+    assert not np.allclose(fitted.params, DEFAULT_POWERLAW_START)
+    start_ll = powerlaw_loglik(arrivals, horizon, start)
+    assert fitted.loglik is not None
+    assert fitted.loglik > start_ll
 
 
 def test_powerlaw_thinning_runs_when_stationary():

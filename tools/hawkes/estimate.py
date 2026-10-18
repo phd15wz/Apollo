@@ -76,6 +76,11 @@ def fit_exponential_mle(
     )
 
 
+# Stationary default: n = 0.5 / ((2-1) * 1^{1}) = 0.5. The previous [1,1,1,2]
+# start had n = 1, so the loss barrier at n >= 0.999 never moved.
+DEFAULT_POWERLAW_START = np.array([1.0, 0.5, 1.0, 2.0], dtype=np.float64)
+
+
 def fit_powerlaw_mle(arrivals, horizon, start=None, allow_large: bool = False) -> FitResult:
     stamp = np.asarray(arrivals, dtype=np.float64)
     n = stamp.size
@@ -86,11 +91,7 @@ def fit_powerlaw_mle(arrivals, horizon, start=None, allow_large: bool = False) -
             "Pass allow_large=True to run a chunked O(N) memory path anyway, "
             "or split the window / use the exponential MLE."
         )
-    x0 = (
-        as_power(start).as_vector()
-        if start is not None
-        else np.array([1.0, 1.0, 1.0, 2.0], dtype=np.float64)
-    )
+    x0 = as_power(start).as_vector() if start is not None else DEFAULT_POWERLAW_START.copy()
     bounds = ((POS_EPS, None), (POS_EPS, None), (POS_EPS, None), (1.0 + POS_EPS, 20.0))
 
     def loss(vec):

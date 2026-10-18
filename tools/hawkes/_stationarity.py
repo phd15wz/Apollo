@@ -36,6 +36,7 @@ def require_or_cap(
     *,
     allow_nonstationary: bool,
     kind: str = "branching ratio",
+    max_events: int | None = None,
 ) -> int | None:
     """Return None if stationary; otherwise raise, or warn and return an event cap."""
     if np.isfinite(ratio) and ratio < 1.0:
@@ -51,4 +52,6 @@ def require_or_cap(
         NonstationaryWarning,
         stacklevel=3,
     )
+    if max_events is not None:
+        return int(max_events)
     return horizon_event_cap(baseline, horizon)

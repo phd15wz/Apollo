@@ -94,7 +94,16 @@ def simulate_marked_thinning(
     horizon: float,
     seed=None,
     allow_nonstationary: bool = False,
+    max_events: int | None = None,
 ):
+    """Ogata thinning for a marked exponential kernel on ``[0, horizon]``.
+
+    If the spectral radius of the branching matrix is >= 1, raises
+    ``ValueError`` unless ``allow_nonstationary=True``. Hitting the event cap
+    then raises ``RuntimeError``; a truncated path is not returned. Default cap
+    is ``max(2000, 100 * horizon * max(baseline, 1))``. Pass ``max_events`` to
+    raise it.
+    """
     if seed is not None:
         np.random.seed(int(seed))
     rho = matrix_spectral_radius(model.branching_matrix())
@@ -104,6 +113,7 @@ def simulate_marked_thinning(
         horizon,
         allow_nonstationary=allow_nonstationary,
         kind="spectral radius",
+        max_events=max_events,
     )
     rate = model.baseline.copy()
     arrivals = []
