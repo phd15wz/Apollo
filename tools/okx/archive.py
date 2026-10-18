@@ -128,9 +128,21 @@ def _windows(start: date, end: date, width: int) -> list[tuple[date, date]]:
 
 
 def _filename_date(filename: str, date_ts_ms: int | None) -> str:
-    for part in filename.replace(".zip", "").split("-"):
-        if len(part) == 10 and part[4] == "-" and part[7] == "-":
-            return part
+    stem = filename[:-4] if filename.lower().endswith(".zip") else filename
+    if "-trades-" in stem:
+        tail = stem.rsplit("-trades-", 1)[-1]
+        candidate = tail[:10]
+        try:
+            date.fromisoformat(candidate)
+            return candidate
+        except ValueError:
+            pass
+    if len(stem) >= 10:
+        try:
+            date.fromisoformat(stem[-10:])
+            return stem[-10:]
+        except ValueError:
+            pass
     if date_ts_ms:
         return datetime.fromtimestamp(date_ts_ms / 1000.0, tz=timezone.utc).date().isoformat()
     return "unknown"
