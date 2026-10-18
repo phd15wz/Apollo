@@ -7,3 +7,4 @@ Each skill lives in `skills/<slug>/SKILL.md`. `<slug>` is lowercase and hyphenat
 ## Skills
 
 - `exchange-calendar` — Look up NYSE (Nasdaq aliases to NYSE), CME, HKEX, SSE, JPX, and KRX holidays and refresh the sourced dataset.
+- `hawkes-process` — Fit and diagnose Hawkes models on event times (OKX trade arrivals, buy/sell cross-excitation). Toolkit: `tools/hawkes/`.
