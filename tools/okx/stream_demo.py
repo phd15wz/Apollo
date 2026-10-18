@@ -103,6 +103,8 @@ async def _run(args: argparse.Namespace) -> int:
         rest=rest,
         recorder=recorder,
         stale_timeout=args.stale_timeout,
+        public_url=args.public_url,
+        business_url=args.business_url,
     ) as stream:
         end = started + args.seconds
         while time.monotonic() < end:
@@ -140,6 +142,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--retention-bytes", type=int, default=None)
     parser.add_argument("--data-dir", default=None)
     parser.add_argument("--stale-timeout", type=float, default=60.0)
+    parser.add_argument(
+        "--public-url",
+        default=None,
+        help="wss public URL (else OKX_WS_PUBLIC_URL, else wss://ws.okx.com:8443/ws/v5/public)",
+    )
+    parser.add_argument(
+        "--business-url",
+        default=None,
+        help="wss business URL (else OKX_WS_BUSINESS_URL, else wss://ws.okx.com:8443/ws/v5/business)",
+    )
     parser.add_argument("--verbose", action="store_true")
     return parser
 

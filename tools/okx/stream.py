@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import random
 import time
 import zlib
@@ -59,6 +60,9 @@ DEFAULT_PING_INTERVAL = 25.0
 DEFAULT_STALE_TIMEOUT = 60.0
 DEFAULT_RECONNECT_BASE = 0.5
 DEFAULT_RECONNECT_MAX = 30.0
+DEFAULT_HANDSHAKE_TIMEOUT = 8.0
+
+_LOG = logging.getLogger(__name__)
 
 
 class WsConnection(Protocol):
@@ -332,8 +336,8 @@ class OkxPublicStream:
         self,
         subscriptions: Sequence[tuple[str, str] | Mapping[str, str]],
         *,
-        public_url: str = endpoints.DEFAULT_PUBLIC_WS_URL,
-        business_url: str = endpoints.DEFAULT_BUSINESS_WS_URL,
+        public_url: str | None = None,
+        business_url: str | None = None,
         rest: PublicClient | None = None,
         recorder: StreamRecorder | None = None,
         connector: Connector | None = None,
@@ -343,15 +347,24 @@ class OkxPublicStream:
         stale_timeout: float = DEFAULT_STALE_TIMEOUT,
         reconnect_base: float = DEFAULT_RECONNECT_BASE,
         reconnect_max: float = DEFAULT_RECONNECT_MAX,
+        handshake_timeout: float = DEFAULT_HANDSHAKE_TIMEOUT,
         clock: Clock | None = None,
         sleep: AsyncSleeper | None = None,
     ) -> None:
         self.args = validate_subscriptions(subscriptions)
         self.allow_unofficial_hosts = allow_unofficial_hosts
-        endpoints.assert_okx_ws_url(public_url, allow_unofficial_hosts=allow_unofficial_hosts)
-        endpoints.assert_okx_ws_url(business_url, allow_unofficial_hosts=allow_unofficial_hosts)
-        self.public_url = public_url
-        self.business_url = business_url
+        self.public_url = endpoints.resolve_ws_url(
+            public_url,
+            env_name=endpoints.PUBLIC_WS_URL_ENV,
+            default=endpoints.DEFAULT_PUBLIC_WS_URL,
+            allow_unofficial_hosts=allow_unofficial_hosts,
+        )
+        self.business_url = endpoints.resolve_ws_url(
+            business_url,
+            env_name=endpoints.BUSINESS_WS_URL_ENV,
+            default=endpoints.DEFAULT_BUSINESS_WS_URL,
+            allow_unofficial_hosts=allow_unofficial_hosts,
+        )
         self.rest = rest
         self.recorder = recorder or StreamRecorder.disabled()
         self._connector = connector
@@ -360,6 +373,9 @@ class OkxPublicStream:
         self.stale_timeout = stale_timeout
         self.reconnect_base = reconnect_base
         self.reconnect_max = reconnect_max
+        self.handshake_timeout = handshake_timeout
+        self.fallbacks: list[tuple[str, str]] = []
+        self._url_override: dict[str, str] = {}
         self._clock = clock or time.monotonic
         self._sleep = sleep or asyncio.sleep
         self._queue = EventQueue(queue_maxsize)
@@ -433,14 +449,42 @@ class OkxPublicStream:
         self.recorder.close()
         self._queue.put(None, control=True)
 
+    async def _connect(self, url: str) -> WsConnection:
+        assert self._connector is not None
+        endpoints.assert_okx_ws_url(url, allow_unofficial_hosts=self.allow_unofficial_hosts)
+        return await asyncio.wait_for(self._connector(url), timeout=self.handshake_timeout)
+
+    async def _open_socket(self, url: str) -> WsConnection:
+        target = self._url_override.get(url, url)
+        endpoints.assert_okx_ws_url(target, allow_unofficial_hosts=self.allow_unofficial_hosts)
+        try:
+            return await self._connect(target)
+        except (TimeoutError, asyncio.TimeoutError):
+            fallback = endpoints.fallback_ws_port_443(
+                target, allow_unofficial_hosts=self.allow_unofficial_hosts
+            )
+            if fallback is None:
+                raise
+            endpoints.assert_same_ws_host_path(target, fallback)
+            endpoints.assert_okx_ws_url(fallback, allow_unofficial_hosts=self.allow_unofficial_hosts)
+            _LOG.warning(
+                "OKX WebSocket handshake to %s timed out; falling back to %s (port only)",
+                target,
+                fallback,
+            )
+            self.fallbacks.append((target, fallback))
+            await self._connect_limiter.acquire()
+            conn = await self._connect(fallback)
+            self._url_override[url] = fallback
+            return conn
+
     async def _run_socket(self, url: str, args: list[dict[str, str]]) -> None:
         delay = self.reconnect_base
         while self._running:
             conn: WsConnection | None = None
             try:
                 await self._connect_limiter.acquire()
-                assert self._connector is not None
-                conn = await self._connector(url)
+                conn = await self._open_socket(url)
                 await self._subscribe(conn, args)
                 self._reconnect_generation += 1
                 delay = self.reconnect_base

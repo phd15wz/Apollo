@@ -5,9 +5,11 @@ import functools
 import inspect
 import json
 from pathlib import Path
+from urllib.parse import urlparse
 
 import pytest
 
+from tools.okx import endpoints
 from tools.okx.errors import PrivateChannelError, UnsafeEndpointError
 from tools.okx.record import StreamRecorder
 from tools.okx.stream import (
@@ -462,6 +464,115 @@ def test_host_allowlist_and_private_path() -> None:
 def test_invalid_inst_id_rejected() -> None:
     with pytest.raises(ValueError, match="inst_id"):
         OkxPublicStream([("trades", "../ETC-USDT-SWAP")])
+
+
+def test_env_ws_url_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OKX_WS_PUBLIC_URL", "wss://ws.okx.com:443/ws/v5/public")
+    monkeypatch.setenv("OKX_WS_BUSINESS_URL", "wss://wsaws.okx.com:443/ws/v5/business")
+    stream = OkxPublicStream([("trades", INST)])
+    assert stream.public_url == "wss://ws.okx.com:443/ws/v5/public"
+    assert stream.business_url == "wss://wsaws.okx.com:443/ws/v5/business"
+
+
+def test_env_ws_url_refuses_non_wss(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OKX_WS_PUBLIC_URL", "ws://ws.okx.com/ws/v5/public")
+    with pytest.raises(ValueError, match="non-wss"):
+        OkxPublicStream([("trades", INST)])
+    monkeypatch.setenv("OKX_WS_PUBLIC_URL", "http://ws.okx.com/ws/v5/public")
+    with pytest.raises(ValueError, match="non-wss"):
+        OkxPublicStream([("trades", INST)])
+
+
+def test_env_ws_url_refuses_non_okx_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OKX_WS_PUBLIC_URL", "wss://evil.example/ws/v5/public")
+    monkeypatch.setenv("OKX_ALLOW_UNOFFICIAL_HOSTS", "1")
+    monkeypatch.setenv("ALLOW_UNOFFICIAL_HOSTS", "1")
+    with pytest.raises(ValueError, match="host"):
+        OkxPublicStream([("trades", INST)])
+    with pytest.raises(ValueError, match="host"):
+        OkxPublicStream([("trades", INST)], allow_unofficial_hosts=False)
+
+
+def test_fallback_that_alters_host_is_refused() -> None:
+    with pytest.raises(ValueError, match="must not change host"):
+        endpoints.assert_same_ws_host_path(
+            "wss://ws.okx.com:8443/ws/v5/public",
+            "wss://evil.example:443/ws/v5/public",
+        )
+    with pytest.raises(ValueError, match="must not change path"):
+        endpoints.assert_same_ws_host_path(
+            "wss://ws.okx.com:8443/ws/v5/public",
+            "wss://ws.okx.com:443/ws/v5/private",
+        )
+    good = endpoints.fallback_ws_port_443("wss://ws.okx.com:8443/ws/v5/public")
+    assert good == "wss://ws.okx.com:443/ws/v5/public"
+    assert urlparse(good).hostname == "ws.okx.com"
+    assert urlparse(good).path == "/ws/v5/public"
+    assert urlparse(good).port == 443
+    assert endpoints.fallback_ws_port_443("wss://ws.okx.com:443/ws/v5/public") is None
+
+
+def test_stream_demo_url_flags() -> None:
+    from tools.okx.stream_demo import build_parser
+
+    args = build_parser().parse_args(
+        [
+            "--public-url",
+            "wss://ws.okx.com:443/ws/v5/public",
+            "--business-url",
+            "wss://ws.okx.com:443/ws/v5/business",
+        ]
+    )
+    assert args.public_url == "wss://ws.okx.com:443/ws/v5/public"
+    assert args.business_url == "wss://ws.okx.com:443/ws/v5/business"
+    stream = OkxPublicStream(
+        [("trades", INST)],
+        public_url=args.public_url,
+        business_url=args.business_url,
+    )
+    assert stream.public_url.endswith(":443/ws/v5/public")
+
+
+@run_async
+async def test_8443_timeout_falls_back_to_443() -> None:
+    broker = ScriptedConnector()
+    sock = broker.add()
+
+    class Timeout8443:
+        def __init__(self) -> None:
+            self.urls: list[str] = []
+
+        async def __call__(self, url: str) -> MemorySocket:
+            self.urls.append(url)
+            parsed = urlparse(url)
+            if parsed.port == 8443:
+                raise TimeoutError("opening handshake timed out")
+            if parsed.port == 443 and parsed.hostname == "ws.okx.com":
+                return sock
+            raise AssertionError(f"unexpected url {url}")
+
+    connector = Timeout8443()
+    async with OkxPublicStream(
+        [("trades", INST)],
+        public_url="wss://ws.okx.com:8443/ws/v5/public",
+        connector=connector,
+        ping_interval=30,
+        stale_timeout=30,
+        handshake_timeout=0.05,
+        reconnect_base=0.01,
+        reconnect_max=0.02,
+    ) as stream:
+        await _wait_sent(sock, lambda s: "subscribe" in s)
+        await sock.push(_trade_push(INST, 1))
+        msg = await asyncio.wait_for(anext(stream), timeout=1)
+    assert msg.data.trade_id == 1
+    assert connector.urls[0] == "wss://ws.okx.com:8443/ws/v5/public"
+    assert connector.urls[1] == "wss://ws.okx.com:443/ws/v5/public"
+    assert stream.fallbacks == [
+        ("wss://ws.okx.com:8443/ws/v5/public", "wss://ws.okx.com:443/ws/v5/public")
+    ]
+    assert all(urlparse(u).hostname == "ws.okx.com" for u in connector.urls)
+    assert all(urlparse(u).path == "/ws/v5/public" for u in connector.urls)
 
 
 @run_async

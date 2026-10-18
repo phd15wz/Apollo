@@ -149,9 +149,15 @@ are also listed as public/keyless in the v5 docs and the public REST catalog.
 
 `wss://ws.okx.com:8443/ws/v5/public` for `trades`, `tickers`, `books5`,
 `books`, `bbo-tbt`, `funding-rate`, `mark-price`. Candle channels use
-`wss://ws.okx.com:8443/ws/v5/business`. Hosts are allowlisted
-(`ws.okx.com`, `wsaws.okx.com`, `wspap.okx.com`, `wseea.okx.com`,
-`wsus.okx.com`). `login` and private channels raise `PrivateChannelError`.
+`wss://ws.okx.com:8443/ws/v5/business`. If the 8443 handshake times out
+(some networks block that port), the client retries the **same host and
+path on port 443** and logs the fallback. Override with
+`OKX_WS_PUBLIC_URL` / `OKX_WS_BUSINESS_URL` or `--public-url` /
+`--business-url`. Overrides are `wss` and allowlisted hosts only — the
+same rule as REST. `allow_unofficial_hosts` is a constructor opt-in;
+env vars cannot enable it. Hosts: `ws.okx.com`, `wsaws.okx.com`,
+`wspap.okx.com`, `wseea.okx.com`, `wsus.okx.com`. `login` and private
+channels raise `PrivateChannelError`.
 
 The client sends a text `ping` after ~25 s of silence and expects `pong`.
 It reconnects with exponential backoff + jitter and resubscribes. Connection
@@ -174,6 +180,9 @@ CLI demo (prints live trades / top-of-book; recording off unless `--record`):
 ```bash
 python3 -m pip install 'websockets>=12'
 python3 -m tools.okx.stream_demo --inst SPCX-USDT-SWAP --channels trades,books5 --seconds 60
+# if 8443 is blocked:
+python3 -m tools.okx.stream_demo --inst SPCX-USDT-SWAP --channels trades,books5 --seconds 60 \
+  --public-url wss://ws.okx.com:443/ws/v5/public
 ```
 
 ### Safeguards

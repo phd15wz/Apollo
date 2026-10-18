@@ -67,6 +67,8 @@ async with OkxPublicStream(
 
 ```bash
 python3 -m tools.okx.stream_demo --inst SPCX-USDT-SWAP --channels trades,books5 --seconds 60
+# 8443 blocked: set OKX_WS_PUBLIC_URL=wss://ws.okx.com:443/ws/v5/public
+# or --public-url (wss + official hosts only; env cannot enable unofficial hosts)
 ```
 
 Recording is **off by default**. `--record` writes gzip JSONL under

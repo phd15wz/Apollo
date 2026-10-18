@@ -11,8 +11,9 @@ limits are per IP.
 
 from __future__ import annotations
 
+import os
 import re
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 
 SITE_BASE_URLS: dict[str, str] = {
     "global": "https://www.okx.com",
@@ -54,6 +55,8 @@ ALLOWED_WS_HOSTS: frozenset[str] = frozenset(
 
 DEFAULT_PUBLIC_WS_URL = "wss://ws.okx.com:8443/ws/v5/public"
 DEFAULT_BUSINESS_WS_URL = "wss://ws.okx.com:8443/ws/v5/business"
+PUBLIC_WS_URL_ENV = "OKX_WS_PUBLIC_URL"
+BUSINESS_WS_URL_ENV = "OKX_WS_BUSINESS_URL"
 
 PUBLIC_WS_PATHS: frozenset[str] = frozenset({"/ws/v5/public", "/ws/v5/business"})
 PRIVATE_WS_PATH = "/ws/v5/private"
@@ -260,3 +263,65 @@ def is_candle_channel(channel: str) -> bool:
 
 def is_public_ws_channel(channel: str) -> bool:
     return channel in PUBLIC_WS_CHANNELS or is_candle_channel(channel)
+
+
+def resolve_ws_url(
+    explicit: str | None,
+    *,
+    env_name: str,
+    default: str,
+    allow_unofficial_hosts: bool = False,
+) -> str:
+    """Constructor arg, then env, then default. Env cannot enable unofficial hosts."""
+    if explicit is not None and str(explicit).strip():
+        url = str(explicit).strip()
+    else:
+        url = os.environ.get(env_name, "").strip() or default
+    assert_okx_ws_url(url, allow_unofficial_hosts=allow_unofficial_hosts)
+    return url
+
+
+def ws_url_on_port(url: str, port: int) -> str:
+    """Return ``url`` with only the port changed. Host, path, and scheme stay."""
+    parsed = urlparse(url)
+    host = parsed.hostname
+    if not host:
+        raise ValueError(f"WebSocket URL has no host: {url!r}")
+    userinfo = ""
+    if parsed.username:
+        userinfo = parsed.username
+        if parsed.password:
+            userinfo += f":{parsed.password}"
+        userinfo += "@"
+    host_part = f"[{host}]" if ":" in host else host
+    candidate = urlunparse(parsed._replace(netloc=f"{userinfo}{host_part}:{int(port)}"))
+    assert_same_ws_host_path(url, candidate)
+    return candidate
+
+
+def assert_same_ws_host_path(original: str, candidate: str) -> None:
+    """Refuse a fallback candidate that changes scheme, host, or path."""
+    left = urlparse(original)
+    right = urlparse(candidate)
+    if (left.scheme or "") != (right.scheme or ""):
+        raise ValueError("WebSocket fallback must not change scheme")
+    if (left.hostname or "").lower() != (right.hostname or "").lower():
+        raise ValueError("WebSocket fallback must not change host")
+    if (left.path or "") != (right.path or ""):
+        raise ValueError("WebSocket fallback must not change path")
+
+
+def fallback_ws_port_443(url: str, *, allow_unofficial_hosts: bool = False) -> str | None:
+    """If ``url`` uses port 8443, return the same host/path on port 443.
+
+    Re-validates the allowlist. Returns ``None`` when the URL is not on 8443.
+    """
+    parsed = urlparse(url)
+    if parsed.port != 8443:
+        return None
+    candidate = ws_url_on_port(url, 443)
+    assert_same_ws_host_path(url, candidate)
+    if urlparse(candidate).port != 443:
+        raise ValueError("WebSocket fallback may only switch to port 443")
+    assert_okx_ws_url(candidate, allow_unofficial_hosts=allow_unofficial_hosts)
+    return candidate
