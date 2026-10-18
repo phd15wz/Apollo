@@ -62,7 +62,7 @@ Fitters emit `NonstationaryWarning` when the fitted $n$ (or $\rho(\Phi)$) is $\g
 | Method | Use when | Cost / caveat |
 | --- | --- | --- |
 | **MLE (default)** `fit_exponential_mle` | Fully observed event times | $O(N)$ for exponential (recursive excitation cache, eqs. 5.7–5.8). Pass `use_score=True` for the analytic gradient. Optional check vs `hawkeslib` is fine if it installs; do not depend on it at runtime (its sampler uses removed `np.float`). |
-| MLE + Hessian | Need intervals | Univariate exponential only: `FitResult.stderr` (with `use_score=True`) or `hessian_stderr` from observed information $-\nabla^2\ell`. Quote $\hat\theta\pm 1.96\,\mathrm{se}$. Check that $-\nabla^2\ell$ is positive definite. Marked/multivariate SEs are not implemented. |
+| MLE + Hessian | Need intervals | Univariate exponential only: `FitResult.stderr` (with `use_score=True`) or `hessian_stderr` from observed information $-\nabla^2\ell$. Quote $\hat\theta\pm 1.96\,\mathrm{se}$. Check that $-\nabla^2\ell$ is positive definite. Marked/multivariate SEs are not implemented. |
 | Power-law MLE `fit_powerlaw_mle` | Long memory / aftershock-like decay | Likelihood is $O(N^2)$ time with chunked $O(N)$ extra memory. Refuses $N>2000$ unless `allow_large=True`, same cap as EM. Compare to exponential on the same window. |
 | GMM `fit_exponential_gmm` | Interval-censored counts, or a check on MLE | Eqs. 7.11–7.13. Weight matrix is $\hat V^{-1}$ from **batch means** of the moment vector (counts are autocorrelated). Do **not** use $W=(gg^\top)^{-1}$ (rank 1). |
 | EM `fit_exponential_em` | Small $N$, branching interpretation | EM is $O(N^2)$ time (ch. 6). This toolkit refuses $N>2000$ unless `allow_large=True`. Prefer MLE. |
