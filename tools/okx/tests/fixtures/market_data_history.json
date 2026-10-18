@@ -1,0 +1,29 @@
+{
+  "code": "0",
+  "msg": "",
+  "data": [
+    {
+      "dateAggrType": "daily",
+      "details": [
+        {
+          "dateRangeEnd": "1704153600000",
+          "dateRangeStart": "1704067200000",
+          "groupDetails": [
+            {
+              "dateTs": "1704067200000",
+              "filename": "BTC-USDT-SWAP-trades-2024-01-01.zip",
+              "sizeMB": "0.0002",
+              "url": "https://static.okx.com/cdn/okex/traderecords/trades/daily/20240101/BTC-USDT-SWAP-trades-2024-01-01.zip"
+            }
+          ],
+          "groupSizeMB": "0.0002",
+          "instFamily": "BTC-USDT",
+          "instId": "BTC-USDT-SWAP",
+          "instType": "SWAP"
+        }
+      ],
+      "totalSizeMB": "0.0002",
+      "ts": "1700000000000"
+    }
+  ]
+}

@@ -101,7 +101,7 @@ Random time-change (Theorem 9.2): $t_i^*=\Lambda(t_i)$ is unit-rate Poisson iff 
 
 ## OKX order-flow recipe
 
-1. Build a simple point process: trade times in seconds from a session start, marks buy/sell from aggressor side. Resolve ties (aggregate).
+1. Build a simple point process: trade times in seconds from a session start, marks buy/sell from aggressor side. Fetch public OKX trades with `skills/okx-market-data` (`tools/okx`). Resolve ties with `handle_ties` (aggregate); do not jitter.
 2. Check stationarity of counts per minute; if the session has a U-shape, split or use a piecewise baseline.
 3. Univariate exponential MLE on all trades as a baseline Poisson alternative ($n=0$).
 4. Bivariate MLE with `MarkedExpKernel` (`jumps[source, target]`) for buy $\leftrightarrow$ sell. Quote $\rho(\Phi)$ and the four branching entries. Hessian standard errors are not implemented for the marked fit.

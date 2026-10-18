@@ -6,3 +6,4 @@ Add a short note on how to install and run each tool. This repository is public,
 
 - `exchange_calendar` — Build and refresh `data/exchange_calendar`. See `tools/exchange_calendar/README.md`. No API keys.
 - `hawkes` — Simulate and fit linear Hawkes processes (exponential and power-law kernels). See `tools/hawkes/README.md`. Requires `numpy` and `scipy`.
+- `okx` — Stage-1 keyless OKX v5 public market data (REST, official historical-trade zips, maintenance windows). See `tools/okx/README.md`. No API keys; cannot trade. Bulk downloads go to `OKX_DATA_DIR` (default `~/.cache/apollo/okx`) under a 4 GiB cache cap.

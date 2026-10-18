@@ -1,0 +1,39 @@
+{
+  "code": "0",
+  "msg": "",
+  "data": [
+    {
+      "title": "Scheduled upgrade",
+      "state": "scheduled",
+      "begin": "1893456000000",
+      "end": "1893463200000",
+      "href": "https://www.okx.com/help/scheduled",
+      "serviceType": "1,3",
+      "system": "unified",
+      "scheDesc": "Matching engine restart",
+      "maintType": "1"
+    },
+    {
+      "title": "Finished work",
+      "state": "completed",
+      "begin": "1600000000000",
+      "end": "1600003600000",
+      "href": "",
+      "serviceType": "5",
+      "system": "",
+      "scheDesc": "old",
+      "maintType": "1"
+    },
+    {
+      "title": "Live incident",
+      "state": "ongoing",
+      "begin": "1700000000000",
+      "end": "1893466800000",
+      "href": "",
+      "serviceType": "0",
+      "system": "websocket",
+      "scheDesc": "WS reconnects",
+      "maintType": "2"
+    }
+  ]
+}
