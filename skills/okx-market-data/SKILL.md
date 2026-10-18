@@ -44,7 +44,7 @@ client = PublicClient(site="global")  # or "eea" / "us"
 ticker = client.ticker("BTC-USDT-SWAP")
 trades = history_trades_range(
     client, "BTC-USDT-SWAP", start_ts_ms=start, end_ts_ms=end
-)  # default: trade-id paging; pagination="ts" is lossy at ms boundaries
+)  # locates via one type=2 request, then pages by trade id; pagination="ts" is lossy
 ```
 
 REST history-trades is about three months. For longer SWAP tapes use the

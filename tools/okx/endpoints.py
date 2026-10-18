@@ -39,7 +39,9 @@ ALLOWED_HOSTS: frozenset[str] = frozenset(
     }
 )
 
-INST_ID_RE = re.compile(r"^[A-Z0-9]+(-[A-Z0-9]+)*$")
+# Path-safe instrument ids. Hyphen *and* underscore show up on live FUTURES
+# (e.g. BTC-USD_UM-261030). Still rejects '/', '\\', '.', and empty strings.
+INST_ID_RE = re.compile(r"^[A-Z0-9]+(?:[-_][A-Z0-9]+)*$")
 
 # Optional alias; docs still treat www.okx.com as valid for global REST.
 GLOBAL_OPENAPI = "https://openapi.okx.com"

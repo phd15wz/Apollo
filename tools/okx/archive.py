@@ -441,8 +441,10 @@ def download_daily_trades(
     """Download daily trade zips into the cache. Resumable, size-capped.
 
     Existing valid zips are skipped. Partial ``.part`` files are discarded
-    on any error. Checksums: zip member limits plus ``sizeMB`` /
-    ``Content-Length``. A sidecar ``.sha256`` is written after a good fetch.
+    on any error, including ``KeyboardInterrupt``. Checksums: zip member
+    limits plus ``sizeMB`` / ``Content-Length``. A sidecar ``.sha256`` is
+    written after a good fetch. ``PublicClient.allow_unofficial_hosts`` does
+    not apply to archive CDN URLs; pass ``allow_unofficial_hosts=True`` here.
     """
     endpoints.validate_inst_id(inst_id)
     root = Path(cache_dir) if cache_dir is not None else default_data_dir()
@@ -451,11 +453,10 @@ def download_daily_trades(
     run_budget = default_run_budget_bytes() if run_budget_bytes is None else run_budget_bytes
     if budget <= 0 or run_budget <= 0:
         raise ValueError("budgets must be positive; pass a larger explicit cap to override")
-    unofficial = allow_unofficial_hosts or getattr(client, "allow_unofficial_hosts", False)
+    # Archive CDN checks are independent of PublicClient.allow_unofficial_hosts.
+    unofficial = allow_unofficial_hosts
     files = list_daily_trade_files(client, inst_id, start, end)
     stream = streamer or RequestsStreamer()
-    dest_root = root / "trades" / _inst_type(inst_id) / inst_id
-    dest_root.mkdir(parents=True, exist_ok=True)
     used = cache_usage_bytes(root)
     written = 0
     kept: list[Path] = []
@@ -481,6 +482,8 @@ def download_daily_trades(
         content_length: int | None = None
         try:
             response = stream(item.url, headers, timeout)
+            final_url = (response.url or item.url).strip()
+            endpoints.assert_okx_url(final_url, allow_unofficial_hosts=unofficial)
             if response.status_code != 200:
                 raise OkxHttpError(response.status_code, item.url, "archive download failed")
             length_header = None
@@ -521,31 +524,30 @@ def download_daily_trades(
                     max_uncompressed_bytes=max_uncompressed_bytes,
                     max_compression_ratio=max_compression_ratio,
                 )
-        except Exception:
+            part.replace(dest)
+            hash_path.write_text(digest.hexdigest() + "\n", encoding="utf-8")
+            meta_path.write_text(
+                json.dumps(
+                    {
+                        "url": item.url,
+                        "filename": item.filename,
+                        "size_mb": item.size_mb,
+                        "bytes": got,
+                        "sha256": digest.hexdigest(),
+                        "inst_id": inst_id,
+                        "date": item.date,
+                    },
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            used += got
+            written += got
+            kept.append(dest)
+        finally:
             if part.exists():
                 part.unlink()
-            raise
-        part.replace(dest)
-        hash_path.write_text(digest.hexdigest() + "\n", encoding="utf-8")
-        meta_path.write_text(
-            json.dumps(
-                {
-                    "url": item.url,
-                    "filename": item.filename,
-                    "size_mb": item.size_mb,
-                    "bytes": got,
-                    "sha256": digest.hexdigest(),
-                    "inst_id": inst_id,
-                    "date": item.date,
-                },
-                indent=2,
-            )
-            + "\n",
-            encoding="utf-8",
-        )
-        used += got
-        written += got
-        kept.append(dest)
     return DownloadResult(files=kept, skipped=skipped, bytes_written=written, cache_dir=root)
 
 
@@ -619,6 +621,10 @@ def parse_trade_zip(
             max_compression_ratio=max_compression_ratio,
         )
         compressed = max(int(info.compress_size or 0), on_disk)
+        # ZipExtFile stops at ZipInfo.file_size and CRC-checks that prefix.
+        # A lying-small header would never reach the stream cap; raise the
+        # in-memory size past the cap so _BoundedReader sees the inflation.
+        info.file_size = max(int(info.file_size or 0), max_uncompressed_bytes + 65536)
         raw = zf.open(info, "r")
         bounded = _BoundedReader(
             raw,

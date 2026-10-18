@@ -40,3 +40,12 @@ class CacheBudgetExceeded(Exception):
 
 class UnsafeArchiveError(Exception):
     """Zip member, path, or compression limits were violated."""
+
+
+class PaginationBudgetExceeded(Exception):
+    """Paged through ``max_pages`` without reaching the start of the window."""
+
+    def __init__(self, message: str, *, pages: int, max_pages: int) -> None:
+        self.pages = pages
+        self.max_pages = max_pages
+        super().__init__(message)

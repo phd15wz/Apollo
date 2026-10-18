@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import struct
 import zipfile
 from pathlib import Path
 
@@ -19,6 +20,7 @@ from tools.okx.archive import (
     parse_trade_zip,
     safe_archive_filename,
 )
+from tools.okx.endpoints import validate_inst_id
 from tools.okx.errors import CacheBudgetExceeded, UnsafeArchiveError
 from tools.okx.tests.conftest import FakeTransport, load_fixture, make_client
 from tools.okx.types import parse_trade_id
@@ -400,6 +402,169 @@ def test_trade_ids_use_int_not_float(tmp_path: Path) -> None:
         parse_trade_id("1e6")
     with pytest.raises(ValueError):
         parse_trade_id("1.0")
+
+
+def test_inst_id_accepts_live_okx_symbols(tmp_path: Path) -> None:
+    real_ids = [
+        "BTC-USDT",
+        "SPCX-USDT-SWAP",
+        "BTC-USD_UM-261030",
+        "BTC-USD-261030",
+        "BTC-USD-261030-60000-C",
+    ]
+    for inst_id in real_ids:
+        assert validate_inst_id(inst_id) == inst_id
+        dest = cache_dest(tmp_path, inst_id, f"{inst_id}-trades-2024-01-01.zip")
+        assert dest.is_relative_to(tmp_path.resolve())
+        assert dest.name == f"{inst_id}-trades-2024-01-01.zip"
+    for bad in ["../x", "a/b", "A.B", ""]:
+        with pytest.raises(ValueError, match="inst_id"):
+            validate_inst_id(bad)
+
+
+def test_symlinked_cache_subdir_cannot_escape(tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    (cache / "trades").symlink_to(outside)
+    payload = _zip_bytes(CSV)
+    listing = _listing(
+        "BTC-USDT-SWAP-trades-2024-01-01.zip",
+        f"{len(payload) / 1_000_000:.8f}",
+    )
+    transport = FakeTransport()
+    transport.add("/api/v5/public/market-data-history", listing)
+    client = make_client(transport)
+    with pytest.raises(ValueError, match="outside cache"):
+        download_daily_trades(
+            client,
+            "BTC-USDT-SWAP",
+            "2024-01-01",
+            "2024-01-01",
+            cache_dir=cache,
+            cache_budget_bytes=10_000_000,
+            run_budget_bytes=10_000_000,
+            streamer=_streamer(payload),
+        )
+    assert list(outside.rglob("*")) == []
+    assert list(cache.rglob("*.zip")) == []
+
+
+def _with_lying_uncompressed_size(payload: bytes, fake_size: int) -> bytes:
+    buf = bytearray(payload)
+    if buf[:4] != b"PK\x03\x04":
+        raise AssertionError("expected local file header")
+    struct.pack_into("<I", buf, 22, fake_size)
+    cen = buf.rfind(b"PK\x01\x02")
+    if cen < 0:
+        raise AssertionError("expected central directory")
+    struct.pack_into("<I", buf, cen + 24, fake_size)
+    return bytes(buf)
+
+
+def test_lying_zip_header_stream_cap_aborts(tmp_path: Path) -> None:
+    bloated = "trade_id,side,size,price,timestamp_ms\n" + ("1,buy,1,1,1700000000000\n" * 4000)
+    honest = _zip_bytes(bloated, "t.csv")
+    lying = _with_lying_uncompressed_size(honest, fake_size=200)
+    path = tmp_path / "lie.zip"
+    path.write_bytes(lying)
+    with zipfile.ZipFile(path) as zf:
+        declared = zf.infolist()[0].file_size
+    assert declared == 200
+    with pytest.raises(UnsafeArchiveError, match="uncompressed size"):
+        parse_trade_zip(
+            path,
+            inst_id="BTC-USDT-SWAP",
+            max_uncompressed_bytes=4096,
+            max_compression_ratio=100,
+        )
+
+
+def test_part_deleted_on_keyboard_interrupt(tmp_path: Path) -> None:
+    listing = _listing("BTC-USDT-SWAP-trades-2024-01-01.zip", "0.0002")
+    transport = FakeTransport()
+    transport.add("/api/v5/public/market-data-history", listing)
+    client = make_client(transport)
+
+    def interrupting(url: str, headers: dict[str, str], timeout: float) -> StreamResponse:
+        def chunks(_n: int):
+            yield b"PK"
+            raise KeyboardInterrupt()
+
+        return StreamResponse(status_code=200, headers={}, iter_bytes=chunks, url=url)
+
+    with pytest.raises(KeyboardInterrupt):
+        download_daily_trades(
+            client,
+            "BTC-USDT-SWAP",
+            "2024-01-01",
+            "2024-01-01",
+            cache_dir=tmp_path,
+            cache_budget_bytes=10_000_000,
+            run_budget_bytes=10_000_000,
+            streamer=interrupting,
+        )
+    assert list(tmp_path.rglob("*.part")) == []
+    assert list(tmp_path.rglob("*.zip")) == []
+
+
+def test_redirect_to_unofficial_host_is_rejected(tmp_path: Path) -> None:
+    payload = _zip_bytes(CSV)
+    listing = _listing(
+        "BTC-USDT-SWAP-trades-2024-01-01.zip",
+        f"{len(payload) / 1_000_000:.8f}",
+    )
+    transport = FakeTransport()
+    transport.add("/api/v5/public/market-data-history", listing)
+    client = make_client(transport)
+
+    def bounced(url: str, headers: dict[str, str], timeout: float) -> StreamResponse:
+        return StreamResponse(
+            status_code=200,
+            headers={"Content-Length": str(len(payload))},
+            iter_bytes=lambda _n: [payload],
+            url="https://evil.example/t.zip",
+        )
+
+    with pytest.raises(ValueError, match="refusing host"):
+        download_daily_trades(
+            client,
+            "BTC-USDT-SWAP",
+            "2024-01-01",
+            "2024-01-01",
+            cache_dir=tmp_path,
+            cache_budget_bytes=10_000_000,
+            run_budget_bytes=10_000_000,
+            streamer=bounced,
+        )
+    assert list(tmp_path.rglob("*.zip")) == []
+    assert list(tmp_path.rglob("*.part")) == []
+
+
+def test_client_unofficial_hosts_does_not_apply_to_archive(tmp_path: Path) -> None:
+    listing = _listing(
+        "BTC-USDT-SWAP-trades-2024-01-01.zip",
+        url="https://127.0.0.1/t.zip",
+    )
+    transport = FakeTransport()
+    transport.add("/api/v5/public/market-data-history", listing)
+    client = make_client(
+        transport,
+        allow_unofficial_hosts=True,
+        base_url="https://127.0.0.1:9",
+    )
+    with pytest.raises(ValueError, match="refusing host"):
+        download_daily_trades(
+            client,
+            "BTC-USDT-SWAP",
+            "2024-01-01",
+            "2024-01-01",
+            cache_dir=tmp_path,
+            cache_budget_bytes=10_000_000,
+            run_budget_bytes=10_000_000,
+            streamer=_streamer(b"x"),
+        )
 
 
 def test_http_and_unofficial_hosts_rejected(tmp_path: Path) -> None:

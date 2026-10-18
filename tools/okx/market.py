@@ -15,6 +15,7 @@ from collections.abc import Iterator
 from typing import Literal
 
 from tools.okx.client import PublicClient
+from tools.okx.errors import PaginationBudgetExceeded
 from tools.okx.types import Candle, FundingRate, Trade
 
 Pagination = Literal["tradeId", "ts"]
@@ -39,6 +40,16 @@ def history_trades_range(
     de-duplicated by trade id and returned in exchange order
     ``(ts_ms, trade_id)``.
 
+    When paging by trade id and the window has an ``end_ts_ms`` but no
+    ``end_trade_id``, one timestamp-mode request (OKX ``type=2``) locates a
+    trade id at or just after the window end; paging then continues by trade
+    id from that cursor. Walking from the newest trade would otherwise spend
+    the page budget on prints newer than the window and return empty.
+
+    Hitting ``max_pages`` before passing the window start raises
+    :class:`PaginationBudgetExceeded` instead of returning a silent partial
+    or empty list.
+
     ``pagination='ts'`` is an explicit, lossy option: OKX returns rows
     *earlier than* the last timestamp, so a burst at that millisecond on the
     next page is omitted. Timestamp mode never sends ``before``.
@@ -50,7 +61,14 @@ def history_trades_range(
     collected: list[Trade] = []
     after: str | int | None
     if pagination == "tradeId":
-        after = None if end_trade_id is None else end_trade_id + 1
+        after = _trade_id_after_cursor(
+            client,
+            inst_id,
+            end_trade_id=end_trade_id,
+            end_ts_ms=end_ts_ms,
+        )
+        if end_trade_id is None and end_ts_ms is not None and after is None:
+            return []
     else:
         after = None if end_ts_ms is None else end_ts_ms + 1
     seen: set[int] = set()
@@ -89,8 +107,42 @@ def history_trades_range(
         after = next_after
         if stop or len(page) < page_limit:
             break
+    else:
+        raise PaginationBudgetExceeded(
+            f"history_trades_range for {inst_id} hit max_pages={max_pages} "
+            "before reaching the start of the requested window "
+            f"(start_ts_ms={start_ts_ms}, start_trade_id={start_trade_id}). "
+            "Raise max_pages or narrow the window.",
+            pages=max_pages,
+            max_pages=max_pages,
+        )
     collected.sort(key=lambda t: (t.ts_ms, t.trade_id))
     return collected
+
+
+def _trade_id_after_cursor(
+    client: PublicClient,
+    inst_id: str,
+    *,
+    end_trade_id: int | None,
+    end_ts_ms: int | None,
+) -> int | None:
+    """Exclusive ``after`` trade id at or just past the window end."""
+    if end_trade_id is not None:
+        return end_trade_id + 1
+    if end_ts_ms is None:
+        return None
+    # OKX type=2 ``after`` is exclusive on ts. Newest row with ts <= end is
+    # a trade-id cursor; +1 makes the following type=1 pages include it.
+    page = client.history_trades(
+        inst_id,
+        pagination="ts",
+        after=end_ts_ms + 1,
+        limit=1,
+    )
+    if not page:
+        return None
+    return page[0].trade_id + 1
 
 
 def candles_range(

@@ -54,6 +54,12 @@ price, index tickers. Results are dataclasses; trades and candles also convert
 to NumPy structured arrays (`trades_to_array`, `TRADE_DTYPE`) with integer
 millisecond timestamps.
 
+`history_trades_range` defaults to trade-id paging. When the window has an
+end time, it first makes one timestamp-mode request (`type=2`) to locate a
+trade id at or just after that end, then pages backward by trade id. Hitting
+`max_pages` before the window start raises `PaginationBudgetExceeded` rather
+than returning a silent partial or empty list.
+
 `history_trades_range(..., pagination="ts")` is an explicit, **lossy** option:
 OKX `after` is exclusive on timestamp, so same-millisecond prints that sit on
 a page boundary are dropped. Timestamp mode never sends `before`. Prefer the

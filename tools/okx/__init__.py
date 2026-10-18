@@ -22,6 +22,7 @@ from tools.okx.errors import (
     CacheBudgetExceeded,
     OkxError,
     OkxHttpError,
+    PaginationBudgetExceeded,
     UnsafeArchiveError,
     UnsafeEndpointError,
 )
@@ -72,6 +73,7 @@ __all__ = [
     "OkxHttpError",
     "OpenInterest",
     "OrderBook",
+    "PaginationBudgetExceeded",
     "PublicClient",
     "RateLimiter",
     "Ticker",

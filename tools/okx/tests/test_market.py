@@ -6,6 +6,7 @@ import json
 import pytest
 
 from tools.okx.client import HttpResponse
+from tools.okx.errors import PaginationBudgetExceeded
 from tools.okx.market import candles_range, funding_rate_history_range, history_trades_range
 from tools.okx.tests.conftest import FakeTransport, load_fixture, make_client
 from tools.okx.types import TRADE_DTYPE, trades_to_array
@@ -283,3 +284,93 @@ def test_timestamp_mode_refuses_before_parameter() -> None:
     client = make_client(FakeTransport())
     with pytest.raises(ValueError, match="before"):
         client.history_trades("BTC-USDT-SWAP", pagination="ts", before="1")
+
+
+_SEQ_TS0 = 1_700_000_000_000
+
+
+def _sequential_rows(count: int, *, start_id: int = 1) -> list[dict[str, str]]:
+    rows = []
+    for offset in range(count):
+        trade_id = start_id + offset
+        rows.append(
+            {
+                "instId": "BTC-USDT-SWAP",
+                "side": "buy",
+                "sz": "1",
+                "px": "100",
+                "tradeId": str(trade_id),
+                "ts": str(_SEQ_TS0 + offset),
+                "source": "0",
+            }
+        )
+    return rows
+
+
+def test_trade_id_range_locates_past_window_behind_newer_trades() -> None:
+    """A 100-trade window behind 250 newer trades used to return [] at max_pages=4."""
+    tape = _OkxHistoryTape(_sequential_rows(400))
+    client = make_client(tape)  # type: ignore[arg-type]
+    start_ts = _SEQ_TS0 + 49  # id 50
+    end_ts = _SEQ_TS0 + 149  # id 150
+    trades = history_trades_range(
+        client,
+        "BTC-USDT-SWAP",
+        start_ts_ms=start_ts,
+        end_ts_ms=end_ts,
+        page_limit=50,
+        max_pages=4,
+    )
+    ids = [t.trade_id for t in trades]
+    assert ids == list(range(50, 151))
+    assert len(ids) == len(set(ids))
+    assert tape.calls[0].get("type") == "2"
+    assert tape.calls[0].get("after") == str(end_ts + 1)
+    assert all(call.get("type") == "1" for call in tape.calls[1:])
+
+
+def test_trade_id_range_raises_when_page_budget_exhausted() -> None:
+    tape = _OkxHistoryTape(_sequential_rows(400))
+    client = make_client(tape)  # type: ignore[arg-type]
+    with pytest.raises(PaginationBudgetExceeded, match="max_pages"):
+        history_trades_range(
+            client,
+            "BTC-USDT-SWAP",
+            start_ts_ms=_SEQ_TS0,
+            end_ts_ms=_SEQ_TS0 + 399,
+            page_limit=10,
+            max_pages=5,
+        )
+
+
+def test_duplicate_trade_id_on_consecutive_pages_returned_once() -> None:
+    rows = {
+        int(row["tradeId"]): row
+        for row in _sequential_rows(5)
+    }
+
+    class _OverlapTape:
+        def request(
+            self,
+            method: str,
+            url: str,
+            *,
+            params: dict[str, str] | None,
+            headers: dict[str, str],
+            timeout: float,
+        ) -> HttpResponse:
+            query = dict(params or {})
+            after = query.get("after")
+            if not after:
+                page = [rows[5], rows[4], rows[3]]
+            elif after == "3":
+                page = [rows[3], rows[2], rows[1]]
+            else:
+                page = []
+            return HttpResponse(200, {}, json.dumps({"code": "0", "data": page}).encode(), url)
+
+    client = make_client(_OverlapTape())  # type: ignore[arg-type]
+    trades = history_trades_range(client, "BTC-USDT-SWAP", page_limit=3)
+    ids = [t.trade_id for t in trades]
+    assert ids == [1, 2, 3, 4, 5]
+    assert len(ids) == len(set(ids))
