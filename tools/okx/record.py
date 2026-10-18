@@ -441,7 +441,7 @@ class StreamRecorder:
                     until = time.monotonic() + self.write_sleep
                     while time.monotonic() < until and not self._closed:
                         time.sleep(0.01)
-                self._write_lag = max(self._write_lag, self._queue.last_pop_age)
+                self._write_lag = self._queue.last_pop_age
                 self._writing += 1
                 try:
                     self._write_batch(item)
@@ -462,7 +462,10 @@ class StreamRecorder:
     def backlog_age(self) -> float:
         if not self.enabled:
             return 0.0
-        return max(self._queue.backlog_age(), self._write_lag)
+        age = self._queue.backlog_age()
+        if self._writing:
+            age = max(age, self._write_lag)
+        return age
 
     def service_lag(self) -> float:
         return self.backlog_age()

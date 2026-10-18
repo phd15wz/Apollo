@@ -1233,6 +1233,11 @@ async def test_slow_disk_sets_writer_lag(tmp_path: Path) -> None:
         kinds = [item.kind for item in stream._queue.items if item is not None]
         assert "lag" in kinds
         deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline and (len(rec._queue) > 0 or rec._writing):
+            await asyncio.sleep(0.05)
+        caught_up = int(time.time() * 1000)
+        await sock.push(_trade_push(INST, 99, ts_ms=caught_up))
+        deadline = time.monotonic() + 2.0
         while time.monotonic() < deadline and stream.writer_lagging:
             await asyncio.sleep(0.05)
         assert stream.writer_lagging is False
