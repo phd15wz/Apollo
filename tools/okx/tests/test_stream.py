@@ -1518,21 +1518,23 @@ async def test_time_poll_stays_off_message_path_and_guards() -> None:
             await asyncio.sleep(0.01)
         assert started
         first_fetch = started[0]
-        first_fail = time.monotonic() + 0.45
-        while time.monotonic() < first_fail and stream._sync.failures < 1:
-            await asyncio.sleep(0.02)
-        assert stream._sync.failures >= 1
-        assert time.monotonic() - first_fetch < 0.45
         t0 = time.monotonic()
         for trade_id in range(1, 4):
             await sock.push(_trade_push(INST, trade_id))
         got = 0
+        seen: list = []
         while got < 3:
             msg = await asyncio.wait_for(anext(stream), timeout=0.1)
+            seen.append(msg)
             if msg.kind == "data":
                 got += 1
         assert time.monotonic() - t0 < 0.25
         assert stream.is_stale("trades", INST) is False
+        first_fail = first_fetch + 0.45
+        while time.monotonic() < first_fail and stream._sync.failures < 1:
+            await asyncio.sleep(0.02)
+        assert stream._sync.failures >= 1
+        assert time.monotonic() - first_fetch < 0.45
         fail_deadline = time.monotonic() + 2.0
         while time.monotonic() < fail_deadline and stream._sync.failures < 3:
             await asyncio.sleep(0.05)
@@ -1540,9 +1542,12 @@ async def test_time_poll_stays_off_message_path_and_guards() -> None:
         assert len(started) >= 2
         assert started[1] - started[0] >= 0.35
         assert stream._sync.backoff >= 0.5
-        alerts = [item for item in stream._queue.items if item is not None and item.kind == "clock_sync_unavailable"]
+        alerts = [item for item in seen if item.kind == "clock_sync_unavailable"]
+        alerts.extend(
+            item for item in stream._queue.items if item is not None and item.kind == "clock_sync_unavailable"
+        )
         assert len(alerts) == 1
-        assert alerts[0].repeats == 1
+        assert sum(item.repeats for item in alerts) == 1
 
 
 @run_async
