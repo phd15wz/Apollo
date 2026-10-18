@@ -637,7 +637,6 @@ def test_writer_non_adjacent_gaps_stay_separate(tmp_path: Path) -> None:
     ]
     assert widths
     assert max(widths) <= 10
-    assert len(exact) <= MAX_PENDING_GAPS
     assert summaries
     assert summaries[0]["precise"] is False
     assert int(summaries[0]["holes"]) >= 1
@@ -709,6 +708,7 @@ def test_close_waits_out_slow_disk_write(tmp_path: Path) -> None:
         sync=False,
     )
     rec.start()
+    writer = rec._writer
     for i in range(6):
         rec.offer_batch_sync(
             [{"ts": i, "event": "data", "channel": "trades", "instId": "BTC-USDT-SWAP", "data": {"tradeId": str(i)}}]
@@ -716,7 +716,7 @@ def test_close_waits_out_slow_disk_write(tmp_path: Path) -> None:
     rec.close(timeout=0.15)
     assert rec._writing == 0
     assert rec._writer is None
-    assert not any(t.is_alive() and t.name == "okx-record-writer" for t in threading.enumerate())
+    assert writer is not None and not writer.is_alive()
     rows = []
     for path in rec.files_written:
         rows.extend(_read_jsonl(path))

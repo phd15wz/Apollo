@@ -697,6 +697,8 @@ class StreamRecorder:
                 time.sleep(0.005)
             if self._writer.is_alive():
                 self._writer.join()
+            if self._writer.is_alive():
+                raise RuntimeError("recorder writer still running after close")
             self._writer = None
         self.writer_dropped = self._queue.dropped
         elapsed = max(1e-6, self.clock() - self._started_at)
