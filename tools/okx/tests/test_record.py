@@ -772,6 +772,41 @@ def test_close_returns_when_disk_blocks(tmp_path: Path) -> None:
         writer.join(timeout=1.0)
 
 
+def test_close_finishes_gzip_on_slow_disk(tmp_path: Path) -> None:
+    rec = StreamRecorder(
+        cache_dir=tmp_path,
+        enabled=True,
+        write_queue_maxsize=64,
+        write_sleep=0.05,
+        write_sleep_on_close=True,
+        offer_timeout=0.5,
+        sync=False,
+    )
+    rec.start()
+    for i in range(16):
+        rec.offer_batch_sync(
+            [{"ts": i, "event": "data", "channel": "trades", "instId": "BTC-USDT-SWAP", "data": {"tradeId": str(i)}}]
+        )
+    started = time.monotonic()
+    rec.close(timeout=0.2)
+    assert time.monotonic() - started < 0.55
+    assert rec.files_written
+    rows = []
+    for path in rec.files_written:
+        with gzip.open(path, "rb") as handle:
+            while handle.read(65536):
+                pass
+        rows.extend(_read_jsonl(path))
+    recorded = sum(1 for row in rows if row.get("event") == "data")
+    incomplete = [row for row in rows if row.get("reason") == "shutdown_incomplete"]
+    covered = sum(int(row.get("dropped") or 0) for row in rows if row.get("event") == "gap")
+    assert recorded + covered == rec.accepted
+    assert rec.accepted == 16
+    assert incomplete
+    assert recorded < rec.accepted
+    assert int(incomplete[0]["dropped"]) == rec.accepted - recorded
+
+
 def test_ensure_writer_starts_only_one_thread(tmp_path: Path) -> None:
     rec = StreamRecorder(cache_dir=tmp_path, enabled=True, write_queue_maxsize=64, sync=False)
     barrier = threading.Barrier(24)

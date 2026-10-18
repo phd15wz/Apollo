@@ -1492,6 +1492,60 @@ async def test_clock_sync_unavailable_falls_back_to_local_time() -> None:
 
 
 @run_async
+async def test_time_poll_stays_off_message_path_and_guards() -> None:
+    started: list[float] = []
+
+    def _slow_fetch() -> int:
+        started.append(time.monotonic())
+        time.sleep(0.7)
+        raise OSError("unreachable")
+
+    broker = ScriptedConnector()
+    sock = broker.add()
+    async with OkxPublicStream(
+        [("trades", INST)],
+        connector=broker,
+        ping_interval=0.1,
+        stale_timeout=0.15,
+        time_fetcher=_slow_fetch,
+        time_poll_interval=0.25,
+        time_request_timeout=0.2,
+        time_backoff_cap=1.0,
+    ) as stream:
+        await _wait_sent(sock, lambda s: "subscribe" in s)
+        ready = time.monotonic() + 1.0
+        while time.monotonic() < ready and not started:
+            await asyncio.sleep(0.01)
+        assert started
+        first_fetch = started[0]
+        first_fail = time.monotonic() + 0.45
+        while time.monotonic() < first_fail and stream._sync.failures < 1:
+            await asyncio.sleep(0.02)
+        assert stream._sync.failures >= 1
+        assert time.monotonic() - first_fetch < 0.45
+        t0 = time.monotonic()
+        for trade_id in range(1, 4):
+            await sock.push(_trade_push(INST, trade_id))
+        got = 0
+        while got < 3:
+            msg = await asyncio.wait_for(anext(stream), timeout=0.1)
+            if msg.kind == "data":
+                got += 1
+        assert time.monotonic() - t0 < 0.25
+        assert stream.is_stale("trades", INST) is False
+        fail_deadline = time.monotonic() + 2.0
+        while time.monotonic() < fail_deadline and stream._sync.failures < 3:
+            await asyncio.sleep(0.05)
+        assert stream._sync.failures >= 3
+        assert len(started) >= 2
+        assert started[1] - started[0] >= 0.35
+        assert stream._sync.backoff >= 0.5
+        alerts = [item for item in stream._queue.items if item is not None and item.kind == "clock_sync_unavailable"]
+        assert len(alerts) == 1
+        assert alerts[0].repeats == 1
+
+
+@run_async
 async def test_healthy_recorder_emits_no_lag_over_threshold(tmp_path: Path) -> None:
     rec = StreamRecorder(cache_dir=tmp_path, enabled=True, sync=False)
     broker = ScriptedConnector()

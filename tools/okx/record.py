@@ -397,6 +397,7 @@ class StreamRecorder:
         self._write_hanging = False
         self.shutdown_incomplete = False
         self._writer_starts = 0
+        self._unwritten: list[list[dict[str, Any]]] = []
         if self.enabled:
             self._scan_usage()
             self.apply_retention()
@@ -471,12 +472,19 @@ class StreamRecorder:
                     break
                 if item is None:
                     continue
+                if self._drop_leftover:
+                    self._stash_unwritten(item)
+                    self._finish_shutdown()
+                    break
                 self._write_lag = self._queue.last_pop_age
                 self._write_recv = self.mono() - self._write_lag
                 self._writing += 1
                 try:
                     self._maybe_write_sleep()
-                    self._write_batch(item)
+                    if self._drop_leftover:
+                        self._stash_unwritten(item)
+                    else:
+                        self._write_batch(item)
                 except BaseException as exc:
                     self._error = exc
                     if isinstance(exc, LowDiskError):
@@ -488,6 +496,9 @@ class StreamRecorder:
                     break
                 finally:
                     self._writing -= 1
+                if self._drop_leftover:
+                    self._finish_shutdown()
+                    break
         finally:
             self._close_handles()
 
@@ -512,31 +523,50 @@ class StreamRecorder:
         while time.monotonic() < until and not self._drop_leftover:
             time.sleep(0.01)
 
-    def _report_shutdown_incomplete(self) -> None:
-        self.shutdown_incomplete = True
-        batches, gaps = self._queue.take_remaining()
-        leftover: list[dict[str, Any]] = []
-        for batch in batches:
-            leftover.extend(batch)
-        leftover.extend(gaps)
-        if leftover:
-            gap = _shutdown_incomplete(leftover)
-            self._queue.dropped += int(gap["dropped"])
-        self.writer_dropped = self._queue.dropped
+    def _stash_unwritten(self, item: Any) -> None:
+        if isinstance(item, list) and item:
+            self._unwritten.append(item)
 
-    def _finish_shutdown(self) -> None:
+    def _mark_incomplete(self, leftover: Sequence[dict[str, Any]]) -> dict[str, Any] | None:
+        self.shutdown_incomplete = True
+        _LOG.warning("recorder close incomplete; folding unwritten records into shutdown_incomplete")
+        if not leftover:
+            return None
+        gap = _shutdown_incomplete(leftover)
+        self._queue.dropped += int(gap["dropped"])
+        self.writer_dropped = self._queue.dropped
+        return gap
+
+    def _pending_leftover(self) -> list[list[dict[str, Any]]]:
         batches, gaps = self._queue.take_remaining()
-        pending = list(batches)
+        pending = list(self._unwritten)
+        self._unwritten.clear()
+        pending.extend(batches)
         if gaps:
             pending.append(gaps)
+        return pending
+
+    def _flatten(self, pending: Sequence[list[dict[str, Any]]]) -> list[dict[str, Any]]:
+        leftover: list[dict[str, Any]] = []
+        for batch in pending:
+            leftover.extend(batch)
+        return leftover
+
+    def _report_shutdown_incomplete(self) -> None:
+        self._mark_incomplete(self._flatten(self._pending_leftover()))
+
+    def _finish_shutdown(self) -> None:
+        pending = self._pending_leftover()
+        if self._drop_leftover:
+            gap = self._mark_incomplete(self._flatten(pending))
+            if gap is not None:
+                self._write_one([gap])
+            return
         while pending:
             if self._drop_leftover:
-                leftover: list[dict[str, Any]] = []
-                for batch in pending:
-                    leftover.extend(batch)
-                gap = _shutdown_incomplete(leftover)
-                self._queue.dropped += int(gap["dropped"])
-                self._write_one([gap])
+                gap = self._mark_incomplete(self._flatten(pending))
+                if gap is not None:
+                    self._write_one([gap])
                 return
             self._maybe_write_sleep()
             if self._drop_leftover:
@@ -711,8 +741,10 @@ class StreamRecorder:
             self._writer.join(timeout=remaining)
             if self._writer.is_alive():
                 self._drop_leftover = True
-                leftover_join = max(0.0, deadline - time.monotonic())
-                self._writer.join(timeout=leftover_join)
+                grace_until = time.monotonic() + 0.25
+                while self._writing > 0 and time.monotonic() < grace_until:
+                    time.sleep(0.005)
+                self._writer.join(timeout=max(0.0, grace_until - time.monotonic()))
             if self._writer.is_alive():
                 self._report_shutdown_incomplete()
             self._writer = None
