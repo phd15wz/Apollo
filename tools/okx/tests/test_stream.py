@@ -710,6 +710,7 @@ async def test_short_lived_reconnects_backoff_and_cap() -> None:
     async def sleeper(seconds: float) -> None:
         sleeps.append(seconds)
         clock.t += seconds
+        await asyncio.sleep(0)
 
     class InstantClose:
         async def send(self, data: str) -> None:

@@ -532,6 +532,7 @@ class StreamRecorder:
         if self._last_disk_check and (now - self._last_disk_check) < self.disk_check_interval_s:
             return
         self._last_disk_check = now
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
         usage = self.disk_usage(str(self.cache_dir))
         free = int(getattr(usage, "free"))
         if free < self.min_free_disk_bytes:
