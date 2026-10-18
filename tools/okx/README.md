@@ -216,13 +216,16 @@ python3 -m tools.okx.stream_demo --inst SPCX-USDT-SWAP --channels trades,books5 
 4. **Public only.** No keys, no `login`, no private path. Unofficial hosts
    still require `wss` unless `allow_insecure=True`.
 
-**Overflow policy (in-memory consumer queue):** default 10_000 events
-(data, control, and gaps). When full, the oldest data event is folded
+**Overflow policy (in-memory consumer queue):** default 10_000 *data*
+events. Gap/stale/control events live in a separate lane and are not
+evicted. When the data lane is full, the oldest data event is folded
 into one overflow `gap` (invariant: `overflow_count == sum(gap.dropped)`).
-Consumer overflow is **not** written to disk. If the recorder writer
-queue fills, drops coalesce into a `writer_overflow` gap that **is**
-written. Downstream Hawkes fits must treat `kind='gap'` as a hole in
-the tape, never as a quiet period.
+Consumer overflow is **not** written to disk. The recorder enqueues
+whole WebSocket/backfill batches and waits up to 2s for writer-queue
+space without blocking the event-loop thread. If that timeout expires,
+drops coalesce into a `writer_overflow` gap that **is** written.
+Downstream Hawkes fits must treat `kind='gap'` as a hole in the tape,
+never as a quiet period.
 
 ## Safety
 

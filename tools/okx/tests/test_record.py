@@ -8,8 +8,13 @@ from types import SimpleNamespace
 import pytest
 
 from tools.okx.errors import CacheBudgetExceeded, LowDiskError
-from tools.okx.record import StreamRecorder, recording_period_key
-from tools.okx.stream import GapInfo
+from tools.okx.record import (
+    DEFAULT_OFFER_TIMEOUT,
+    StreamRecorder,
+    recording_dest,
+    recording_period_key,
+)
+from tools.okx.stream import EventQueue, GapInfo, StreamMessage
 
 
 class WallClock:
@@ -217,7 +222,8 @@ def test_writer_queue_slow_disk_coalesces_gaps(tmp_path: Path) -> None:
         cache_dir=tmp_path,
         enabled=True,
         write_queue_maxsize=8,
-        write_sleep=0.03,
+        write_sleep=0.05,
+        offer_timeout=0.01,
         sync=False,
     )
     rec.start()
@@ -242,3 +248,207 @@ def test_writer_queue_slow_disk_coalesces_gaps(tmp_path: Path) -> None:
     assert gaps
     assert rec.writer_dropped == sum(int(row["dropped"]) for row in gaps)
     assert len(data) + rec.writer_dropped == 80
+
+
+def test_daily_rotation_is_the_default(tmp_path: Path) -> None:
+    rec = StreamRecorder(cache_dir=tmp_path)
+    assert rec.rotation == "daily"
+    dest = recording_dest(tmp_path, "BTC-USDT-SWAP", "trades", 1_700_000_000.0, rec.rotation)
+    assert recording_period_key(1_700_000_000.0, "daily") in dest.name
+    assert "T" not in dest.stem
+
+
+def test_refuses_crafted_inst_id_and_channel(tmp_path: Path) -> None:
+    rec = StreamRecorder(cache_dir=tmp_path, enabled=True)
+    rec.write_data("trades", "../ETC-USDT-SWAP", {"tradeId": "1"}, ts_ms=1)
+    rec.write_data("orders", "BTC-USDT-SWAP", {"ordId": "1"}, ts_ms=2)
+    rec.write_data("trades/../../x", "BTC-USDT-SWAP", {"tradeId": "2"}, ts_ms=3)
+    rec.close()
+    assert rec.rejected >= 3
+    assert list(tmp_path.rglob("*.jsonl.gz")) == []
+    assert list(tmp_path.rglob("*")) == [] or all(
+        "recordings" not in str(p) or p.is_dir() for p in tmp_path.rglob("*")
+    )
+    outside = tmp_path.parent / "ETC-USDT-SWAP"
+    assert not outside.exists() or not any(outside.rglob("*.jsonl.gz"))
+
+
+def test_symlink_escape_is_refused(tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    recordings = tmp_path / "recordings"
+    recordings.mkdir()
+    (recordings / "BTC-USDT-SWAP").symlink_to(outside)
+    rec = StreamRecorder(cache_dir=tmp_path, enabled=True)
+    rec.write_data("trades", "BTC-USDT-SWAP", {"tradeId": "1"}, ts_ms=1)
+    rec.close()
+    assert rec.rejected >= 1
+    assert list(outside.rglob("*.jsonl.gz")) == []
+    assert list(tmp_path.rglob("*.jsonl.gz")) == []
+
+
+def test_unsubscribed_pair_is_not_recorded(tmp_path: Path) -> None:
+    rec = StreamRecorder(
+        cache_dir=tmp_path,
+        enabled=True,
+        allowed_pairs=frozenset({("trades", "BTC-USDT-SWAP")}),
+    )
+    rec.write_data("trades", "ETH-USDT-SWAP", {"tradeId": "1"}, ts_ms=1)
+    rec.write_data("trades", "BTC-USDT-SWAP", {"tradeId": "2"}, ts_ms=2)
+    rec.close()
+    assert rec.rejected >= 1
+    rows = _read_jsonl(rec.files_written[0])
+    assert [row["data"]["tradeId"] for row in rows] == ["2"]
+
+
+def test_storage_counts_compressed_bytes(tmp_path: Path) -> None:
+    rec = StreamRecorder(cache_dir=tmp_path, enabled=True, cache_budget_bytes=2_000_000)
+    for i in range(40):
+        rec.write_data("trades", "BTC-USDT-SWAP", {"tradeId": str(i), "pad": "a" * 400}, ts_ms=i)
+    rec.close()
+    raw = rec.throughput["trades"].raw_bytes
+    on_disk = rec.files_written[0].stat().st_size
+    assert on_disk < raw / 4
+    assert rec._used <= on_disk + 64
+    assert rec._used < raw / 2
+
+
+def test_budget_includes_archive_cache(tmp_path: Path) -> None:
+    trades = tmp_path / "trades"
+    trades.mkdir()
+    (trades / "old.zip").write_bytes(b"x" * 800)
+    rec = StreamRecorder(cache_dir=tmp_path, enabled=True, cache_budget_bytes=850)
+    assert rec._used >= 800
+    with pytest.raises(CacheBudgetExceeded):
+        rec.write_data("trades", "BTC-USDT-SWAP", {"tradeId": "1", "pad": "y" * 200}, ts_ms=1)
+
+
+def test_rescan_sees_files_from_other_processes(tmp_path: Path) -> None:
+    clock = WallClock(100.0)
+    rec = StreamRecorder(
+        cache_dir=tmp_path,
+        enabled=True,
+        clock=clock,
+        usage_rescan_interval_s=5,
+        cache_budget_bytes=500,
+    )
+    rec.write_data("trades", "BTC-USDT-SWAP", {"tradeId": "1"}, ts_ms=1)
+    clock.t += 6
+    (tmp_path / "other-process.bin").write_bytes(b"z" * 400)
+    with pytest.raises(CacheBudgetExceeded):
+        rec.write_data("trades", "BTC-USDT-SWAP", {"tradeId": "2", "pad": "w" * 80}, ts_ms=2)
+    assert rec.usage_scans >= 2
+
+
+def test_retention_skips_open_files(tmp_path: Path) -> None:
+    rec = StreamRecorder(cache_dir=tmp_path, enabled=True, retention_max_bytes=1, rotation="daily")
+    rec.write_data("trades", "BTC-USDT-SWAP", {"n": 1}, ts_ms=1)
+    rec.write_data("tickers", "BTC-USDT-SWAP", {"n": 2}, ts_ms=2)
+    open_before = {p.resolve() for p in rec.open_paths()}
+    assert open_before
+    rec.apply_retention()
+    for path in open_before:
+        assert path.exists()
+    rec.close()
+
+
+def test_control_events_are_not_evicted() -> None:
+    queue = EventQueue(maxsize=2)
+    for trade_id in range(1, 6):
+        queue.put(
+            StreamMessage(kind="data", channel="trades", inst_id="BTC-USDT-SWAP", ts_ms=trade_id, data=trade_id)
+        )
+    gap = StreamMessage(
+        kind="gap",
+        channel="trades",
+        inst_id="BTC-USDT-SWAP",
+        gap=GapInfo(channel="trades", inst_id="BTC-USDT-SWAP", reason="backfill_failed", dropped=3),
+    )
+    stale = StreamMessage(kind="stale", channel="trades", inst_id="BTC-USDT-SWAP", stale=True)
+    queue.put(gap, control=True)
+    queue.put(stale, control=True)
+    for trade_id in range(6, 10):
+        queue.put(
+            StreamMessage(kind="data", channel="trades", inst_id="BTC-USDT-SWAP", ts_ms=trade_id, data=trade_id)
+        )
+    kinds = [item.kind for item in queue.items if item is not None]
+    assert "gap" in kinds
+    assert "stale" in kinds
+    assert any(item.kind == "gap" and item.gap and item.gap.reason == "backfill_failed" for item in queue.items)
+
+
+def test_batch_write_throughput(tmp_path: Path) -> None:
+    import time as time_mod
+
+    rec = StreamRecorder(cache_dir=tmp_path, enabled=True, sync=False)
+    rec.start()
+    batch = [
+        {
+            "ts": i,
+            "event": "data",
+            "channel": "trades",
+            "instId": "BTC-USDT-SWAP",
+            "data": {"tradeId": str(i), "pad": "a" * 8},
+        }
+        for i in range(2000)
+    ]
+    started = time_mod.perf_counter()
+    rec.offer_batch_sync(batch)
+    rec.close()
+    elapsed = time_mod.perf_counter() - started
+    rate = 2000 / max(elapsed, 1e-6)
+    assert rate > 300
+    assert sum(1 for row in _read_jsonl(rec.files_written[0]) if row.get("event") == "data") == 2000
+
+
+def test_close_is_idempotent_and_joins_writer(tmp_path: Path) -> None:
+    rec = StreamRecorder(cache_dir=tmp_path, enabled=True, sync=False)
+    rec.start()
+    rec.offer({"ts": 1, "event": "data", "channel": "trades", "instId": "BTC-USDT-SWAP", "data": {"tradeId": "1"}})
+    rec.close()
+    rec.close()
+    assert rec._writer is None
+    assert rec.files_written
+    _read_jsonl(rec.files_written[0])
+
+
+def test_writer_queue_put_returns_when_full_of_gaps(tmp_path: Path) -> None:
+    rec = StreamRecorder(
+        cache_dir=tmp_path,
+        enabled=True,
+        write_queue_maxsize=2,
+        write_sleep=0.2,
+        offer_timeout=0.05,
+        sync=False,
+    )
+    rec.start()
+    started = __import__("time").perf_counter()
+    for i in range(40):
+        rec.offer_batch_sync(
+            [
+                {
+                    "ts": i,
+                    "event": "data",
+                    "channel": "trades",
+                    "instId": f"BTC{i}-USDT-SWAP",
+                    "data": {"tradeId": str(i)},
+                }
+            ]
+        )
+    elapsed = __import__("time").perf_counter() - started
+    assert elapsed < 4.0
+    assert rec.writer_dropped > 0
+    rec.close()
+    rows = []
+    for path in rec.files_written:
+        rows.extend(_read_jsonl(path))
+    gaps = [row for row in rows if row.get("reason") == "writer_overflow"]
+    data = [row for row in rows if row.get("event") == "data"]
+    assert rec.writer_dropped == sum(int(row["dropped"]) for row in gaps)
+    assert len(data) + rec.writer_dropped == 40
+
+
+def test_offer_timeout_is_under_ping_interval() -> None:
+    assert 0 < DEFAULT_OFFER_TIMEOUT <= 2.0
+    rec = StreamRecorder(enabled=False)
+    assert rec.offer_timeout <= 2.0

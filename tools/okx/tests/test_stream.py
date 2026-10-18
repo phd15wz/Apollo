@@ -458,7 +458,8 @@ def test_overflow_coalesces_and_is_not_recorded(tmp_path: Path) -> None:
                 ts_ms=1_700_000_000_000 + trade_id,
             )
         )
-    assert len(stream._queue.items) <= 100
+    assert len(stream._queue.data) <= 100
+    assert len(stream._queue.items) <= 100 + 8
     overflow_gaps = [
         m.gap
         for m in stream._queue.items
@@ -467,6 +468,18 @@ def test_overflow_coalesces_and_is_not_recorded(tmp_path: Path) -> None:
     assert len(overflow_gaps) == 1
     assert stream.overflow_count == overflow_gaps[0].dropped
     assert stream.overflow_count == stream._queue.overflow_gap_dropped()
+    rec.offer_batch_sync(
+        [
+            {
+                "ts": 1_700_000_000_000 + trade_id,
+                "event": "data",
+                "channel": "trades",
+                "instId": INST,
+                "data": {"tradeId": str(trade_id)},
+            }
+            for trade_id in range(1, 2001)
+        ]
+    )
     rec.close()
     import gzip
 
@@ -851,3 +864,206 @@ def test_record_channels_flag() -> None:
 
     args = build_parser().parse_args(["--record-channels", "trades,books5"])
     assert args.record_channels == "trades,books5"
+
+
+def test_ws_url_path_must_be_public_or_business() -> None:
+    with pytest.raises(UnsafeEndpointError, match="path"):
+        OkxPublicStream(
+            [("trades", INST)],
+            public_url="wss://ws.okx.com:443/ws/v5/not-public",
+        )
+    with pytest.raises(UnsafeEndpointError, match="path"):
+        OkxPublicStream(
+            [("trades", INST)],
+            public_url="wss://ws.okx.com:443/ws/v5/private",
+        )
+
+
+@run_async
+async def test_crafted_inst_id_from_server_is_not_recorded(tmp_path: Path) -> None:
+    broker = ScriptedConnector()
+    sock = broker.add()
+    rec = StreamRecorder(cache_dir=tmp_path, enabled=True)
+    async with OkxPublicStream(
+        [("trades", INST)],
+        connector=broker,
+        recorder=rec,
+        ping_interval=30,
+        stale_timeout=30,
+    ) as stream:
+        await _wait_sent(sock, lambda s: "subscribe" in s)
+        await sock.push(_trade_push("../ETC-USDT-SWAP", 1))
+        await sock.push(_trade_push(INST, 2))
+        msg = await asyncio.wait_for(anext(stream), timeout=1)
+        await asyncio.sleep(0.05)
+    rec.close()
+    assert stream.rejected_messages >= 1
+    assert msg.data.trade_id == 2
+    rows = [
+        json.loads(line)
+        for line in __import__("gzip").open(rec.files_written[0], "rt", encoding="utf-8")
+        if line.strip()
+    ]
+    assert all(row.get("instId") == INST for row in rows)
+    assert not (tmp_path.parent / "ETC-USDT-SWAP").exists()
+
+
+@run_async
+async def test_crafted_channel_from_server_is_not_recorded(tmp_path: Path) -> None:
+    broker = ScriptedConnector()
+    sock = broker.add()
+    rec = StreamRecorder(cache_dir=tmp_path, enabled=True)
+    async with OkxPublicStream(
+        [("trades", INST)],
+        connector=broker,
+        recorder=rec,
+        ping_interval=30,
+        stale_timeout=30,
+    ) as stream:
+        await _wait_sent(sock, lambda s: "subscribe" in s)
+        await sock.push(
+            {
+                "arg": {"channel": "orders", "instId": INST},
+                "data": [{"instId": INST, "ordId": "1"}],
+            }
+        )
+        await sock.push(_trade_push(INST, 3))
+        await asyncio.wait_for(anext(stream), timeout=1)
+        await asyncio.sleep(0.05)
+    rec.close()
+    assert stream.rejected_messages >= 1
+    blob = __import__("gzip").open(rec.files_written[0], "rt", encoding="utf-8").read()
+    assert "orders" not in blob
+
+
+@run_async
+async def test_500_trade_burst_is_fully_recorded(tmp_path: Path) -> None:
+    broker = ScriptedConnector()
+    sock = broker.add()
+    rec = StreamRecorder(cache_dir=tmp_path, enabled=True)
+    payload = {
+        "arg": {"channel": "trades", "instId": INST},
+        "data": [
+            {
+                "instId": INST,
+                "tradeId": str(i),
+                "px": "1",
+                "sz": "1",
+                "side": "buy",
+                "ts": str(1_700_000_000_000 + i),
+                "count": "1",
+            }
+            for i in range(1, 501)
+        ],
+    }
+    async with OkxPublicStream(
+        [("trades", INST)],
+        connector=broker,
+        recorder=rec,
+        ping_interval=30,
+        stale_timeout=30,
+    ):
+        await _wait_sent(sock, lambda s: "subscribe" in s)
+        await sock.push(payload)
+        await asyncio.sleep(0.2)
+    rec.close()
+    import gzip
+
+    rows = [json.loads(line) for line in gzip.open(rec.files_written[0], "rt", encoding="utf-8") if line.strip()]
+    assert sum(1 for row in rows if row.get("event") == "data") == 500
+    assert rec.writer_dropped == 0
+
+
+@run_async
+async def test_2000_trade_backfill_is_fully_recorded(tmp_path: Path) -> None:
+    from tools.okx.client import HttpResponse
+
+    class Tape:
+        def __init__(self) -> None:
+            self.next_id = 2001
+
+        def request(self, method, url, *, params, headers, timeout):
+            page = []
+            for _ in range(100):
+                if self.next_id < 2:
+                    break
+                tid = self.next_id
+                self.next_id -= 1
+                page.append(
+                    {
+                        "instId": INST,
+                        "tradeId": str(tid),
+                        "px": "1",
+                        "sz": "1",
+                        "side": "buy",
+                        "ts": str(1_700_000_000_000 + tid),
+                    }
+                )
+            return HttpResponse(200, {}, json.dumps({"code": "0", "data": page}).encode(), url)
+
+    broker = ScriptedConnector()
+    sock = broker.add()
+    rec = StreamRecorder(cache_dir=tmp_path, enabled=True)
+    rest = make_client(Tape())  # type: ignore[arg-type]
+    async with OkxPublicStream(
+        [("trades", INST)],
+        connector=broker,
+        recorder=rec,
+        rest=rest,
+        ping_interval=30,
+        stale_timeout=30,
+    ):
+        await _wait_sent(sock, lambda s: "subscribe" in s)
+        await sock.push(_trade_push(INST, 1))
+        await sock.push(_trade_push(INST, 2002))
+        await asyncio.sleep(0.5)
+    rec.close()
+    import gzip
+
+    rows = [json.loads(line) for line in gzip.open(rec.files_written[0], "rt", encoding="utf-8") if line.strip()]
+    ids = [int(row["data"]["tradeId"]) for row in rows if row.get("event") == "data"]
+    assert ids == list(range(1, 2003))
+    assert rec.writer_dropped == 0
+
+
+@run_async
+async def test_slow_disk_backpressure_keeps_pinging(tmp_path: Path) -> None:
+    broker = ScriptedConnector()
+    sock = broker.add()
+    rec = StreamRecorder(
+        cache_dir=tmp_path,
+        enabled=True,
+        write_queue_maxsize=2,
+        write_sleep=0.4,
+        offer_timeout=0.15,
+        sync=False,
+    )
+    async with OkxPublicStream(
+        [("trades", INST)],
+        connector=broker,
+        recorder=rec,
+        ping_interval=0.1,
+        stale_timeout=30,
+        handshake_timeout=1,
+        reconnect_base=5,
+        reconnect_max=5,
+    ) as stream:
+        await _wait_sent(sock, lambda s: "subscribe" in s)
+        for trade_id in range(1, 21):
+            await sock.push(_trade_push(INST, trade_id))
+        await asyncio.sleep(0.7)
+        pings = [item for item in sock.sent if item == "ping"]
+        assert pings
+        assert broker._i == 1
+        assert stream._reconnect_generation == 1
+        await asyncio.sleep(2.5)
+    rec.close()
+    import gzip
+
+    rows = []
+    for path in rec.files_written:
+        rows.extend(json.loads(line) for line in gzip.open(path, "rt", encoding="utf-8") if line.strip())
+    gaps = [row for row in rows if row.get("reason") == "writer_overflow"]
+    data = [row for row in rows if row.get("event") == "data"]
+    assert rec.writer_dropped == sum(int(row["dropped"]) for row in gaps)
+    assert len(data) + rec.writer_dropped == 20

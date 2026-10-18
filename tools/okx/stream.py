@@ -222,71 +222,78 @@ class LocalBook:
         return [side[k] for k in keys]
 
 
-class EventQueue:
-    """Strictly bounded queue. Consecutive overflow drops become one gap."""
+CONTROL_MAX = 64
 
-    def __init__(self, maxsize: int) -> None:
+
+class EventQueue:
+    """Bounded data lane plus a separate control lane that is never evicted."""
+
+    def __init__(self, maxsize: int, *, control_max: int = CONTROL_MAX) -> None:
         if maxsize < 1:
             raise ValueError("queue_maxsize must be at least 1")
         self.maxsize = maxsize
-        self.items: deque[StreamMessage | None] = deque()
+        self.control_max = control_max
+        self.data: deque[StreamMessage] = deque()
+        self.control: deque[StreamMessage | None] = deque()
         self._ready = asyncio.Event()
         self.overflow_count = 0
 
+    @property
+    def items(self) -> deque[StreamMessage | None]:
+        return deque([*self.control, *self.data])
+
     def overflow_gap_dropped(self) -> int:
         total = 0
-        for item in self.items:
+        for item in self.control:
             if item is not None and item.kind == "gap" and item.gap is not None and item.gap.reason == "overflow":
                 total += item.gap.dropped
         return total
 
     def put(self, msg: StreamMessage | None, *, control: bool = False) -> StreamMessage | None:
-        del control
         if msg is None:
-            self.items.append(None)
+            self.control.append(None)
             self._ready.set()
             return None
-        if msg.kind == "gap" and msg.gap is not None and msg.gap.reason == "overflow":
-            if self._merge_overflow(msg):
-                self._ready.set()
-                return None
-        while len(self.items) >= self.maxsize:
-            if not self._evict():
-                break
-        if len(self.items) >= self.maxsize:
-            if msg.kind == "data":
-                self.overflow_count += 1
-                if not self._absorb_data(msg, allow_insert=False):
-                    self._bump_any_overflow()
-                self._ready.set()
-                return None
+        if control or msg.kind != "data":
+            self._put_control(msg)
+            self._ready.set()
             return None
-        self.items.append(msg)
+        while len(self.data) >= self.maxsize:
+            dropped = self.data.popleft()
+            self.overflow_count += 1
+            self._absorb_data(dropped)
+        self.data.append(msg)
         self._ready.set()
         return None
 
-    def _evict(self) -> bool:
-        for index, item in enumerate(self.items):
-            if item is None:
-                continue
-            if item.kind == "gap" and item.gap is not None and item.gap.reason == "overflow":
-                continue
-            del self.items[index]
-            if item.kind == "data":
-                self.overflow_count += 1
-                self._absorb_data(item, allow_insert=True)
-            return True
-        return False
+    def _put_control(self, msg: StreamMessage) -> None:
+        if msg.kind == "gap" and msg.gap is not None:
+            if self._merge_overflow(msg):
+                return
+        if msg.kind == "stale":
+            self.control = deque(
+                item
+                for item in self.control
+                if not (
+                    item is not None
+                    and item.kind == "stale"
+                    and item.channel == msg.channel
+                    and item.inst_id == msg.inst_id
+                )
+            )
+        if len(self.control) >= self.control_max and msg.kind == "gap" and msg.gap is not None:
+            self._bump_any_overflow(msg.gap.dropped)
+            self.overflow_count += msg.gap.dropped if msg.gap.reason == "overflow" else 0
+            return
+        self.control.append(msg)
 
-    def _absorb_data(self, dropped: StreamMessage, *, allow_insert: bool) -> bool:
-        for index, item in enumerate(self.items):
+    def _absorb_data(self, dropped: StreamMessage) -> None:
+        for index, item in enumerate(self.control):
             if _is_overflow_gap(item, dropped.channel, dropped.inst_id):
-                self.items[index] = _extend_overflow_gap(item, dropped)
-                return True
-        if not allow_insert:
-            return False
+                self.control[index] = _extend_overflow_gap(item, dropped)
+                return
         gap = _gap_from_message(dropped, reason="overflow", dropped=1)
-        self.items.appendleft(
+        self.control.append(
             StreamMessage(
                 kind="gap",
                 channel=dropped.channel,
@@ -296,24 +303,30 @@ class EventQueue:
                 data=gap,
             )
         )
-        return True
 
     def _merge_overflow(self, msg: StreamMessage) -> bool:
         if msg.gap is None:
             return False
-        for index, item in enumerate(self.items):
-            if _is_overflow_gap(item, msg.channel, msg.inst_id) and item is not None and item.gap is not None:
+        for index, item in enumerate(self.control):
+            if (
+                item is not None
+                and item.kind == "gap"
+                and item.gap is not None
+                and item.gap.reason == msg.gap.reason
+                and item.channel == msg.channel
+                and item.inst_id == msg.inst_id
+            ):
                 merged = GapInfo(
                     channel=item.gap.channel,
                     inst_id=item.gap.inst_id,
-                    reason="overflow",
+                    reason=item.gap.reason,
                     first_missing_trade_id=_min_opt(item.gap.first_missing_trade_id, msg.gap.first_missing_trade_id),
                     last_missing_trade_id=_max_opt(item.gap.last_missing_trade_id, msg.gap.last_missing_trade_id),
                     start_ts_ms=_min_opt(item.gap.start_ts_ms, msg.gap.start_ts_ms),
                     end_ts_ms=_max_opt(item.gap.end_ts_ms, msg.gap.end_ts_ms),
                     dropped=item.gap.dropped + msg.gap.dropped,
                 )
-                self.items[index] = StreamMessage(
+                self.control[index] = StreamMessage(
                     kind="gap",
                     channel=merged.channel,
                     inst_id=merged.inst_id,
@@ -324,21 +337,21 @@ class EventQueue:
                 return True
         return False
 
-    def _bump_any_overflow(self) -> None:
-        for index, item in enumerate(self.items):
-            if item is not None and item.kind == "gap" and item.gap is not None and item.gap.reason == "overflow":
+    def _bump_any_overflow(self, extra: int) -> None:
+        for index, item in enumerate(self.control):
+            if item is not None and item.kind == "gap" and item.gap is not None:
                 gap = item.gap
                 bumped = GapInfo(
                     channel=gap.channel,
                     inst_id=gap.inst_id,
-                    reason="overflow",
+                    reason=gap.reason,
                     first_missing_trade_id=gap.first_missing_trade_id,
                     last_missing_trade_id=gap.last_missing_trade_id,
                     start_ts_ms=gap.start_ts_ms,
                     end_ts_ms=gap.end_ts_ms,
-                    dropped=gap.dropped + 1,
+                    dropped=gap.dropped + extra,
                 )
-                self.items[index] = StreamMessage(
+                self.control[index] = StreamMessage(
                     kind="gap",
                     channel=bumped.channel,
                     inst_id=bumped.inst_id,
@@ -349,13 +362,12 @@ class EventQueue:
                 return
 
     async def get(self) -> StreamMessage | None:
-        while not self.items:
+        while not self.control and not self.data:
             self._ready.clear()
             await self._ready.wait()
-        item = self.items.popleft()
-        if not self.items:
-            self._ready.clear()
-        return item
+        if self.control:
+            return self.control.popleft()
+        return self.data.popleft()
 
 
 class AsyncRateLimiter:
@@ -456,6 +468,8 @@ class OkxPublicStream:
         sleep: AsyncSleeper | None = None,
     ) -> None:
         self.args = validate_subscriptions(subscriptions)
+        self._subs = frozenset((arg["channel"], arg["instId"]) for arg in self.args)
+        self.rejected_messages = 0
         self.allow_unofficial_hosts = allow_unofficial_hosts
         self.allow_insecure = allow_insecure
         self.public_url = endpoints.resolve_ws_url(
@@ -477,6 +491,7 @@ class OkxPublicStream:
         if record_channels is not None:
             self.recorder.channels = frozenset(record_channels)
             self.recorder.enabled = True
+        self.recorder.allowed_pairs = self._subs
         self._connector = connector
         self.queue_maxsize = queue_maxsize
         self.ping_interval = ping_interval
@@ -497,6 +512,7 @@ class OkxPublicStream:
         self._books: dict[str, LocalBook] = {}
         self._running = False
         self._cancel = threading.Event()
+        self._last_rx: dict[int, float] = {}
         self._tasks: list[asyncio.Task[Any]] = []
         self._reconnect_generation = 0
         self._connect_limiter = AsyncRateLimiter(*endpoints.WS_CONNECT_RATE, clock=self._clock, sleep=self._sleep)
@@ -621,13 +637,23 @@ class OkxPublicStream:
                 await self._subscribe(conn, args)
                 self._reconnect_generation += 1
                 connected_at = self._clock()
-                await self._reader(conn)
+                self._last_rx[id(conn)] = connected_at
+                keeper = asyncio.create_task(self._keepalive(conn), name="okx-ws-keepalive")
+                try:
+                    await self._reader(conn)
+                finally:
+                    keeper.cancel()
+                    try:
+                        await keeper
+                    except asyncio.CancelledError:
+                        pass
             except asyncio.CancelledError:
                 raise
             except Exception:
                 pass
             finally:
                 if conn is not None:
+                    self._last_rx.pop(id(conn), None)
                     try:
                         await conn.close()
                     except Exception:
@@ -653,9 +679,22 @@ class OkxPublicStream:
         await self._sub_limiter.acquire()
         await self._send_op(conn, "unsubscribe", args, "2")
 
-    async def _reader(self, conn: WsConnection) -> None:
-        last_rx = self._clock()
+    async def _keepalive(self, conn: WsConnection) -> None:
+        tick = min(0.05, max(0.02, self.ping_interval / 5.0))
         while self._running:
+            await self._sleep(tick)
+            last = self._last_rx.get(id(conn), self._clock())
+            if self._clock() - last >= self.ping_interval:
+                try:
+                    await conn.send("ping")
+                    self._last_rx[id(conn)] = self._clock()
+                except Exception:
+                    return
+
+    async def _reader(self, conn: WsConnection) -> None:
+        self._last_rx[id(conn)] = self._clock()
+        while self._running:
+            last_rx = self._last_rx.get(id(conn), self._clock())
             timeout = self.ping_interval - (self._clock() - last_rx)
             try:
                 if timeout <= 0:
@@ -669,7 +708,7 @@ class OkxPublicStream:
                 continue
             except Exception:
                 return
-            last_rx = self._clock()
+            self._last_rx[id(conn)] = self._clock()
             if raw is None:
                 return
             if raw == "pong":
@@ -692,6 +731,9 @@ class OkxPublicStream:
         channel = str(arg.get("channel") or "")
         inst_id = str(arg.get("instId") or "")
         rows = payload.get("data") or []
+        if not self._known(channel, inst_id):
+            self.rejected_messages += 1
+            return
         if channel == "trades":
             await self._on_trades(inst_id, rows, payload)
             return
@@ -713,7 +755,10 @@ class OkxPublicStream:
                 raw=payload,
             )
             self._emit(msg)
-            self._record_data(msg)
+            await self._record_batch(channel, inst_id, [_record_payload(msg)])
+
+    def _known(self, channel: str, inst_id: str) -> bool:
+        return (channel, inst_id) in self._subs
 
     async def _on_trades(self, inst_id: str, rows: list[Any], raw: dict[str, Any]) -> None:
         self._touch("trades", inst_id)
@@ -728,6 +773,7 @@ class OkxPublicStream:
         parsed.sort(key=lambda item: (item[0].ts_ms, item[0].trade_id))
         seen = self._seen_trade_ids.setdefault(inst_id, set())
         last = self._last_trade_id.get(inst_id)
+        recorded: list[dict[str, Any]] = []
         for trade, count in parsed:
             if trade.trade_id in seen or (last is not None and trade.trade_id <= last):
                 continue
@@ -753,9 +799,11 @@ class OkxPublicStream:
                         if item.trade_id in seen or (last is not None and item.trade_id <= last):
                             continue
                         self._emit_trade(item, raw)
+                        recorded.append(_trade_payload(item))
                         seen.add(item.trade_id)
                         last = item.trade_id
             self._emit_trade(trade, raw)
+            recorded.append(_trade_payload(trade))
             seen.add(trade.trade_id)
             last = trade.trade_id
             if len(seen) > self._seen_cap:
@@ -764,6 +812,8 @@ class OkxPublicStream:
                     seen.add(last)
         if last is not None:
             self._last_trade_id[inst_id] = last
+        if recorded:
+            await self._record_batch("trades", inst_id, recorded)
 
     def _emit_trade(self, trade: Trade, raw: dict[str, Any] | None = None) -> None:
         msg = StreamMessage(
@@ -776,7 +826,6 @@ class OkxPublicStream:
             raw=raw,
         )
         self._emit(msg)
-        self._record_data(msg)
 
     async def _backfill(self, inst_id: str, start_id: int, end_id: int) -> list[Trade] | None:
         if self.rest is None or end_id < start_id:
@@ -841,7 +890,9 @@ class OkxPublicStream:
             self._emit(msg)
             if self.recorder.records_channel("books"):
                 try:
-                    self.recorder.maybe_write_books_snapshot(inst_id, snapshot, ts_ms=book.ts_ms)
+                    await asyncio.to_thread(
+                        self.recorder.maybe_write_books_snapshot, inst_id, snapshot, ts_ms=book.ts_ms
+                    )
                 except (LowDiskError, CacheBudgetExceeded) as exc:
                     self.record_error = exc
                     self._emit_record_error(exc)
@@ -902,21 +953,21 @@ class OkxPublicStream:
                 self.record_error = exc
                 self._emit_record_error(exc)
 
-    def _record_data(self, msg: StreamMessage) -> None:
-        if not self.recorder.records_channel(msg.channel) or msg.channel == "books":
+    async def _record_batch(self, channel: str, inst_id: str, rows: list[dict[str, Any]]) -> None:
+        if not rows or not self.recorder.accept(channel, inst_id):
             return
-        payload = msg.data
-        if isinstance(payload, Trade):
-            payload = {
-                "instId": payload.inst_id,
-                "tradeId": str(payload.trade_id),
-                "px": str(payload.price),
-                "sz": str(payload.size),
-                "side": payload.side,
-                "ts": str(payload.ts_ms),
+        records = [
+            {
+                "ts": row.get("ts"),
+                "event": "data",
+                "channel": channel,
+                "instId": inst_id,
+                "data": row,
             }
+            for row in rows
+        ]
         try:
-            self.recorder.write_data(msg.channel, msg.inst_id, payload, ts_ms=msg.ts_ms)
+            await self.recorder.offer_batch(records)
         except (LowDiskError, CacheBudgetExceeded) as exc:
             self.record_error = exc
             self._emit_record_error(exc)
@@ -991,6 +1042,25 @@ def _extend_overflow_gap(item: StreamMessage, dropped: StreamMessage) -> StreamM
         gap=merged,
         data=merged,
     )
+
+
+def _trade_payload(trade: Trade) -> dict[str, Any]:
+    return {
+        "instId": trade.inst_id,
+        "tradeId": str(trade.trade_id),
+        "px": str(trade.price),
+        "sz": str(trade.size),
+        "side": trade.side,
+        "ts": str(trade.ts_ms),
+    }
+
+
+def _record_payload(msg: StreamMessage) -> dict[str, Any]:
+    if isinstance(msg.data, Trade):
+        return _trade_payload(msg.data)
+    if isinstance(msg.data, dict):
+        return msg.data
+    return {"data": msg.data, "ts": msg.ts_ms}
 
 
 def _gap_from_message(msg: StreamMessage, *, reason: str, dropped: int) -> GapInfo:
