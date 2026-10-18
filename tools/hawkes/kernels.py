@@ -11,7 +11,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from tools.hawkes._limits import CHUNK, MAX_QUADRATIC_EVENTS, POS_EPS
+from tools.hawkes._limits import CHUNK, MAX_QUADRATIC_EVENTS
 
 
 def _history_before(arrivals, t: float) -> np.ndarray:
@@ -185,8 +185,3 @@ def as_power(kernel) -> PowerLawKernel:
     if isinstance(kernel, PowerLawKernel):
         return kernel
     return PowerLawKernel.from_vector(kernel)
-
-
-def require_positive_exp(kernel: ExpKernel) -> None:
-    if min(kernel.baseline, kernel.jump, kernel.decay) <= POS_EPS / 10:
-        raise ValueError("exponential kernel parameters must be positive")

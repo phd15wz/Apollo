@@ -17,4 +17,4 @@ python3 -m pytest tools/hawkes/tests -q
 
 ## Tests
 
-`tests/` checks eq. 7.12 variance, eq. 7.13 bin gap, time-change history prefix, GMM batch-means weights, score vs finite differences, MLE recovery, thinning rate $\lambda/(1-n)$, power-law compensator vs quadrature, EM/power-law size caps, and non-stationary guards.
+`tests/` checks eq. 7.12 variance, eq. 7.13 bin gap, time-change history prefix, GMM batch-means weights, score vs finite differences, MLE recovery, thinning rate $\lambda/(1-n)$, power-law compensator vs quadrature, EM/power-law size caps, non-stationary guards, and `FitResult.warnings` for non-stationary fits and optimizer non-convergence.

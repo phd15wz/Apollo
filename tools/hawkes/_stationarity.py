@@ -16,13 +16,19 @@ def matrix_spectral_radius(matrix) -> float:
     return float(np.max(np.abs(vals)))
 
 
-def warn_if_explosive(ratio: float, label: str = "branching ratio") -> None:
+def warn_if_explosive(
+    ratio: float,
+    label: str = "branching ratio",
+    *,
+    stacklevel: int = 3,
+) -> str | None:
     if not np.isfinite(ratio) or ratio >= 1.0:
-        warnings.warn(
-            f"Fitted Hawkes {label} is {ratio:.4g} >= 1; the process is not stationary.",
-            NonstationaryWarning,
-            stacklevel=3,
+        msg = (
+            f"Fitted Hawkes {label} is {ratio:.4g} >= 1; the process is not stationary."
         )
+        warnings.warn(msg, NonstationaryWarning, stacklevel=stacklevel)
+        return msg
+    return None
 
 
 def horizon_event_cap(baseline: float, horizon: float) -> int:
