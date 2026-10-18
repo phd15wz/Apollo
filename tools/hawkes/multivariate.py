@@ -14,9 +14,8 @@ from scipy.optimize import minimize
 from tools.hawkes._stationarity import (
     matrix_spectral_radius,
     require_or_cap,
-    warn_if_explosive,
 )
-from tools.hawkes.estimate import FitResult
+from tools.hawkes.estimate import FitResult, _fit_result_warnings
 
 
 @dataclass(frozen=True)
@@ -154,9 +153,9 @@ def fit_marked_mle(arrivals, marks, horizon, start: MarkedExpKernel) -> FitResul
     opt = minimize(loss, x0, method="Nelder-Mead", options={"maxiter": 4000})
     hat = MarkedExpKernel.from_vector(opt.x, dim)
     rho = matrix_spectral_radius(hat.branching_matrix())
-    warn_if_explosive(rho, label="spectral radius")
     return FitResult(
         kernel=hat,
         loglik=float(-opt.fun),
         branching_ratio=rho,
+        warnings=_fit_result_warnings(rho, label="spectral radius", opt=opt),
     )

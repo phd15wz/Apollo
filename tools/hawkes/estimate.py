@@ -41,6 +41,27 @@ class FitResult:
         return self.kernel.as_vector()
 
 
+def _fit_result_warnings(
+    ratio: float,
+    *,
+    label: str = "branching ratio",
+    opt=None,
+    extra: tuple[str, ...] = (),
+) -> tuple[str, ...]:
+    """Record fit issues on ``FitResult.warnings``.
+
+    Still emits ``NonstationaryWarning`` when ``ratio`` is non-finite or ``>= 1``.
+    """
+    notes: list[str] = list(extra)
+    note = warn_if_explosive(ratio, label=label, stacklevel=4)
+    if note:
+        notes.append(note)
+    if opt is not None and not bool(getattr(opt, "success", True)):
+        message = str(getattr(opt, "message", "") or "unknown reason")
+        notes.append(f"optimizer did not converge: {message}")
+    return tuple(notes)
+
+
 def _exp_bounds():
     return ((POS_EPS, None), (POS_EPS, None), (POS_EPS, None))
 
@@ -66,13 +87,13 @@ def fit_exponential_mle(
         kwargs["jac"] = lambda vec: -exponential_score(stamp, float(horizon), vec)
     opt = minimize(loss, x0, **kwargs)
     hat = ExpKernel.from_vector(opt.x)
-    warn_if_explosive(hat.branching_ratio())
     se = hessian_stderr(stamp, horizon, hat) if use_score else None
     return FitResult(
         kernel=hat,
         loglik=float(-opt.fun),
         branching_ratio=hat.branching_ratio(),
         stderr=se,
+        warnings=_fit_result_warnings(hat.branching_ratio(), opt=opt),
     )
 
 
@@ -102,11 +123,15 @@ def fit_powerlaw_mle(arrivals, horizon, start=None, allow_large: bool = False) -
 
     opt = minimize(loss, x0, bounds=bounds, method="L-BFGS-B")
     hat = PowerLawKernel.from_vector(opt.x)
-    warn_if_explosive(hat.branching_ratio(), label="power-law branching ratio")
     return FitResult(
         kernel=hat,
         loglik=float(-opt.fun),
         branching_ratio=hat.branching_ratio(),
+        warnings=_fit_result_warnings(
+            hat.branching_ratio(),
+            label="power-law branching ratio",
+            opt=opt,
+        ),
     )
 
 
@@ -135,6 +160,7 @@ def fit_exponential_gmm(
     )
     weight = np.eye(3)
     vec = x0
+    opt = None
     for _ in range(rounds + 1):
         opt = minimize(
             _gmm_objective,
@@ -148,11 +174,11 @@ def fit_exponential_gmm(
         weight = batch_mean_weights(stamp, horizon, width, lag, n_blocks=n_blocks)
         weight = weight / max(np.max(np.abs(weight)), 1.0)
     hat = ExpKernel.from_vector(vec)
-    warn_if_explosive(hat.branching_ratio())
     return FitResult(
         kernel=hat,
         loglik=None,
         branching_ratio=hat.branching_ratio(),
+        warnings=_fit_result_warnings(hat.branching_ratio(), opt=opt),
     )
 
 
@@ -170,12 +196,11 @@ def fit_exponential_em(
             f"EM is O(N^2); N={n} exceeds {MAX_QUADRATIC_EVENTS}. "
             "Pass allow_large=True to run anyway, or use fit_exponential_mle."
         )
+    extra: tuple[str, ...] = ()
     if n > MAX_QUADRATIC_EVENTS:
-        warnings.warn(
-            "Exponential EM is O(N^2) and is not the default fitter.",
-            RuntimeWarning,
-            stacklevel=2,
-        )
+        large_n = "Exponential EM is O(N^2) and is not the default fitter."
+        warnings.warn(large_n, RuntimeWarning, stacklevel=2)
+        extra = (large_n,)
     vec = (
         as_exp(start).as_vector().copy()
         if start is not None
@@ -184,11 +209,11 @@ def fit_exponential_em(
     for _ in range(iters):
         vec = _em_step(stamp, float(horizon), vec)
     hat = ExpKernel.from_vector(vec)
-    warn_if_explosive(hat.branching_ratio())
     return FitResult(
         kernel=hat,
         loglik=exponential_loglik(stamp, horizon, hat),
         branching_ratio=hat.branching_ratio(),
+        warnings=_fit_result_warnings(hat.branching_ratio(), extra=extra),
     )
 
 

@@ -55,14 +55,14 @@ Univariate branching ratio (Theorem 3.1): $n=\int_0^\infty\mu(s)\,ds$. Exponenti
 
 Multivariate: branching matrix $\Phi$ with $\Phi_{k,j}=A_{j,k}/\beta_k$ (expected type-$k$ offspring of one type-$j$ event, ch. 5 indexing). Stationary iff the **spectral radius** $\rho(\Phi)<1$. Near $\rho=1$ (or $n\approx 1$) estimates of $\alpha,\beta$ are poorly identified; report that and do not treat point estimates as sharp.
 
-Fitters emit `NonstationaryWarning` when the fitted $n$ (or $\rho(\Phi)$) is $\ge 1$. Simulators **raise** `ValueError` for $n\ge 1$ unless `allow_nonstationary=True`. In that mode they warn and apply a finite-horizon event cap (`max(2000, 100 \times T \times \max(\lambda, 1))` by default). Hitting the cap raises **`RuntimeError`** and does **not** return a truncated path. Raise the cap with `max_events=...` on `simulate_thinning` / `simulate_marked_thinning`.
+Fitters emit `NonstationaryWarning` when the fitted $n$ (or $\rho(\Phi)$) is $\ge 1$, and record that condition plus optimizer non-convergence on `FitResult.warnings`. Simulators **raise** `ValueError` for $n\ge 1$ unless `allow_nonstationary=True`. In that mode they warn and apply a finite-horizon event cap (`max(2000, 100 \times T \times \max(\lambda, 1))` by default). Hitting the cap raises **`RuntimeError`** and does **not** return a truncated path. Raise the cap with `max_events=...` on `simulate_thinning` / `simulate_marked_thinning`.
 
 ## Estimation (what to run)
 
 | Method | Use when | Cost / caveat |
 | --- | --- | --- |
 | **MLE (default)** `fit_exponential_mle` | Fully observed event times | $O(N)$ for exponential (recursive excitation cache, eqs. 5.7–5.8). Pass `use_score=True` for the analytic gradient. Optional check vs `hawkeslib` is fine if it installs; do not depend on it at runtime (its sampler uses removed `np.float`). |
-| MLE + Hessian | Need intervals | `FitResult.stderr` (with `use_score=True`) or `hessian_stderr` from observed information $-\nabla^2\ell$. Quote $\hat\theta\pm 1.96\,\mathrm{se}$. Check that $-\nabla^2\ell$ is positive definite. |
+| MLE + Hessian | Need intervals | Univariate exponential only: `FitResult.stderr` (with `use_score=True`) or `hessian_stderr` from observed information $-\nabla^2\ell$. Quote $\hat\theta\pm 1.96\,\mathrm{se}$. Check that $-\nabla^2\ell$ is positive definite. Marked/multivariate SEs are not implemented. |
 | Power-law MLE `fit_powerlaw_mle` | Long memory / aftershock-like decay | Likelihood is $O(N^2)$ time with chunked $O(N)$ extra memory. Refuses $N>2000$ unless `allow_large=True`, same cap as EM. Compare to exponential on the same window. |
 | GMM `fit_exponential_gmm` | Interval-censored counts, or a check on MLE | Eqs. 7.11–7.13. Weight matrix is $\hat V^{-1}$ from **batch means** of the moment vector (counts are autocorrelated). Do **not** use $W=(gg^\top)^{-1}$ (rank 1). |
 | EM `fit_exponential_em` | Small $N$, branching interpretation | EM is $O(N^2)$ time (ch. 6). This toolkit refuses $N>2000$ unless `allow_large=True`. Prefer MLE. |
@@ -97,14 +97,14 @@ Random time-change (Theorem 9.2): $t_i^*=\Lambda(t_i)$ is unit-rate Poisson iff 
 
 **Branching ratio near 1.** $\hat n\to 1$ usually means a slow baseline, a missing mark, or a non-stationary window, not “infinite contagion”. Shorten the window, add a piecewise $\lambda$, or stop.
 
-**Confidence intervals.** Report Hessian-based SEs for MLE (`hessian_stderr` / `FitResult.stderr`). This toolkit does **not** compute GMM sandwich standard errors. For GMM uncertainty, bootstrap the count bins or prefer MLE with a Hessian. Simulation envelopes are not a substitute for SEs.
+**Confidence intervals.** Report Hessian-based SEs for **univariate exponential** MLE (`hessian_stderr` / `FitResult.stderr` with `use_score=True`). This toolkit does **not** compute Hessian SEs for power-law, GMM, EM, or marked/multivariate fits, and does **not** compute GMM sandwich standard errors. For GMM uncertainty, bootstrap the count bins or prefer univariate exponential MLE with a Hessian. Simulation envelopes are not a substitute for SEs.
 
 ## OKX order-flow recipe
 
 1. Build a simple point process: trade times in seconds from a session start, marks buy/sell from aggressor side. Resolve ties (aggregate).
 2. Check stationarity of counts per minute; if the session has a U-shape, split or use a piecewise baseline.
 3. Univariate exponential MLE on all trades as a baseline Poisson alternative ($n=0$).
-4. Bivariate MLE with `MarkedExpKernel` (`jumps[source, target]`) for buy $\leftrightarrow$ sell. Quote $\rho(\Phi)$, the four branching entries, and Hessian SEs if the Hessian inverts.
+4. Bivariate MLE with `MarkedExpKernel` (`jumps[source, target]`) for buy $\leftrightarrow$ sell. Quote $\rho(\Phi)$ and the four branching entries. Hessian standard errors are not implemented for the marked fit.
 5. Residual KS in-sample and on the next session. If KS fails, try power-law or drop event windows via `load_confirmed()` plus known macro times.
 6. Never ship a model with $n\ge 1$ or $\rho(\Phi)\ge 1$ as if it were stationary.
 
