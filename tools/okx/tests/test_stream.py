@@ -76,7 +76,7 @@ class ScriptedConnector:
         return sock
 
 
-def _trade_push(inst_id: str, trade_id: int, ts_ms: int | None = None) -> dict:
+def _trade_push(inst_id: str, trade_id: int, ts_ms: int | None = None, count: int = 1) -> dict:
     stamp = ts_ms if ts_ms is not None else 1_700_000_000_000 + trade_id
     return {
         "arg": {"channel": "trades", "instId": inst_id},
@@ -88,6 +88,7 @@ def _trade_push(inst_id: str, trade_id: int, ts_ms: int | None = None) -> dict:
                 "sz": "1",
                 "side": "buy",
                 "ts": str(stamp),
+                "count": str(count),
             }
         ],
     }
@@ -246,6 +247,25 @@ async def test_trade_gap_backfill_and_dedupe() -> None:
     ids = [m.data.trade_id for m in msgs if m.kind == "data"]
     assert ids == [10, 11, 12, 13, 14, 15]
     assert all(m.kind != "gap" for m in msgs)
+
+
+@run_async
+async def test_aggregated_trade_count_is_not_a_gap() -> None:
+    broker = ScriptedConnector()
+    sock = broker.add()
+    async with OkxPublicStream(
+        [("trades", INST)],
+        connector=broker,
+        rest=None,
+        ping_interval=30,
+        stale_timeout=30,
+    ) as stream:
+        await _wait_sent(sock, lambda s: "subscribe" in s)
+        await sock.push(_trade_push(INST, 10, count=1))
+        await sock.push(_trade_push(INST, 15, count=5))
+        msgs = await _collect(stream, 2)
+    assert [m.kind for m in msgs] == ["data", "data"]
+    assert [m.data.trade_id for m in msgs] == [10, 15]
 
 
 @run_async

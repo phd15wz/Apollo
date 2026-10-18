@@ -181,11 +181,14 @@ python3 -m tools.okx.stream_demo --inst SPCX-USDT-SWAP --channels trades,books5 
 1. **Gap detection.** Last trade id is tracked per instrument. After a
    reconnect or a jump in trade ids the missing range is backfilled from
    REST `/market/history-trades` (same trade-id pager), de-duplicated, and
-   emitted in order. If backfill cannot finish, a `gap` event is emitted
-   **and** written into the recording file (channel, instId, first/last
-   missing trade id, timestamps, count). A sequence or CRC32 checksum
-   break on `books` triggers a full unsubscribe/subscribe resync.
-   Checksum `0` is skipped (OKX deprecated the field; it is always 0).
+   emitted in order. The public `trades` channel aggregates prints: `tradeId`
+   is the last id and `count` is how many consecutive ids the message
+   already covers, so an aggregation is not treated as a hole. If backfill
+   cannot finish, a `gap` event is emitted **and** written into the
+   recording file (channel, instId, first/last missing trade id,
+   timestamps, dropped count). A sequence or CRC32 checksum break on
+   `books` triggers a full unsubscribe/subscribe resync. Checksum `0` is
+   skipped (OKX deprecated the field; it is always 0).
 2. **Stale-feed timeout.** Configurable per stream (`stale_timeout`,
    default 60 s). Silence emits `stale` and sets a flag
    (`stream.is_stale(...)` / `stream.stale_subscriptions`). The next data

@@ -502,7 +502,7 @@ class OkxPublicStream:
         if not isinstance(payload, dict):
             return
         event = payload.get("event")
-        if event == "error":
+        if event in {"subscribe", "unsubscribe", "error", "login", "notice"}:
             return
         arg = payload.get("arg") or {}
         channel = str(arg.get("channel") or "")
@@ -533,25 +533,35 @@ class OkxPublicStream:
 
     async def _on_trades(self, inst_id: str, rows: list[Any], raw: dict[str, Any]) -> None:
         self._touch("trades", inst_id)
-        trades = [Trade.from_dict(row) for row in rows]
-        trades.sort(key=lambda t: (t.ts_ms, t.trade_id))
+        parsed: list[tuple[Trade, int]] = []
+        for row in rows:
+            trade = Trade.from_dict(row)
+            count = 1
+            raw_count = row.get("count") if isinstance(row, Mapping) else None
+            if raw_count not in (None, ""):
+                count = max(int(raw_count), 1)
+            parsed.append((trade, count))
+        parsed.sort(key=lambda item: (item[0].ts_ms, item[0].trade_id))
         seen = self._seen_trade_ids.setdefault(inst_id, set())
         last = self._last_trade_id.get(inst_id)
-        for trade in trades:
+        for trade, count in parsed:
             if trade.trade_id in seen or (last is not None and trade.trade_id <= last):
                 continue
-            if last is not None and trade.trade_id > last + 1:
-                filled = await self._backfill(inst_id, last + 1, trade.trade_id - 1)
+            # ``trades`` aggregates: tradeId is the last id, ``count`` is how
+            # many consecutive ids the message already covers.
+            covered_start = trade.trade_id - count + 1
+            if last is not None and covered_start > last + 1:
+                filled = await self._backfill(inst_id, last + 1, covered_start - 1)
                 if filled is None:
                     gap = GapInfo(
                         channel="trades",
                         inst_id=inst_id,
                         reason="backfill_failed",
                         first_missing_trade_id=last + 1,
-                        last_missing_trade_id=trade.trade_id - 1,
+                        last_missing_trade_id=covered_start - 1,
                         start_ts_ms=None,
                         end_ts_ms=trade.ts_ms,
-                        dropped=trade.trade_id - last - 1,
+                        dropped=covered_start - last - 1,
                     )
                     self._emit_gap(gap)
                 else:
