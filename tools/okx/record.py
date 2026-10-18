@@ -395,6 +395,7 @@ class StreamRecorder:
         self._drop_leftover = False
         self._write_hanging = False
         self.shutdown_incomplete = False
+        self._writer_starts = 0
         if self.enabled:
             self._scan_usage()
             self.apply_retention()
@@ -456,6 +457,7 @@ class StreamRecorder:
             if self._writer is not None and self._writer.is_alive():
                 return
             self._writer = threading.Thread(target=self._writer_loop, name="okx-record-writer", daemon=True)
+            self._writer_starts += 1
             self._writer.start()
 
     def _writer_loop(self) -> None:

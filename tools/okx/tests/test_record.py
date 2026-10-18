@@ -762,11 +762,14 @@ def test_close_returns_when_disk_blocks(tmp_path: Path) -> None:
     while time.monotonic() < deadline and not rec._write_hanging:
         time.sleep(0.02)
     assert rec._write_hanging
+    writer = rec._writer
     started = time.monotonic()
     rec.close(timeout=0.4)
     assert time.monotonic() - started < 1.0
     assert rec.shutdown_incomplete
     rec.write_hang = False
+    if writer is not None:
+        writer.join(timeout=1.0)
 
 
 def test_ensure_writer_starts_only_one_thread(tmp_path: Path) -> None:
@@ -789,6 +792,6 @@ def test_ensure_writer_starts_only_one_thread(tmp_path: Path) -> None:
     for thread in threads:
         thread.join(timeout=3)
     assert not errors
-    writers = [t for t in threading.enumerate() if t.name == "okx-record-writer" and t.is_alive()]
-    assert len(writers) == 1
+    assert rec._writer_starts == 1
+    assert rec._writer is not None and rec._writer.is_alive()
     rec.close()
