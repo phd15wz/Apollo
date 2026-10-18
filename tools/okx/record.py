@@ -788,7 +788,8 @@ class StreamRecorder:
             if not self.accept(channel, inst_id):
                 continue
             grouped.setdefault((inst_id, channel), []).append(record)
-        for (inst_id, channel), group in grouped.items():
+        groups = list(grouped.items())
+        for gi, ((inst_id, channel), group) in enumerate(groups):
             try:
                 dest, handle = self._handle(inst_id, channel)
             except ValueError:
@@ -796,11 +797,15 @@ class StreamRecorder:
                 continue
             raw = 0
             before = dest.stat().st_size if dest.exists() else 0
-            for record in group:
+            leftover_group: list[dict[str, Any]] = []
+            for index, record in enumerate(group):
                 payload = {key: value for key, value in record.items() if not str(key).startswith("_")}
                 line = json.dumps(payload, separators=(",", ":")).encode("utf-8") + b"\n"
                 raw += len(line)
                 handle.write(line)
+                if self._drop_leftover:
+                    leftover_group = group[index + 1 :]
+                    break
             handle.flush()
             after = dest.stat().st_size if dest.exists() else before
             delta = max(0, after - before)
@@ -811,9 +816,15 @@ class StreamRecorder:
                 self._used += delta
                 self._run_used += delta
             stats = self.throughput.setdefault(channel, ChannelThroughput())
-            stats.messages += len(group)
+            stats.messages += len(group) - len(leftover_group)
             stats.raw_bytes += raw
             self._note_file(dest)
+            if leftover_group:
+                rest = leftover_group[:]
+                for _key, more in groups[gi + 1 :]:
+                    rest.extend(more)
+                self._stash_unwritten(rest)
+                return
 
     def _handle(self, inst_id: str, channel: str) -> tuple[Path, Any]:
         period = recording_period_key(self.clock(), self.rotation)

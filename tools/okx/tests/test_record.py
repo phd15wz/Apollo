@@ -807,6 +807,77 @@ def test_close_finishes_gzip_on_slow_disk(tmp_path: Path) -> None:
     assert int(incomplete[0]["dropped"]) == rec.accepted - recorded
 
 
+def test_close_stops_mid_batch_and_keeps_gzip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    real_open = gzip.open
+
+    class SlowHandle:
+        def __init__(self, inner: object) -> None:
+            self._inner = inner
+
+        def write(self, data: object) -> object:
+            time.sleep(0.05)
+            return self._inner.write(data)  # type: ignore[attr-defined]
+
+        def flush(self) -> object:
+            return self._inner.flush()  # type: ignore[attr-defined]
+
+        def close(self) -> object:
+            return self._inner.close()  # type: ignore[attr-defined]
+
+        def __enter__(self) -> "SlowHandle":
+            return self
+
+        def __exit__(self, *exc: object) -> None:
+            self.close()
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(self._inner, name)
+
+    def _slow_open(*args: object, **kwargs: object) -> object:
+        handle = real_open(*args, **kwargs)
+        mode = kwargs.get("mode") or (args[1] if len(args) > 1 else "rb")
+        if "a" in str(mode) or "w" in str(mode):
+            return SlowHandle(handle)
+        return handle
+
+    monkeypatch.setattr("tools.okx.record.gzip.open", _slow_open)
+    rec = StreamRecorder(
+        cache_dir=tmp_path,
+        enabled=True,
+        write_queue_maxsize=8,
+        offer_timeout=0.5,
+        sync=False,
+    )
+    rec.start()
+    for batch in range(4):
+        rec.offer_batch_sync(
+            [
+                {
+                    "ts": batch * 100 + i,
+                    "event": "data",
+                    "channel": "trades",
+                    "instId": "BTC-USDT-SWAP",
+                    "data": {"tradeId": str(batch * 100 + i)},
+                }
+                for i in range(100)
+            ]
+        )
+    started = time.monotonic()
+    rec.close(timeout=0.2)
+    assert time.monotonic() - started < 0.55
+    assert rec.files_written
+    rows = []
+    for path in rec.files_written:
+        with gzip.open(path, "rb") as handle:
+            while handle.read(65536):
+                pass
+        rows.extend(_read_jsonl(path))
+    recorded = sum(1 for row in rows if row.get("event") == "data")
+    covered = sum(int(row.get("dropped") or 0) for row in rows if row.get("event") == "gap")
+    assert rec.accepted == 400
+    assert recorded + covered == 400
+
+
 def test_ensure_writer_starts_only_one_thread(tmp_path: Path) -> None:
     rec = StreamRecorder(cache_dir=tmp_path, enabled=True, write_queue_maxsize=64, sync=False)
     barrier = threading.Barrier(24)
