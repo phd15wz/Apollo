@@ -9,7 +9,8 @@ Docs: [OKX API v5](https://www.okx.com/docs-v5/en/). This package is written
 from those public endpoints. It does not vendor [OKX Agent Trade Kit](https://github.com/okx/agent-trade-kit).
 
 Requires Python 3.11+. Runtime deps already in the repo: `requests`, `numpy`.
-No Numba. Pandas is not used.
+The public WebSocket client needs the optional `websockets` package
+(`python3 -m pip install 'websockets>=12'`). No Numba. Pandas is not used.
 
 ## Install / run
 
@@ -55,10 +56,12 @@ to NumPy structured arrays (`trades_to_array`, `TRADE_DTYPE`) with integer
 millisecond timestamps.
 
 `history_trades_range` defaults to trade-id paging. When the window has an
-end time, it first makes one timestamp-mode request (`type=2`) to locate a
-trade id at or just after that end, then pages backward by trade id. Hitting
-`max_pages` before the window start raises `PaginationBudgetExceeded` rather
-than returning a silent partial or empty list.
+end time, it first makes one timestamp-mode request (`type=2`) to locate the
+**newest trade at or before the end**, then pages backward by trade id. Hitting
+`max_pages` before the window start raises `PaginationBudgetExceeded` (the
+trades already fetched are on `exc.trades`) rather than returning a silent
+partial or empty list. A window older than OKX's ~3-month REST retention
+raises `HistoryWindowTooOld` and tells you to use the bulk archive.
 
 `history_trades_range(..., pagination="ts")` is an explicit, **lossy** option:
 OKX `after` is exclusive on timestamp, so same-millisecond prints that sit on
@@ -142,15 +145,75 @@ services.
 `GET /api/v5/support/announcements` and `GET /api/v5/support/announcement-types`
 are also listed as public/keyless in the v5 docs and the public REST catalog.
 
-## Skipped in stage 1
+## Public WebSocket
 
-Public WebSocket (`wss://ws.okx.com:8443/ws/v5/public`) with reconnect/ping
-was optional. It is not shipped half-done. REST + the official zip archive
-cover research and maintenance reminders.
+`wss://ws.okx.com:8443/ws/v5/public` for `trades`, `tickers`, `books5`,
+`books`, `bbo-tbt`, `funding-rate`, `mark-price`. Candle channels use
+`wss://ws.okx.com:8443/ws/v5/business`. Hosts are allowlisted
+(`ws.okx.com`, `wsaws.okx.com`, `wspap.okx.com`, `wseea.okx.com`,
+`wsus.okx.com`). `login` and private channels raise `PrivateChannelError`.
+
+The client sends a text `ping` after ~25 s of silence and expects `pong`.
+It reconnects with exponential backoff + jitter and resubscribes. Connection
+attempts are capped at 3/s and subscribe/unsubscribe at 480/hour.
+
+```python
+from tools.okx import OkxPublicStream, PublicClient
+
+async with OkxPublicStream(
+    [("trades", "SPCX-USDT-SWAP"), ("books5", "SPCX-USDT-SWAP")],
+    rest=PublicClient(),
+) as stream:
+    async for msg in stream:
+        if stream.is_stale(msg.channel, msg.inst_id) or msg.kind == "gap":
+            continue  # never treat a gap as a quiet period
+```
+
+CLI demo (prints live trades / top-of-book; recording off unless `--record`):
+
+```bash
+python3 -m pip install 'websockets>=12'
+python3 -m tools.okx.stream_demo --inst SPCX-USDT-SWAP --channels trades,books5 --seconds 60
+```
+
+### Safeguards
+
+1. **Gap detection.** Last trade id is tracked per instrument. After a
+   reconnect or a jump in trade ids the missing range is backfilled from
+   REST `/market/history-trades` (same trade-id pager), de-duplicated, and
+   emitted in order. If backfill cannot finish, a `gap` event is emitted
+   **and** written into the recording file (channel, instId, first/last
+   missing trade id, timestamps, count). A sequence or CRC32 checksum
+   break on `books` triggers a full unsubscribe/subscribe resync.
+   Checksum `0` is skipped (OKX deprecated the field; it is always 0).
+2. **Stale-feed timeout.** Configurable per stream (`stale_timeout`,
+   default 60 s). Silence emits `stale` and sets a flag
+   (`stream.is_stale(...)` / `stream.stale_subscriptions`). The next data
+   message emits `recovered` and clears the flag.
+3. **Size caps and bounded queues.** Recording is **off by default**. When
+   enabled it writes gzip JSONL under `OKX_DATA_DIR/recordings/`, counts
+   toward `OKX_DATA_BUDGET_BYTES` / `OKX_DATA_RUN_BUDGET_BYTES`, and
+   raises `CacheBudgetExceeded`. Free disk below
+   `OKX_MIN_FREE_DISK_BYTES` (default 10 GiB) raises `LowDiskError` and
+   stops recording. Files rotate **daily** by default (or hourly) per
+   instrument/channel. Retention can cap age and/or total recording
+   bytes; oldest files are deleted first. The full `books` channel records
+   periodic snapshots (configurable interval), not every update.
+4. **Public only.** No keys, no `login`, no private path.
+
+**Overflow policy (in-memory queue):** default 10_000 data events.
+When full, the oldest **data** event is dropped, `overflow_count`
+increments, and a `gap` event (reason `overflow`) is emitted and
+recorded. Control events (`gap`, `stale`, …) use a small reserved slack.
+Downstream Hawkes fits must treat `kind='gap'` as a hole in the tape,
+never as a quiet period.
 
 ## Safety
 
 - Allowlisted GET paths only. Account, trade, asset, and withdrawal URLs raise
   `UnsafeEndpointError`.
+- Allowlisted public WebSocket channels and hosts only. `login` and private
+  channels raise `PrivateChannelError`.
 - No `api_key` constructor argument, no `OK-ACCESS-*` headers, no HMAC.
-- Unit tests mock HTTP with recorded JSON under `tests/fixtures/`.
+- Unit tests mock HTTP with recorded JSON under `tests/fixtures/` and use an
+  in-memory fake WebSocket (no network). Live tests stay behind `OKX_LIVE=1`.

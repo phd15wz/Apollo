@@ -43,9 +43,56 @@ class UnsafeArchiveError(Exception):
 
 
 class PaginationBudgetExceeded(Exception):
-    """Paged through ``max_pages`` without reaching the start of the window."""
+    """Paged through ``max_pages`` without reaching the start of the window.
 
-    def __init__(self, message: str, *, pages: int, max_pages: int) -> None:
+    ``trades`` holds the records already fetched (chronological). Callers that
+    asked for an open-ended window (no start) can keep that partial tape
+    instead of discarding it.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        pages: int,
+        max_pages: int,
+        trades: list | None = None,
+    ) -> None:
         self.pages = pages
         self.max_pages = max_pages
+        self.trades = list(trades or [])
+        super().__init__(message)
+
+
+class HistoryWindowTooOld(Exception):
+    """REST ``/market/history-trades`` does not cover this window.
+
+    OKX keeps about three months of trades on that endpoint. Older ticks
+    must be loaded from the bulk archive (``GET /api/v5/public/market-data-history``
+    / ``download_daily_trades``).
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        start_ts_ms: int | None = None,
+        end_ts_ms: int | None = None,
+    ) -> None:
+        self.start_ts_ms = start_ts_ms
+        self.end_ts_ms = end_ts_ms
+        super().__init__(message)
+
+
+class PrivateChannelError(UnsafeEndpointError):
+    """A login op or private WebSocket channel was requested."""
+
+
+class LowDiskError(Exception):
+    """Free disk space on the cache filesystem is below the configured floor."""
+
+    def __init__(self, message: str, *, free: int, floor: int, path: str = "") -> None:
+        self.free = free
+        self.floor = floor
+        self.path = path
         super().__init__(message)

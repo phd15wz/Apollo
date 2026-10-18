@@ -6,7 +6,7 @@ import json
 import pytest
 
 from tools.okx.client import HttpResponse
-from tools.okx.errors import PaginationBudgetExceeded
+from tools.okx.errors import HistoryWindowTooOld, PaginationBudgetExceeded
 from tools.okx.market import candles_range, funding_rate_history_range, history_trades_range
 from tools.okx.tests.conftest import FakeTransport, load_fixture, make_client
 from tools.okx.types import TRADE_DTYPE, trades_to_array
@@ -93,6 +93,7 @@ def test_history_trades_pagination_by_ts_returns_chronological() -> None:
         end_ts_ms=1700000035000,
         pagination="ts",
         page_limit=2,
+        now_ms=1700000035000,
     )
     assert [t.trade_id for t in trades] == [10, 20, 30]
     assert [t.ts_ms for t in trades] == [1700000010000, 1700000020000, 1700000030000]
@@ -320,6 +321,7 @@ def test_trade_id_range_locates_past_window_behind_newer_trades() -> None:
         end_ts_ms=end_ts,
         page_limit=50,
         max_pages=4,
+        now_ms=end_ts,
     )
     ids = [t.trade_id for t in trades]
     assert ids == list(range(50, 151))
@@ -340,6 +342,7 @@ def test_trade_id_range_raises_when_page_budget_exhausted() -> None:
             end_ts_ms=_SEQ_TS0 + 399,
             page_limit=10,
             max_pages=5,
+            now_ms=_SEQ_TS0 + 399,
         )
 
 
@@ -374,3 +377,133 @@ def test_duplicate_trade_id_on_consecutive_pages_returned_once() -> None:
     ids = [t.trade_id for t in trades]
     assert ids == [1, 2, 3, 4, 5]
     assert len(ids) == len(set(ids))
+
+
+def test_window_end_uses_highest_trade_id_not_page_order() -> None:
+    """Same-timestamp trades returned oldest-first must still pick the max id."""
+    end_ts = _SEQ_TS0 + 20
+    rows = [
+        {
+            "instId": "BTC-USDT-SWAP",
+            "side": "buy",
+            "sz": "1",
+            "px": "100",
+            "tradeId": "10",
+            "ts": str(end_ts),
+            "source": "0",
+        },
+        {
+            "instId": "BTC-USDT-SWAP",
+            "side": "buy",
+            "sz": "1",
+            "px": "100",
+            "tradeId": "12",
+            "ts": str(end_ts),
+            "source": "0",
+        },
+        {
+            "instId": "BTC-USDT-SWAP",
+            "side": "buy",
+            "sz": "1",
+            "px": "100",
+            "tradeId": "11",
+            "ts": str(end_ts),
+            "source": "0",
+        },
+        {
+            "instId": "BTC-USDT-SWAP",
+            "side": "sell",
+            "sz": "1",
+            "px": "99",
+            "tradeId": "9",
+            "ts": str(end_ts - 1),
+            "source": "0",
+        },
+    ]
+
+    class _OldestFirstTape:
+        def request(
+            self,
+            method: str,
+            url: str,
+            *,
+            params: dict[str, str] | None,
+            headers: dict[str, str],
+            timeout: float,
+        ) -> HttpResponse:
+            query = dict(params or {})
+            page_type = query.get("type", "1")
+            after = query.get("after")
+            if page_type == "2":
+                page = [rows[0], rows[2], rows[1], rows[3]]  # ids 10, 11, 12, 9
+            elif after == "13":
+                page = [rows[1], rows[2], rows[0], rows[3]]  # 12, 11, 10, 9
+            else:
+                page = []
+            return HttpResponse(200, {}, json.dumps({"code": "0", "data": page}).encode(), url)
+
+    client = make_client(_OldestFirstTape())  # type: ignore[arg-type]
+    trades = history_trades_range(
+        client,
+        "BTC-USDT-SWAP",
+        start_ts_ms=end_ts - 1,
+        end_ts_ms=end_ts,
+        page_limit=4,
+        now_ms=end_ts,
+    )
+    assert [t.trade_id for t in trades] == [9, 10, 11, 12]
+
+
+def test_history_window_older_than_three_months_raises() -> None:
+    transport = FakeTransport()
+    client = make_client(transport)
+    now = 1_800_000_000_000
+    end = now - (100 * 24 * 60 * 60 * 1000)
+    with pytest.raises(HistoryWindowTooOld, match="market-data-history") as exc:
+        history_trades_range(
+            client,
+            "BTC-USDT-SWAP",
+            start_ts_ms=end - 1000,
+            end_ts_ms=end,
+            now_ms=now,
+        )
+    assert exc.value.end_ts_ms == end
+    assert transport.calls == []
+
+
+def test_empty_window_end_lookup_raises_archive_hint() -> None:
+    transport = FakeTransport()
+    transport.add(
+        "/api/v5/market/history-trades",
+        {"code": "0", "data": []},
+        params={
+            "instId": "BTC-USDT-SWAP",
+            "type": "2",
+            "after": "1700000000001",
+            "limit": "100",
+        },
+    )
+    client = make_client(transport)
+    with pytest.raises(HistoryWindowTooOld, match="market-data-history"):
+        history_trades_range(
+            client,
+            "BTC-USDT-SWAP",
+            end_ts_ms=1_700_000_000_000,
+            now_ms=1_700_000_000_000,
+        )
+
+
+def test_page_budget_without_start_keeps_partial_trades() -> None:
+    tape = _OkxHistoryTape(_sequential_rows(80))
+    client = make_client(tape)  # type: ignore[arg-type]
+    with pytest.raises(PaginationBudgetExceeded) as exc:
+        history_trades_range(
+            client,
+            "BTC-USDT-SWAP",
+            page_limit=10,
+            max_pages=3,
+        )
+    ids = [t.trade_id for t in exc.value.trades]
+    assert ids == list(range(51, 81))
+    assert exc.value.pages == 3
+    assert len(exc.value.trades) == 30

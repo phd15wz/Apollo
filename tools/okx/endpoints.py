@@ -34,10 +34,74 @@ ALLOWED_HOSTS: frozenset[str] = frozenset(
         "ws.okx.com",
         "wsaws.okx.com",
         "wspap.okx.com",
+        "wseea.okx.com",
+        "wsus.okx.com",
         "tr.okx.com",
         "okx.com",
     }
 )
+
+# Public / business WebSocket hosts (production, AWS, demo, regional).
+ALLOWED_WS_HOSTS: frozenset[str] = frozenset(
+    {
+        "ws.okx.com",
+        "wsaws.okx.com",
+        "wspap.okx.com",
+        "wseea.okx.com",
+        "wsus.okx.com",
+    }
+)
+
+DEFAULT_PUBLIC_WS_URL = "wss://ws.okx.com:8443/ws/v5/public"
+DEFAULT_BUSINESS_WS_URL = "wss://ws.okx.com:8443/ws/v5/business"
+
+PUBLIC_WS_PATHS: frozenset[str] = frozenset({"/ws/v5/public", "/ws/v5/business"})
+PRIVATE_WS_PATH = "/ws/v5/private"
+
+# Public, keyless channels this package will subscribe to.
+PUBLIC_WS_CHANNELS: frozenset[str] = frozenset(
+    {
+        "trades",
+        "tickers",
+        "books",
+        "books5",
+        "bbo-tbt",
+        "funding-rate",
+        "mark-price",
+    }
+)
+
+CANDLE_CHANNEL_RE = re.compile(
+    r"^candle(?:1s|3m|1m|5m|15m|30m|1H|2H|4H|6H|12H|1D|2D|3D|5D|1W|1M|3M)(?:utc)?$"
+)
+
+# Names we refuse with a private-channel error even if someone asks.
+PRIVATE_WS_CHANNELS: frozenset[str] = frozenset(
+    {
+        "account",
+        "positions",
+        "orders",
+        "orders-algo",
+        "orders-algo-advance",
+        "balance_and_position",
+        "balance-and-position",
+        "account-greeks",
+        "liquidation-warning",
+        "account-risk-data",
+        "deposit-info",
+        "withdrawal-info",
+        "grid-orders-spot",
+        "grid-orders-contract",
+        "grid-orders-moon",
+        "algo-advance",
+        "price-limit",
+        "fills",
+    }
+)
+
+# Connection attempts per IP, subscribe/unsubscribe/login ops per connection.
+WS_CONNECT_RATE: tuple[int, float] = (3, 1.0)
+WS_SUBSCRIBE_RATE: tuple[int, float] = (480, 3600.0)
 
 # Path-safe instrument ids. Hyphen *and* underscore show up on live FUTURES
 # (e.g. BTC-USD_UM-261030). Still rejects '/', '\\', '.', and empty strings.
@@ -164,3 +228,35 @@ def assert_okx_url(url: str, *, allow_unofficial_hosts: bool = False) -> None:
         raise ValueError(
             f"refusing host {host!r}; official OKX hosts are {sorted(ALLOWED_HOSTS)}"
         )
+
+
+def assert_okx_ws_url(url: str, *, allow_unofficial_hosts: bool = False) -> None:
+    """Require wss and a documented OKX public/business WebSocket host."""
+    from tools.okx.errors import UnsafeEndpointError
+
+    parsed = urlparse(url)
+    path = (parsed.path or "").rstrip("/") or "/"
+    if PRIVATE_WS_PATH in path or path.endswith("/private"):
+        raise UnsafeEndpointError(f"refusing private WebSocket path {path}")
+    if allow_unofficial_hosts:
+        if parsed.scheme not in {"ws", "wss"}:
+            raise ValueError(f"refusing non-ws URL {url!r}")
+        return
+    if parsed.scheme != "wss":
+        raise ValueError(f"refusing non-wss URL {url!r}")
+    host = (parsed.hostname or "").lower()
+    if host not in ALLOWED_WS_HOSTS:
+        raise ValueError(
+            f"refusing host {host!r}; official OKX WebSocket hosts are "
+            f"{sorted(ALLOWED_WS_HOSTS)}"
+        )
+    if path not in PUBLIC_WS_PATHS:
+        raise UnsafeEndpointError(f"refusing WebSocket path {path}")
+
+
+def is_candle_channel(channel: str) -> bool:
+    return bool(CANDLE_CHANNEL_RE.fullmatch(channel))
+
+
+def is_public_ws_channel(channel: str) -> bool:
+    return channel in PUBLIC_WS_CHANNELS or is_candle_channel(channel)

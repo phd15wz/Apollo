@@ -11,4 +11,5 @@ tools/okx/data/
 tools/okx/cache/
 *.okx.zip
 *.zip.part
+*.jsonl.gz
 
