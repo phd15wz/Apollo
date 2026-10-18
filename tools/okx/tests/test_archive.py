@@ -470,10 +470,6 @@ def test_declared_uncompressed_size_header_check_is_enforced(tmp_path: Path) -> 
     The payload is tiny, so the stream inflator would not trip. Mutation
     testing showed that check was otherwise untested.
     """
-    import inspect
-
-    from tools.okx import archive as archive_mod
-
     path = tmp_path / "small.zip"
     path.write_bytes(_zip_bytes(CSV, "t.csv"))
     with zipfile.ZipFile(path) as zf:
@@ -482,9 +478,22 @@ def test_declared_uncompressed_size_header_check_is_enforced(tmp_path: Path) -> 
         info.file_size = 10_000_000
         with pytest.raises(UnsafeArchiveError, match="declared uncompressed size"):
             _select_csv_member(zf, max_uncompressed_bytes=4096)
-    source = inspect.getsource(archive_mod._select_csv_member)
-    assert "declared uncompressed size" in source
-    assert "uncompressed > max_uncompressed_bytes" in source
+
+
+def test_declared_compression_ratio_header_check_is_enforced(tmp_path: Path) -> None:
+    """Fails if ``_select_csv_member`` drops the declared-ratio check.
+
+    Declared uncompressed size stays under the byte cap so only the ratio
+    guard can reject this header.
+    """
+    path = tmp_path / "ratio.zip"
+    path.write_bytes(_zip_bytes(CSV, "t.csv"))
+    with zipfile.ZipFile(path) as zf:
+        info = zf.infolist()[0]
+        info.file_size = 3000
+        info.compress_size = 1
+        with pytest.raises(UnsafeArchiveError, match="compression ratio"):
+            _select_csv_member(zf, max_uncompressed_bytes=4096, max_compression_ratio=10)
 
 
 def test_lying_zip_header_stream_cap_aborts(tmp_path: Path) -> None:

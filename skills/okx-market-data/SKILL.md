@@ -73,10 +73,12 @@ python3 -m tools.okx.stream_demo --inst SPCX-USDT-SWAP --channels trades,books5 
 
 Recording is **off by default**. `--record` writes gzip JSONL under
 `OKX_DATA_DIR/recordings/` (daily rotation by default; hourly optional).
-The same cache/run budgets apply. `OKX_MIN_FREE_DISK_BYTES` (default 10
-GiB) stops recording. Full `books` records periodic snapshots, not every
-update. Queue overflow is **drop-oldest plus a counter** and writes a gap
-record so Hawkes fits cannot mistake a hole for silence.
+`--record-channels trades` records a subset. The same cache/run budgets
+apply. `OKX_MIN_FREE_DISK_BYTES` (default 10 GiB) stops recording. Full
+`books` records periodic snapshots, not every update. Consumer-queue
+overflow coalesces into one gap event (not written to disk). Writer-queue
+overflow coalesces into a `writer_overflow` gap that is written so Hawkes
+fits cannot mistake a hole for silence.
 
 Maintenance:
 

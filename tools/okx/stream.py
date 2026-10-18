@@ -16,19 +16,20 @@ Safeguards
    so callers can stop acting on a dead feed.
 3. **Size caps.** Optional gzip-JSONL recording (off by default) uses the
    same ``OKX_DATA_DIR`` budgets as zip downloads and raises
-   ``CacheBudgetExceeded``. The in-memory outbound queue is bounded:
-   **drop-oldest plus a counter**, with a reserved slack for control
-   events. Overflow writes a gap record and emits a gap event.
+   ``CacheBudgetExceeded``. The in-memory outbound queue is strictly
+   bounded. Consecutive overflow drops coalesce into one ``gap`` event
+   (invariant: ``overflow_count == sum(gap.dropped)``). Consumer-side
+   overflow is **not** written to the recording; recorder-side writer
+   overflow is.
 4. **Public channels only.** ``login`` and private channel names raise
    :class:`PrivateChannelError`. Hosts are allowlisted; only ``wss``
    ``/ws/v5/public`` and ``/ws/v5/business`` are accepted.
 
 Overflow policy
-    Default queue size is 10_000 data events. When full, the oldest data
-    event is discarded, ``overflow_count`` increments, a gap event is
-    recorded/emitted, and the new event is enqueued. Downstream Hawkes
-    fits must treat ``kind='gap'`` as a hole in the tape, never as a
-    quiet period.
+    Default queue size is 10_000 events (data, control, and gaps). When
+    full, the oldest data event is discarded and folded into one overflow
+    ``gap`` for that instrument. Downstream Hawkes fits must treat
+    ``kind='gap'`` as a hole in the tape, never as a quiet period.
 """
 
 from __future__ import annotations
@@ -37,6 +38,7 @@ import asyncio
 import json
 import logging
 import random
+import threading
 import time
 import zlib
 from collections import deque
@@ -55,12 +57,12 @@ Clock = Callable[[], float]
 AsyncSleeper = Callable[[float], Awaitable[None]]
 
 DEFAULT_QUEUE_MAX = 10_000
-CONTROL_SLACK = 8
 DEFAULT_PING_INTERVAL = 25.0
 DEFAULT_STALE_TIMEOUT = 60.0
 DEFAULT_RECONNECT_BASE = 0.5
 DEFAULT_RECONNECT_MAX = 30.0
 DEFAULT_HANDSHAKE_TIMEOUT = 8.0
+DEFAULT_HEALTHY_AFTER = 5.0
 
 _LOG = logging.getLogger(__name__)
 
@@ -116,12 +118,23 @@ def _import_websockets() -> Any:
 class WebsocketsConnector:
     """Connect via the optional ``websockets`` package."""
 
-    def __init__(self, *, allow_unofficial_hosts: bool = False, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        *,
+        allow_unofficial_hosts: bool = False,
+        allow_insecure: bool = False,
+        **kwargs: Any,
+    ) -> None:
         self.allow_unofficial_hosts = allow_unofficial_hosts
+        self.allow_insecure = allow_insecure
         self.kwargs = kwargs
 
     async def __call__(self, url: str) -> WsConnection:
-        endpoints.assert_okx_ws_url(url, allow_unofficial_hosts=self.allow_unofficial_hosts)
+        endpoints.assert_okx_ws_url(
+            url,
+            allow_unofficial_hosts=self.allow_unofficial_hosts,
+            allow_insecure=self.allow_insecure,
+        )
         ws = _import_websockets()
         return await ws.connect(url, **self.kwargs)
 
@@ -210,42 +223,130 @@ class LocalBook:
 
 
 class EventQueue:
-    """Bounded outbound queue. Data events drop-oldest; control events use slack."""
+    """Strictly bounded queue. Consecutive overflow drops become one gap."""
 
-    def __init__(self, maxsize: int, *, slack: int = CONTROL_SLACK) -> None:
+    def __init__(self, maxsize: int) -> None:
         if maxsize < 1:
             raise ValueError("queue_maxsize must be at least 1")
         self.maxsize = maxsize
-        self.slack = slack
         self.items: deque[StreamMessage | None] = deque()
         self._ready = asyncio.Event()
         self.overflow_count = 0
 
-    def _data_count(self) -> int:
-        return sum(1 for item in self.items if item is not None and item.kind == "data")
+    def overflow_gap_dropped(self) -> int:
+        total = 0
+        for item in self.items:
+            if item is not None and item.kind == "gap" and item.gap is not None and item.gap.reason == "overflow":
+                total += item.gap.dropped
+        return total
 
     def put(self, msg: StreamMessage | None, *, control: bool = False) -> StreamMessage | None:
-        dropped: StreamMessage | None = None
-        if msg is not None and msg.kind == "data" and not control:
-            if self._data_count() >= self.maxsize:
-                dropped = self._pop_oldest_data()
-                if dropped is not None:
-                    self.overflow_count += 1
-        elif control and len(self.items) >= self.maxsize + self.slack:
-            extra = self._pop_oldest_data()
-            if extra is not None:
+        del control
+        if msg is None:
+            self.items.append(None)
+            self._ready.set()
+            return None
+        if msg.kind == "gap" and msg.gap is not None and msg.gap.reason == "overflow":
+            if self._merge_overflow(msg):
+                self._ready.set()
+                return None
+        while len(self.items) >= self.maxsize:
+            if not self._evict():
+                break
+        if len(self.items) >= self.maxsize:
+            if msg.kind == "data":
                 self.overflow_count += 1
-                dropped = extra
+                if not self._absorb_data(msg, allow_insert=False):
+                    self._bump_any_overflow()
+                self._ready.set()
+                return None
+            return None
         self.items.append(msg)
         self._ready.set()
-        return dropped
-
-    def _pop_oldest_data(self) -> StreamMessage | None:
-        for index, item in enumerate(self.items):
-            if item is not None and item.kind == "data":
-                del self.items[index]
-                return item
         return None
+
+    def _evict(self) -> bool:
+        for index, item in enumerate(self.items):
+            if item is None:
+                continue
+            if item.kind == "gap" and item.gap is not None and item.gap.reason == "overflow":
+                continue
+            del self.items[index]
+            if item.kind == "data":
+                self.overflow_count += 1
+                self._absorb_data(item, allow_insert=True)
+            return True
+        return False
+
+    def _absorb_data(self, dropped: StreamMessage, *, allow_insert: bool) -> bool:
+        for index, item in enumerate(self.items):
+            if _is_overflow_gap(item, dropped.channel, dropped.inst_id):
+                self.items[index] = _extend_overflow_gap(item, dropped)
+                return True
+        if not allow_insert:
+            return False
+        gap = _gap_from_message(dropped, reason="overflow", dropped=1)
+        self.items.appendleft(
+            StreamMessage(
+                kind="gap",
+                channel=dropped.channel,
+                inst_id=dropped.inst_id,
+                ts_ms=dropped.ts_ms,
+                gap=gap,
+                data=gap,
+            )
+        )
+        return True
+
+    def _merge_overflow(self, msg: StreamMessage) -> bool:
+        if msg.gap is None:
+            return False
+        for index, item in enumerate(self.items):
+            if _is_overflow_gap(item, msg.channel, msg.inst_id) and item is not None and item.gap is not None:
+                merged = GapInfo(
+                    channel=item.gap.channel,
+                    inst_id=item.gap.inst_id,
+                    reason="overflow",
+                    first_missing_trade_id=_min_opt(item.gap.first_missing_trade_id, msg.gap.first_missing_trade_id),
+                    last_missing_trade_id=_max_opt(item.gap.last_missing_trade_id, msg.gap.last_missing_trade_id),
+                    start_ts_ms=_min_opt(item.gap.start_ts_ms, msg.gap.start_ts_ms),
+                    end_ts_ms=_max_opt(item.gap.end_ts_ms, msg.gap.end_ts_ms),
+                    dropped=item.gap.dropped + msg.gap.dropped,
+                )
+                self.items[index] = StreamMessage(
+                    kind="gap",
+                    channel=merged.channel,
+                    inst_id=merged.inst_id,
+                    ts_ms=msg.ts_ms,
+                    gap=merged,
+                    data=merged,
+                )
+                return True
+        return False
+
+    def _bump_any_overflow(self) -> None:
+        for index, item in enumerate(self.items):
+            if item is not None and item.kind == "gap" and item.gap is not None and item.gap.reason == "overflow":
+                gap = item.gap
+                bumped = GapInfo(
+                    channel=gap.channel,
+                    inst_id=gap.inst_id,
+                    reason="overflow",
+                    first_missing_trade_id=gap.first_missing_trade_id,
+                    last_missing_trade_id=gap.last_missing_trade_id,
+                    start_ts_ms=gap.start_ts_ms,
+                    end_ts_ms=gap.end_ts_ms,
+                    dropped=gap.dropped + 1,
+                )
+                self.items[index] = StreamMessage(
+                    kind="gap",
+                    channel=bumped.channel,
+                    inst_id=bumped.inst_id,
+                    ts_ms=bumped.end_ts_ms or 0,
+                    gap=bumped,
+                    data=bumped,
+                )
+                return
 
     async def get(self) -> StreamMessage | None:
         while not self.items:
@@ -340,33 +441,42 @@ class OkxPublicStream:
         business_url: str | None = None,
         rest: PublicClient | None = None,
         recorder: StreamRecorder | None = None,
+        record_channels: Sequence[str] | None = None,
         connector: Connector | None = None,
         allow_unofficial_hosts: bool = False,
+        allow_insecure: bool = False,
         queue_maxsize: int = DEFAULT_QUEUE_MAX,
         ping_interval: float = DEFAULT_PING_INTERVAL,
         stale_timeout: float = DEFAULT_STALE_TIMEOUT,
         reconnect_base: float = DEFAULT_RECONNECT_BASE,
         reconnect_max: float = DEFAULT_RECONNECT_MAX,
         handshake_timeout: float = DEFAULT_HANDSHAKE_TIMEOUT,
+        healthy_after: float = DEFAULT_HEALTHY_AFTER,
         clock: Clock | None = None,
         sleep: AsyncSleeper | None = None,
     ) -> None:
         self.args = validate_subscriptions(subscriptions)
         self.allow_unofficial_hosts = allow_unofficial_hosts
+        self.allow_insecure = allow_insecure
         self.public_url = endpoints.resolve_ws_url(
             public_url,
             env_name=endpoints.PUBLIC_WS_URL_ENV,
             default=endpoints.DEFAULT_PUBLIC_WS_URL,
             allow_unofficial_hosts=allow_unofficial_hosts,
+            allow_insecure=allow_insecure,
         )
         self.business_url = endpoints.resolve_ws_url(
             business_url,
             env_name=endpoints.BUSINESS_WS_URL_ENV,
             default=endpoints.DEFAULT_BUSINESS_WS_URL,
             allow_unofficial_hosts=allow_unofficial_hosts,
+            allow_insecure=allow_insecure,
         )
         self.rest = rest
         self.recorder = recorder or StreamRecorder.disabled()
+        if record_channels is not None:
+            self.recorder.channels = frozenset(record_channels)
+            self.recorder.enabled = True
         self._connector = connector
         self.queue_maxsize = queue_maxsize
         self.ping_interval = ping_interval
@@ -374,6 +484,7 @@ class OkxPublicStream:
         self.reconnect_base = reconnect_base
         self.reconnect_max = reconnect_max
         self.handshake_timeout = handshake_timeout
+        self.healthy_after = healthy_after
         self.fallbacks: list[tuple[str, str]] = []
         self._url_override: dict[str, str] = {}
         self._clock = clock or time.monotonic
@@ -385,6 +496,7 @@ class OkxPublicStream:
         self._last_trade_id: dict[str, int] = {}
         self._books: dict[str, LocalBook] = {}
         self._running = False
+        self._cancel = threading.Event()
         self._tasks: list[asyncio.Task[Any]] = []
         self._reconnect_generation = 0
         self._connect_limiter = AsyncRateLimiter(*endpoints.WS_CONNECT_RATE, clock=self._clock, sleep=self._sleep)
@@ -423,7 +535,12 @@ class OkxPublicStream:
         if self._running:
             return
         if self._connector is None:
-            self._connector = WebsocketsConnector(allow_unofficial_hosts=self.allow_unofficial_hosts)
+            self._connector = WebsocketsConnector(
+                allow_unofficial_hosts=self.allow_unofficial_hosts,
+                allow_insecure=self.allow_insecure,
+            )
+        self._cancel.clear()
+        self.recorder.start()
         self._running = True
         public_args = [a for a in self.args if not endpoints.is_candle_channel(a["channel"])]
         business_args = [a for a in self.args if endpoints.is_candle_channel(a["channel"])]
@@ -438,6 +555,7 @@ class OkxPublicStream:
 
     async def stop(self) -> None:
         self._running = False
+        self._cancel.set()
         for task in self._tasks:
             task.cancel()
         for task in self._tasks:
@@ -451,22 +569,36 @@ class OkxPublicStream:
 
     async def _connect(self, url: str) -> WsConnection:
         assert self._connector is not None
-        endpoints.assert_okx_ws_url(url, allow_unofficial_hosts=self.allow_unofficial_hosts)
+        endpoints.assert_okx_ws_url(
+            url,
+            allow_unofficial_hosts=self.allow_unofficial_hosts,
+            allow_insecure=self.allow_insecure,
+        )
         return await asyncio.wait_for(self._connector(url), timeout=self.handshake_timeout)
 
     async def _open_socket(self, url: str) -> WsConnection:
         target = self._url_override.get(url, url)
-        endpoints.assert_okx_ws_url(target, allow_unofficial_hosts=self.allow_unofficial_hosts)
+        endpoints.assert_okx_ws_url(
+            target,
+            allow_unofficial_hosts=self.allow_unofficial_hosts,
+            allow_insecure=self.allow_insecure,
+        )
         try:
             return await self._connect(target)
         except (TimeoutError, asyncio.TimeoutError):
             fallback = endpoints.fallback_ws_port_443(
-                target, allow_unofficial_hosts=self.allow_unofficial_hosts
+                target,
+                allow_unofficial_hosts=self.allow_unofficial_hosts,
+                allow_insecure=self.allow_insecure,
             )
             if fallback is None:
                 raise
             endpoints.assert_same_ws_host_path(target, fallback)
-            endpoints.assert_okx_ws_url(fallback, allow_unofficial_hosts=self.allow_unofficial_hosts)
+            endpoints.assert_okx_ws_url(
+                fallback,
+                allow_unofficial_hosts=self.allow_unofficial_hosts,
+                allow_insecure=self.allow_insecure,
+            )
             _LOG.warning(
                 "OKX WebSocket handshake to %s timed out; falling back to %s (port only)",
                 target,
@@ -482,12 +614,13 @@ class OkxPublicStream:
         delay = self.reconnect_base
         while self._running:
             conn: WsConnection | None = None
+            connected_at: float | None = None
             try:
                 await self._connect_limiter.acquire()
                 conn = await self._open_socket(url)
                 await self._subscribe(conn, args)
                 self._reconnect_generation += 1
-                delay = self.reconnect_base
+                connected_at = self._clock()
                 await self._reader(conn)
             except asyncio.CancelledError:
                 raise
@@ -501,17 +634,24 @@ class OkxPublicStream:
                         pass
             if not self._running:
                 return
+            lived = 0.0 if connected_at is None else self._clock() - connected_at
+            if lived >= self.healthy_after:
+                delay = self.reconnect_base
             jitter = random.uniform(0, max(0.05, delay * 0.2))
             await self._sleep(min(self.reconnect_max, delay) + jitter)
             delay = min(self.reconnect_max, delay * 2)
 
+    async def _send_op(self, conn: WsConnection, op: str, args: list[dict[str, str]], req_id: str) -> None:
+        _assert_public_op(op)
+        await conn.send(json.dumps({"id": req_id, "op": op, "args": args}))
+
     async def _subscribe(self, conn: WsConnection, args: list[dict[str, str]]) -> None:
         await self._sub_limiter.acquire()
-        await conn.send(json.dumps({"id": "1", "op": "subscribe", "args": args}))
+        await self._send_op(conn, "subscribe", args, "1")
 
     async def _unsubscribe(self, conn: WsConnection, args: list[dict[str, str]]) -> None:
         await self._sub_limiter.acquire()
-        await conn.send(json.dumps({"id": "2", "op": "unsubscribe", "args": args}))
+        await self._send_op(conn, "unsubscribe", args, "2")
 
     async def _reader(self, conn: WsConnection) -> None:
         last_rx = self._clock()
@@ -649,7 +789,13 @@ class OkxPublicStream:
                 start_trade_id=start_id,
                 end_trade_id=end_id,
                 pagination="tradeId",
+                should_cancel=self._cancel.is_set,
             )
+        except asyncio.CancelledError:
+            self._cancel.set()
+            raise
+        except InterruptedError:
+            return None
         except Exception:
             return None
         have = {trade.trade_id for trade in trades}
@@ -693,7 +839,7 @@ class OkxPublicStream:
                 raw=payload,
             )
             self._emit(msg)
-            if self.recorder.enabled:
+            if self.recorder.records_channel("books"):
                 try:
                     self.recorder.maybe_write_books_snapshot(inst_id, snapshot, ts_ms=book.ts_ms)
                 except (LowDiskError, CacheBudgetExceeded) as exc:
@@ -737,9 +883,7 @@ class OkxPublicStream:
                     )
 
     def _emit(self, msg: StreamMessage) -> None:
-        dropped = self._queue.put(msg, control=msg.kind != "data")
-        if dropped is not None:
-            self._emit_gap(_gap_from_message(dropped, reason="overflow", dropped=1))
+        self._queue.put(msg, control=msg.kind != "data")
 
     def _emit_gap(self, gap: GapInfo) -> None:
         msg = StreamMessage(
@@ -751,7 +895,7 @@ class OkxPublicStream:
             data=gap,
         )
         self._queue.put(msg, control=True)
-        if self.recorder.enabled:
+        if gap.reason != "overflow" and self.recorder.records_channel(gap.channel):
             try:
                 self.recorder.write_gap(gap)
             except (LowDiskError, CacheBudgetExceeded) as exc:
@@ -759,7 +903,7 @@ class OkxPublicStream:
                 self._emit_record_error(exc)
 
     def _record_data(self, msg: StreamMessage) -> None:
-        if not self.recorder.enabled or msg.channel == "books":
+        if not self.recorder.records_channel(msg.channel) or msg.channel == "books":
             return
         payload = msg.data
         if isinstance(payload, Trade):
@@ -788,6 +932,65 @@ class OkxPublicStream:
             ),
             control=True,
         )
+
+
+def _min_opt(left: int | None, right: int | None) -> int | None:
+    if left is None:
+        return right
+    if right is None:
+        return left
+    return min(int(left), int(right))
+
+
+def _max_opt(left: int | None, right: int | None) -> int | None:
+    if left is None:
+        return right
+    if right is None:
+        return left
+    return max(int(left), int(right))
+
+
+def _is_overflow_gap(item: StreamMessage | None, channel: str, inst_id: str) -> bool:
+    return (
+        item is not None
+        and item.kind == "gap"
+        and item.gap is not None
+        and item.gap.reason == "overflow"
+        and item.channel == channel
+        and item.inst_id == inst_id
+    )
+
+
+def _extend_overflow_gap(item: StreamMessage, dropped: StreamMessage) -> StreamMessage:
+    gap = item.gap
+    extra = _gap_from_message(dropped, reason="overflow", dropped=1)
+    if gap is None:
+        return StreamMessage(
+            kind="gap",
+            channel=dropped.channel,
+            inst_id=dropped.inst_id,
+            ts_ms=dropped.ts_ms,
+            gap=extra,
+            data=extra,
+        )
+    merged = GapInfo(
+        channel=gap.channel,
+        inst_id=gap.inst_id,
+        reason="overflow",
+        first_missing_trade_id=_min_opt(gap.first_missing_trade_id, extra.first_missing_trade_id),
+        last_missing_trade_id=_max_opt(gap.last_missing_trade_id, extra.last_missing_trade_id),
+        start_ts_ms=_min_opt(gap.start_ts_ms, extra.start_ts_ms),
+        end_ts_ms=_max_opt(gap.end_ts_ms, extra.end_ts_ms),
+        dropped=gap.dropped + extra.dropped,
+    )
+    return StreamMessage(
+        kind="gap",
+        channel=merged.channel,
+        inst_id=merged.inst_id,
+        ts_ms=merged.end_ts_ms or dropped.ts_ms,
+        gap=merged,
+        data=merged,
+    )
 
 
 def _gap_from_message(msg: StreamMessage, *, reason: str, dropped: int) -> GapInfo:

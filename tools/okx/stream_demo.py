@@ -87,13 +87,15 @@ async def _run(args: argparse.Namespace) -> int:
     channels = _parse_channels(args.channels)
     subs = [(channel, args.inst) for channel in channels]
     cache_dir = args.data_dir or default_data_dir()
+    record_channels = _parse_channels(args.record_channels) if args.record_channels else None
     recorder = StreamRecorder(
         cache_dir=cache_dir,
-        enabled=bool(args.record),
+        enabled=bool(args.record or record_channels),
         rotation=args.rotation,
         books_snapshot_interval=args.books_snapshot_interval,
         retention_max_age_s=args.retention_age,
         retention_max_bytes=args.retention_bytes,
+        channels=frozenset(record_channels) if record_channels else None,
     )
     rest = PublicClient()
     counts: Counter[str] = Counter()
@@ -136,6 +138,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--channels", default="trades,books5")
     parser.add_argument("--seconds", type=float, default=60.0)
     parser.add_argument("--record", action="store_true", help="write gzip JSONL under OKX_DATA_DIR (off by default)")
+    parser.add_argument(
+        "--record-channels",
+        default=None,
+        help="comma-separated channels to record (implies --record; default is all subscribed)",
+    )
     parser.add_argument("--rotation", choices=("hourly", "daily"), default="daily")
     parser.add_argument("--books-snapshot-interval", type=float, default=60.0)
     parser.add_argument("--retention-age", type=float, default=None)

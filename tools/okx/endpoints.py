@@ -233,17 +233,39 @@ def assert_okx_url(url: str, *, allow_unofficial_hosts: bool = False) -> None:
         )
 
 
-def assert_okx_ws_url(url: str, *, allow_unofficial_hosts: bool = False) -> None:
-    """Require wss and a documented OKX public/business WebSocket host."""
+ALLOWED_WS_PORTS: frozenset[int] = frozenset({443, 8443})
+
+
+def assert_okx_ws_url(
+    url: str,
+    *,
+    allow_unofficial_hosts: bool = False,
+    allow_insecure: bool = False,
+) -> None:
+    """Require wss and a documented OKX public/business WebSocket host.
+
+    ``allow_unofficial_hosts`` still requires ``wss`` unless ``allow_insecure``
+    is also set (local tests only). Env vars cannot enable either flag.
+    """
     from tools.okx.errors import UnsafeEndpointError
 
     parsed = urlparse(url)
     path = (parsed.path or "").rstrip("/") or "/"
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError(f"refusing WebSocket URL with user-info: {url!r}")
+    if parsed.query or parsed.params or parsed.fragment:
+        raise ValueError(f"refusing WebSocket URL with query or fragment: {url!r}")
     if PRIVATE_WS_PATH in path or path.endswith("/private"):
         raise UnsafeEndpointError(f"refusing private WebSocket path {path}")
+    if parsed.scheme == "ws" and not allow_insecure:
+        raise ValueError(
+            f"refusing non-wss URL {url!r}; pass allow_insecure=True for local tests"
+        )
     if allow_unofficial_hosts:
         if parsed.scheme not in {"ws", "wss"}:
             raise ValueError(f"refusing non-ws URL {url!r}")
+        if parsed.scheme == "ws" and not allow_insecure:
+            raise ValueError(f"refusing non-wss URL {url!r}")
         return
     if parsed.scheme != "wss":
         raise ValueError(f"refusing non-wss URL {url!r}")
@@ -252,6 +274,11 @@ def assert_okx_ws_url(url: str, *, allow_unofficial_hosts: bool = False) -> None
         raise ValueError(
             f"refusing host {host!r}; official OKX WebSocket hosts are "
             f"{sorted(ALLOWED_WS_HOSTS)}"
+        )
+    port = parsed.port
+    if port is not None and port not in ALLOWED_WS_PORTS:
+        raise ValueError(
+            f"refusing WebSocket port {port}; official ports are {sorted(ALLOWED_WS_PORTS)}"
         )
     if path not in PUBLIC_WS_PATHS:
         raise UnsafeEndpointError(f"refusing WebSocket path {path}")
@@ -271,13 +298,18 @@ def resolve_ws_url(
     env_name: str,
     default: str,
     allow_unofficial_hosts: bool = False,
+    allow_insecure: bool = False,
 ) -> str:
     """Constructor arg, then env, then default. Env cannot enable unofficial hosts."""
     if explicit is not None and str(explicit).strip():
         url = str(explicit).strip()
     else:
         url = os.environ.get(env_name, "").strip() or default
-    assert_okx_ws_url(url, allow_unofficial_hosts=allow_unofficial_hosts)
+    assert_okx_ws_url(
+        url,
+        allow_unofficial_hosts=allow_unofficial_hosts,
+        allow_insecure=allow_insecure,
+    )
     return url
 
 
@@ -311,7 +343,12 @@ def assert_same_ws_host_path(original: str, candidate: str) -> None:
         raise ValueError("WebSocket fallback must not change path")
 
 
-def fallback_ws_port_443(url: str, *, allow_unofficial_hosts: bool = False) -> str | None:
+def fallback_ws_port_443(
+    url: str,
+    *,
+    allow_unofficial_hosts: bool = False,
+    allow_insecure: bool = False,
+) -> str | None:
     """If ``url`` uses port 8443, return the same host/path on port 443.
 
     Re-validates the allowlist. Returns ``None`` when the URL is not on 8443.
@@ -323,5 +360,9 @@ def fallback_ws_port_443(url: str, *, allow_unofficial_hosts: bool = False) -> s
     assert_same_ws_host_path(url, candidate)
     if urlparse(candidate).port != 443:
         raise ValueError("WebSocket fallback may only switch to port 443")
-    assert_okx_ws_url(candidate, allow_unofficial_hosts=allow_unofficial_hosts)
+    assert_okx_ws_url(
+        candidate,
+        allow_unofficial_hosts=allow_unofficial_hosts,
+        allow_insecure=allow_insecure,
+    )
     return candidate

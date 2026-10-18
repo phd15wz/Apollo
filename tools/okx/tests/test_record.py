@@ -164,3 +164,81 @@ def test_gap_record_written(tmp_path: Path) -> None:
     assert rows[0]["event"] == "gap"
     assert rows[0]["firstMissingTradeId"] == 11
     assert rows[0]["dropped"] == 4
+
+
+def test_per_channel_recording_opt_in(tmp_path: Path) -> None:
+    rec = StreamRecorder(cache_dir=tmp_path, enabled=True, channels={"trades"})
+    rec.write_data("trades", "BTC-USDT-SWAP", {"tradeId": "1"}, ts_ms=1)
+    rec.write_data("tickers", "BTC-USDT-SWAP", {"last": "1"}, ts_ms=2)
+    rec.close()
+    files = list(tmp_path.rglob("*.jsonl.gz"))
+    assert len(files) == 1
+    assert files[0].parent.name == "trades"
+    rows = _read_jsonl(files[0])
+    assert [row["event"] for row in rows] == ["data"]
+    assert rows[0]["channel"] == "trades"
+
+
+def test_per_run_recording_budget(tmp_path: Path) -> None:
+    rec = StreamRecorder(
+        cache_dir=tmp_path,
+        enabled=True,
+        cache_budget_bytes=10**9,
+        run_budget_bytes=80,
+    )
+    with pytest.raises(CacheBudgetExceeded, match="per-run"):
+        for i in range(20):
+            rec.write_data("trades", "BTC-USDT-SWAP", {"tradeId": str(i), "pad": "x" * 20}, ts_ms=i)
+
+
+def test_recording_stays_fast_with_many_files(tmp_path: Path) -> None:
+    import time as time_mod
+
+    recordings = tmp_path / "recordings"
+    recordings.mkdir()
+    for i in range(400):
+        (recordings / f"dummy-{i}.jsonl.gz").write_bytes(b"dummy")
+    rec = StreamRecorder(cache_dir=tmp_path, enabled=True)
+    assert rec.usage_scans == 1
+    started = time_mod.perf_counter()
+    for i in range(80):
+        rec.write_data("trades", "BTC-USDT-SWAP", {"tradeId": str(i), "pad": "aaaaaaaaaa"}, ts_ms=i)
+    rec.close()
+    elapsed = time_mod.perf_counter() - started
+    assert rec.usage_scans == 1
+    assert elapsed < 3.0
+    raw = rec.throughput["trades"].raw_bytes
+    compressed = rec.files_written[0].stat().st_size
+    assert compressed < raw * 0.6
+
+
+def test_writer_queue_slow_disk_coalesces_gaps(tmp_path: Path) -> None:
+    rec = StreamRecorder(
+        cache_dir=tmp_path,
+        enabled=True,
+        write_queue_maxsize=8,
+        write_sleep=0.03,
+        sync=False,
+    )
+    rec.start()
+    for i in range(80):
+        rec.offer(
+            {
+                "ts": i,
+                "event": "data",
+                "channel": "trades",
+                "instId": "BTC-USDT-SWAP",
+                "data": {"tradeId": str(i), "px": "1", "sz": "1", "side": "buy", "ts": str(i)},
+            }
+        )
+    assert rec._queue.max_depth <= rec.write_queue_maxsize
+    assert rec._queue.dropped > 0
+    rec.close()
+    rows = []
+    for path in rec.files_written:
+        rows.extend(_read_jsonl(path))
+    gaps = [row for row in rows if row.get("reason") == "writer_overflow"]
+    data = [row for row in rows if row.get("event") == "data"]
+    assert gaps
+    assert rec.writer_dropped == sum(int(row["dropped"]) for row in gaps)
+    assert len(data) + rec.writer_dropped == 80

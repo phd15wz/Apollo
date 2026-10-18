@@ -202,23 +202,27 @@ python3 -m tools.okx.stream_demo --inst SPCX-USDT-SWAP --channels trades,books5 
    default 60 s). Silence emits `stale` and sets a flag
    (`stream.is_stale(...)` / `stream.stale_subscriptions`). The next data
    message emits `recovered` and clears the flag.
-3. **Size caps and bounded queues.** Recording is **off by default**. When
-   enabled it writes gzip JSONL under `OKX_DATA_DIR/recordings/`, counts
-   toward `OKX_DATA_BUDGET_BYTES` / `OKX_DATA_RUN_BUDGET_BYTES`, and
-   raises `CacheBudgetExceeded`. Free disk below
+3. **Size caps and bounded queues.** Recording is **off by default**.
+   `--record-channels trades` (or `record_channels=`) records a subset.
+   When enabled it writes gzip JSONL under `OKX_DATA_DIR/recordings/`
+   from a bounded background writer (one open gzip stream per file),
+   counts toward `OKX_DATA_BUDGET_BYTES` / `OKX_DATA_RUN_BUDGET_BYTES`,
+   and raises `CacheBudgetExceeded`. Free disk below
    `OKX_MIN_FREE_DISK_BYTES` (default 10 GiB) raises `LowDiskError` and
    stops recording. Files rotate **daily** by default (or hourly) per
    instrument/channel. Retention can cap age and/or total recording
    bytes; oldest files are deleted first. The full `books` channel records
    periodic snapshots (configurable interval), not every update.
-4. **Public only.** No keys, no `login`, no private path.
+4. **Public only.** No keys, no `login`, no private path. Unofficial hosts
+   still require `wss` unless `allow_insecure=True`.
 
-**Overflow policy (in-memory queue):** default 10_000 data events.
-When full, the oldest **data** event is dropped, `overflow_count`
-increments, and a `gap` event (reason `overflow`) is emitted and
-recorded. Control events (`gap`, `stale`, …) use a small reserved slack.
-Downstream Hawkes fits must treat `kind='gap'` as a hole in the tape,
-never as a quiet period.
+**Overflow policy (in-memory consumer queue):** default 10_000 events
+(data, control, and gaps). When full, the oldest data event is folded
+into one overflow `gap` (invariant: `overflow_count == sum(gap.dropped)`).
+Consumer overflow is **not** written to disk. If the recorder writer
+queue fills, drops coalesce into a `writer_overflow` gap that **is**
+written. Downstream Hawkes fits must treat `kind='gap'` as a hole in
+the tape, never as a quiet period.
 
 ## Safety
 

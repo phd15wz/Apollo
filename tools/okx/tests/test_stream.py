@@ -4,6 +4,7 @@ import asyncio
 import functools
 import inspect
 import json
+import time
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -13,6 +14,8 @@ from tools.okx import endpoints
 from tools.okx.errors import PrivateChannelError, UnsafeEndpointError
 from tools.okx.record import StreamRecorder
 from tools.okx.stream import (
+    DEFAULT_PING_INTERVAL,
+    DEFAULT_RECONNECT_MAX,
     GapInfo,
     OkxPublicStream,
     _assert_public_op,
@@ -303,6 +306,32 @@ async def test_backfill_failure_emits_and_records_gap(tmp_path: Path) -> None:
 
 
 @run_async
+async def test_incomplete_backfill_is_a_gap() -> None:
+    """Fails if the completeness check (`expected <= have`) is removed."""
+    broker = ScriptedConnector()
+    sock = broker.add()
+    transport = FakeTransport()
+    transport.add("/api/v5/market/history-trades", _history_rows([11, 12, 13]))
+    rest = make_client(transport)
+    async with OkxPublicStream(
+        [("trades", INST)],
+        connector=broker,
+        rest=rest,
+        ping_interval=30,
+        stale_timeout=30,
+    ) as stream:
+        await _wait_sent(sock, lambda s: "subscribe" in s)
+        await sock.push(_trade_push(INST, 10))
+        await sock.push(_trade_push(INST, 15))
+        msgs = await _collect(stream, 3)
+    gap = next(m.gap for m in msgs if m.kind == "gap")
+    assert gap.reason == "backfill_failed"
+    assert gap.first_missing_trade_id == 11
+    assert gap.last_missing_trade_id == 14
+    assert [m.data.trade_id for m in msgs if m.kind == "data"] == [10, 15]
+
+
+@run_async
 async def test_stale_flag_and_recovery() -> None:
     broker = ScriptedConnector()
     sock = broker.add()
@@ -406,10 +435,48 @@ async def test_buffer_overflow_drop_oldest_and_gap() -> None:
     data_ids = [m.data.trade_id for m in msgs if m.kind == "data"]
     assert data_ids[-1] == 5
     assert 1 not in data_ids
+    overflow_gaps = [m.gap for m in msgs if m.kind == "gap" and m.gap and m.gap.reason == "overflow"]
+    assert overflow_gaps
+    assert stream.overflow_count == sum(g.dropped for g in overflow_gaps)
+
+
+def test_overflow_coalesces_and_is_not_recorded(tmp_path: Path) -> None:
+    rec = StreamRecorder(cache_dir=tmp_path, enabled=True)
+    stream = OkxPublicStream(
+        [("trades", INST)],
+        recorder=rec,
+        queue_maxsize=100,
+    )
+    for trade_id in range(1, 2001):
+        stream._emit_trade(
+            Trade(
+                inst_id=INST,
+                trade_id=trade_id,
+                price=1.0,
+                size=1.0,
+                side="buy",
+                ts_ms=1_700_000_000_000 + trade_id,
+            )
+        )
+    assert len(stream._queue.items) <= 100
+    overflow_gaps = [
+        m.gap
+        for m in stream._queue.items
+        if m is not None and m.kind == "gap" and m.gap is not None and m.gap.reason == "overflow"
+    ]
+    assert len(overflow_gaps) == 1
+    assert stream.overflow_count == overflow_gaps[0].dropped
+    assert stream.overflow_count == stream._queue.overflow_gap_dropped()
+    rec.close()
+    import gzip
+
+    rows = [json.loads(line) for line in gzip.open(rec.files_written[0], "rt", encoding="utf-8") if line.strip()]
+    assert [row.get("reason") for row in rows if row.get("event") == "gap"] == []
+    assert sum(1 for row in rows if row.get("event") == "data") == 2000
 
 
 @run_async
-async def test_overflow_gap_written_to_recording(tmp_path: Path) -> None:
+async def test_overflow_gap_not_written_to_recording(tmp_path: Path) -> None:
     broker = ScriptedConnector()
     sock = broker.add()
     rec = StreamRecorder(cache_dir=tmp_path, enabled=True)
@@ -426,13 +493,14 @@ async def test_overflow_gap_written_to_recording(tmp_path: Path) -> None:
         await sock.push(_trade_push(INST, 2))
         await asyncio.sleep(0.05)
         assert stream.overflow_count >= 1
-        await _collect(stream, 2)
+        await _collect(stream, 1)
     rec.close()
     import gzip
 
     blob = gzip.open(rec.files_written[0], "rt", encoding="utf-8").read()
-    assert "overflow" in blob
-    assert '"event":"gap"' in blob
+    assert "overflow" not in blob
+    assert '"tradeId":"1"' in blob
+    assert '"tradeId":"2"' in blob
 
 
 def test_refuses_login_and_private_channels() -> None:
@@ -600,6 +668,7 @@ async def test_local_fake_websocket_server_optional() -> None:
             public_url=url,
             business_url=url,
             allow_unofficial_hosts=True,
+            allow_insecure=True,
             ping_interval=30,
             stale_timeout=30,
             reconnect_max=0.05,
@@ -611,3 +680,173 @@ async def test_local_fake_websocket_server_optional() -> None:
     finally:
         server.close()
         await server.wait_closed()
+
+
+def test_default_ping_interval_is_25_seconds() -> None:
+    assert DEFAULT_PING_INTERVAL == 25.0
+    stream = OkxPublicStream([("trades", INST)])
+    assert stream.ping_interval == 25.0
+
+
+def test_reconnect_max_is_finite() -> None:
+    assert 0 < DEFAULT_RECONNECT_MAX < float("inf")
+    stream = OkxPublicStream([("trades", INST)])
+    assert stream.reconnect_max == DEFAULT_RECONNECT_MAX
+
+
+@run_async
+async def test_short_lived_reconnects_backoff_and_cap() -> None:
+    sleeps: list[float] = []
+
+    class Clock:
+        def __init__(self) -> None:
+            self.t = 0.0
+
+        def __call__(self) -> float:
+            return self.t
+
+    clock = Clock()
+
+    async def sleeper(seconds: float) -> None:
+        sleeps.append(seconds)
+        clock.t += seconds
+
+    class InstantClose:
+        async def send(self, data: str) -> None:
+            return
+
+        async def recv(self) -> str:
+            raise ConnectionError("closed immediately")
+
+        async def close(self) -> None:
+            return
+
+    async def connector(_url: str) -> InstantClose:
+        return InstantClose()
+
+    async with OkxPublicStream(
+        [("trades", INST)],
+        connector=connector,
+        clock=clock,
+        sleep=sleeper,
+        stale_timeout=1e9,
+        reconnect_base=0.1,
+        reconnect_max=0.8,
+        healthy_after=30.0,
+        handshake_timeout=0.05,
+        ping_interval=30,
+    ):
+        for _ in range(30):
+            await asyncio.sleep(0)
+    assert any(0.7 <= s <= 0.96 for s in sleeps)
+    assert all(s <= 1.0 + 1e-9 for s in sleeps)
+
+
+@run_async
+async def test_stop_cancels_backfill_promptly() -> None:
+    class SlowTape:
+        def __init__(self) -> None:
+            self.n = 0
+            self.next_id = 500
+
+        def request(self, method, url, *, params, headers, timeout):
+            from tools.okx.client import HttpResponse
+
+            self.n += 1
+            time.sleep(0.2)
+            tid = self.next_id
+            self.next_id -= 1
+            body = json.dumps(
+                {
+                    "code": "0",
+                    "data": [
+                        {
+                            "instId": INST,
+                            "tradeId": str(tid),
+                            "px": "1",
+                            "sz": "1",
+                            "side": "buy",
+                            "ts": str(1_700_000_000_000 + tid),
+                        }
+                    ],
+                }
+            ).encode()
+            return HttpResponse(200, {}, body, url)
+
+    tape = SlowTape()
+    rest = make_client(tape)  # type: ignore[arg-type]
+    stream = OkxPublicStream([("trades", INST)], rest=rest)
+    task = asyncio.create_task(stream._backfill(INST, 1, 500))
+    await asyncio.sleep(0.05)
+    t0 = time.monotonic()
+    await stream.stop()
+    result = await asyncio.wait_for(task, timeout=1.0)
+    assert result is None
+    assert time.monotonic() - t0 < 0.8
+    assert tape.n <= 5
+
+
+def test_ws_url_rejects_userinfo_query_and_odd_ports() -> None:
+    with pytest.raises(ValueError, match="user-info"):
+        OkxPublicStream(
+            [("trades", INST)],
+            public_url="wss://user:pass@ws.okx.com:443/ws/v5/public",
+        )
+    with pytest.raises(ValueError, match="query"):
+        OkxPublicStream(
+            [("trades", INST)],
+            public_url="wss://ws.okx.com:443/ws/v5/public?x=1",
+        )
+    with pytest.raises(ValueError, match="port"):
+        OkxPublicStream(
+            [("trades", INST)],
+            public_url="wss://ws.okx.com:80/ws/v5/public",
+        )
+
+
+def test_unofficial_host_still_requires_wss_unless_insecure() -> None:
+    with pytest.raises(ValueError, match="non-wss"):
+        OkxPublicStream(
+            [("trades", INST)],
+            public_url="ws://127.0.0.1:9/ws/v5/public",
+            allow_unofficial_hosts=True,
+        )
+    stream = OkxPublicStream(
+        [("trades", INST)],
+        public_url="ws://127.0.0.1:9/ws/v5/public",
+        business_url="ws://127.0.0.1:9/ws/v5/business",
+        allow_unofficial_hosts=True,
+        allow_insecure=True,
+    )
+    assert stream.public_url.startswith("ws://127.0.0.1")
+
+
+@run_async
+async def test_subscribe_calls_assert_public_op(monkeypatch: pytest.MonkeyPatch) -> None:
+    import tools.okx.stream as stream_mod
+
+    seen: list[str] = []
+    orig = stream_mod._assert_public_op
+
+    def spy(op: str) -> None:
+        seen.append(op)
+        orig(op)
+
+    monkeypatch.setattr(stream_mod, "_assert_public_op", spy)
+    broker = ScriptedConnector()
+    sock = broker.add()
+    async with OkxPublicStream(
+        [("trades", INST)],
+        connector=broker,
+        ping_interval=30,
+        stale_timeout=30,
+    ):
+        await _wait_sent(sock, lambda s: "subscribe" in s)
+    assert "subscribe" in seen
+
+
+def test_record_channels_flag() -> None:
+    from tools.okx.stream_demo import build_parser
+
+    args = build_parser().parse_args(["--record-channels", "trades,books5"])
+    assert args.record_channels == "trades,books5"

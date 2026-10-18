@@ -471,6 +471,89 @@ def test_history_window_older_than_three_months_raises() -> None:
     assert transport.calls == []
 
 
+def test_history_window_start_beyond_three_months_warns() -> None:
+    from tools.okx.errors import HistoryWindowTooOldWarning
+
+    transport = FakeTransport()
+    transport.add("/api/v5/market/history-trades", {"code": "0", "data": []})
+    client = make_client(transport)
+    now = 1_800_000_000_000
+    start = now - (120 * 24 * 60 * 60 * 1000)
+    end = now - (10 * 24 * 60 * 60 * 1000)
+    with pytest.warns(HistoryWindowTooOldWarning, match="market-data-history"):
+        history_trades_range(
+            client,
+            "BTC-USDT-SWAP",
+            start_ts_ms=start,
+            end_ts_ms=end,
+            now_ms=now,
+            pagination="ts",
+        )
+
+
+def test_history_range_cancel_stops_paging() -> None:
+    import threading
+    import time
+
+    from tools.okx.client import HttpResponse
+
+    ev = threading.Event()
+
+    class SlowTape:
+        def __init__(self) -> None:
+            self.n = 0
+            self.next_id = 80
+
+        def request(self, method, url, *, params, headers, timeout):
+            self.n += 1
+            time.sleep(0.15)
+            tid = self.next_id
+            self.next_id -= 1
+            body = json.dumps(
+                {
+                    "code": "0",
+                    "data": [
+                        {
+                            "instId": "BTC-USDT-SWAP",
+                            "tradeId": str(tid),
+                            "px": "1",
+                            "sz": "1",
+                            "side": "buy",
+                            "ts": str(1_700_000_000_000 + tid),
+                        }
+                    ],
+                }
+            ).encode()
+            return HttpResponse(200, {}, body, url)
+
+    client = make_client(SlowTape())  # type: ignore[arg-type]
+    result: dict[str, object] = {}
+
+    def run() -> None:
+        try:
+            history_trades_range(
+                client,
+                "BTC-USDT-SWAP",
+                start_trade_id=1,
+                end_trade_id=80,
+                page_limit=1,
+                max_pages=40,
+                should_cancel=ev.is_set,
+            )
+            result["ok"] = True
+        except InterruptedError:
+            result["cancelled"] = True
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    time.sleep(0.2)
+    ev.set()
+    thread.join(timeout=0.8)
+    assert not thread.is_alive()
+    assert result.get("cancelled") is True
+    assert client._transport.n <= 4  # type: ignore[attr-defined]
+
+
 def test_empty_window_end_lookup_raises_archive_hint() -> None:
     transport = FakeTransport()
     transport.add(

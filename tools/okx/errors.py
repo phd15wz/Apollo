@@ -64,6 +64,10 @@ class PaginationBudgetExceeded(Exception):
         super().__init__(message)
 
 
+class HistoryWindowTooOldWarning(UserWarning):
+    """REST history-trades will miss the older part of this window."""
+
+
 class HistoryWindowTooOld(Exception):
     """REST ``/market/history-trades`` does not cover this window.
 

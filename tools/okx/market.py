@@ -12,11 +12,12 @@ in timestamp mode.
 from __future__ import annotations
 
 import time
-from collections.abc import Iterator
+import warnings
+from collections.abc import Callable, Iterator
 from typing import Literal
 
 from tools.okx.client import PublicClient
-from tools.okx.errors import HistoryWindowTooOld, PaginationBudgetExceeded
+from tools.okx.errors import HistoryWindowTooOld, HistoryWindowTooOldWarning, PaginationBudgetExceeded
 from tools.okx.types import Candle, FundingRate, Trade
 
 Pagination = Literal["tradeId", "ts"]
@@ -37,6 +38,7 @@ def history_trades_range(
     page_limit: int = 100,
     max_pages: int = 500,
     now_ms: int | None = None,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> list[Trade]:
     """Page ``/api/v5/market/history-trades`` over a window (last 3 months).
 
@@ -57,7 +59,10 @@ def history_trades_range(
     ``exc.trades``) instead of returning a silent partial or empty list.
 
     A window whose end is older than OKX's ~3-month REST retention raises
-    :class:`HistoryWindowTooOld` and points at the bulk archive.
+    :class:`HistoryWindowTooOld` and points at the bulk archive. A window
+    whose start is older than that but whose end is still inside REST
+    coverage warns with :class:`HistoryWindowTooOldWarning` (the older
+    side is missing from REST).
 
     ``pagination='ts'`` is an explicit, lossy option: OKX returns rows
     *earlier than* the last timestamp, so a burst at that millisecond on the
@@ -93,6 +98,8 @@ def history_trades_range(
         after = None if end_ts_ms is None else end_ts_ms + 1
     seen: set[int] = set()
     for _ in range(max_pages):
+        if should_cancel is not None and should_cancel():
+            raise InterruptedError("history_trades_range cancelled")
         page = client.history_trades(
             inst_id,
             pagination=pagination,
@@ -160,6 +167,15 @@ def _assert_rest_history_window(
             "(download_daily_trades) instead of /market/history-trades.",
             start_ts_ms=start_ts_ms,
             end_ts_ms=end_ts_ms,
+        )
+    if start_ts_ms is not None and start_ts_ms < cutoff:
+        warnings.warn(
+            f"history-trades start_ts_ms={start_ts_ms} is older than OKX's "
+            f"~3-month REST retention. REST will omit the older side; use "
+            "GET /api/v5/public/market-data-history (download_daily_trades) "
+            "for the archive portion.",
+            HistoryWindowTooOldWarning,
+            stacklevel=3,
         )
 
 
