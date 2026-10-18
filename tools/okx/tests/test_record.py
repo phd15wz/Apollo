@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import gzip
 import json
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -617,9 +619,11 @@ def test_writer_non_adjacent_gaps_stay_separate(tmp_path: Path) -> None:
     ]
     assert widths
     assert max(widths) <= 10
-    if summaries:
-        assert summaries[0]["precise"] is False
-        assert int(summaries[0]["holes"]) >= 1
+    assert len(exact) <= MAX_PENDING_GAPS
+    assert summaries
+    assert summaries[0]["precise"] is False
+    assert int(summaries[0]["holes"]) >= 1
+    assert MAX_PENDING_GAPS == 256
 
 
 def test_retention_still_counts_archive_bytes(tmp_path: Path) -> None:
@@ -640,6 +644,69 @@ def test_retention_still_counts_archive_bytes(tmp_path: Path) -> None:
     assert rec2._used >= 2000
     assert rec2._used == cache_usage_bytes(tmp_path)
     assert (tmp_path / "trades" / "old.zip").exists()
+
+
+def test_in_flight_offer_registered_before_closed_check(tmp_path: Path) -> None:
+    rec = StreamRecorder(cache_dir=tmp_path, enabled=True, offer_delay=0.15, sync=False)
+    rec.start()
+    errors: list[BaseException] = []
+
+    def _offer() -> None:
+        try:
+            rec.offer_batch_sync(
+                [{"ts": 1, "event": "data", "channel": "trades", "instId": "BTC-USDT-SWAP", "data": {"tradeId": "1"}}]
+            )
+        except BaseException as exc:
+            errors.append(exc)
+
+    thread = threading.Thread(target=_offer)
+    thread.start()
+    time.sleep(0.03)
+    rec.close(timeout=2.0)
+    thread.join(timeout=2.0)
+    assert not errors
+    recorded = 0
+    covered = 0
+    for path in rec.files_written:
+        if path.is_file():
+            for row in _read_jsonl(path):
+                if row.get("event") == "data":
+                    recorded += 1
+                elif row.get("event") == "gap":
+                    covered += int(row.get("dropped") or 0)
+    assert recorded + covered == rec.accepted
+    assert rec.accepted == 1
+    for path in rec.files_written:
+        _read_jsonl(path)
+
+
+def test_close_waits_out_slow_disk_write(tmp_path: Path) -> None:
+    rec = StreamRecorder(
+        cache_dir=tmp_path,
+        enabled=True,
+        write_queue_maxsize=8,
+        write_sleep=0.25,
+        write_sleep_on_close=True,
+        offer_timeout=0.5,
+        sync=False,
+    )
+    rec.start()
+    for i in range(6):
+        rec.offer_batch_sync(
+            [{"ts": i, "event": "data", "channel": "trades", "instId": "BTC-USDT-SWAP", "data": {"tradeId": str(i)}}]
+        )
+    rec.close(timeout=0.15)
+    assert rec._writing == 0
+    assert rec._writer is None
+    rows = []
+    for path in rec.files_written:
+        rows.extend(_read_jsonl(path))
+    recorded = sum(1 for row in rows if row.get("event") == "data")
+    covered = sum(int(row.get("dropped") or 0) for row in rows if row.get("event") == "gap")
+    assert recorded + covered == rec.accepted
+    assert rec.accepted == 6
+    if any(row.get("reason") == "shutdown_incomplete" for row in rows):
+        assert any(row.get("precise") is False for row in rows)
 
 
 def test_only_writer_thread_writes_files(tmp_path: Path) -> None:

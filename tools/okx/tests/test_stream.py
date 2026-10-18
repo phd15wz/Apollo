@@ -18,8 +18,8 @@ from tools.okx.record import StreamRecorder
 from tools.okx.stream import (
     DEFAULT_PING_INTERVAL,
     DEFAULT_RECONNECT_MAX,
+    ClockSync,
     GapInfo,
-    LagTracker,
     OkxPublicStream,
     _assert_public_op,
     book_crc32,
@@ -1199,52 +1199,6 @@ async def test_stop_never_loses_batch_without_gap(tmp_path: Path) -> None:
             _assert_gzip_readable(path)
 
 
-@run_async
-async def test_slow_disk_sets_writer_lag(tmp_path: Path) -> None:
-    broker = ScriptedConnector()
-    sock = broker.add()
-    rec = StreamRecorder(
-        cache_dir=tmp_path,
-        enabled=True,
-        write_queue_maxsize=1,
-        write_sleep=0.4,
-        offer_timeout=0.3,
-        sync=False,
-    )
-    async with OkxPublicStream(
-        [("trades", INST)],
-        connector=broker,
-        recorder=rec,
-        ping_interval=30,
-        stale_timeout=0.2,
-        lag_threshold=0.15,
-        handshake_timeout=1,
-        reconnect_base=5,
-        reconnect_max=5,
-    ) as stream:
-        await _wait_sent(sock, lambda s: "subscribe" in s)
-        for trade_id in range(1, 8):
-            await sock.push(_trade_push(INST, trade_id))
-        deadline = time.monotonic() + 2.0
-        while time.monotonic() < deadline and not stream.writer_lagging:
-            await asyncio.sleep(0.05)
-        assert stream.writer_lagging
-        assert stream.writer_lag >= 0.15
-        kinds = [item.kind for item in stream._queue.items if item is not None]
-        assert "lag" in kinds
-        deadline = time.monotonic() + 3.0
-        while time.monotonic() < deadline and (len(rec._queue) > 0 or rec._writing):
-            await asyncio.sleep(0.05)
-        caught_up = int(time.time() * 1000)
-        await sock.push(_trade_push(INST, 99, ts_ms=caught_up))
-        deadline = time.monotonic() + 2.0
-        while time.monotonic() < deadline and stream.writer_lagging:
-            await asyncio.sleep(0.05)
-        assert stream.writer_lagging is False
-        kinds = [item.kind for item in stream._queue.items if item is not None]
-        assert "lag_cleared" in kinds
-
-
 def test_default_lag_and_shutdown_bounds() -> None:
     stream = OkxPublicStream([("trades", INST)])
     assert stream.lag_threshold == 5.0
@@ -1252,26 +1206,13 @@ def test_default_lag_and_shutdown_bounds() -> None:
     assert stream.writer_lagging is False
 
 
-def test_clock_offset_does_not_false_alert() -> None:
-    tracker = LagTracker()
-    wall = time.time()
-    mono = time.monotonic()
-    for offset in (-30.0, 30.0):
-        tracker = LagTracker()
-        for i in range(8):
-            lag = tracker.observe(
-                recv_mono=mono + i * 0.01,
-                recv_wall=wall + i * 0.01,
-                okx_ts_ms=int((wall + i * 0.01 + offset) * 1000),
-                processed_mono=mono + i * 0.01,
-            )
-            assert lag < 1.0
-            assert tracker.secondary < 1.0
+def _synced_now_ms() -> int:
+    return int(time.time() * 1000)
 
 
 @run_async
-async def test_socket_backlog_sets_lag_without_clock_false_alarm(tmp_path: Path) -> None:
-    rec = StreamRecorder(cache_dir=tmp_path / "offset", enabled=True, sync=False)
+async def test_steady_30s_backlog_alerts(tmp_path: Path) -> None:
+    rec = StreamRecorder(cache_dir=tmp_path, enabled=True, sync=False)
     broker = ScriptedConnector()
     sock = broker.add()
     async with OkxPublicStream(
@@ -1281,16 +1222,22 @@ async def test_socket_backlog_sets_lag_without_clock_false_alarm(tmp_path: Path)
         ping_interval=30,
         stale_timeout=0.2,
         lag_threshold=5.0,
+        time_fetcher=_synced_now_ms,
     ) as stream:
         await _wait_sent(sock, lambda s: "subscribe" in s)
-        now = int(time.time() * 1000)
-        for trade_id in range(1, 6):
-            await sock.push(_trade_push(INST, trade_id, ts_ms=now - 30_000 + trade_id))
-        await _collect(stream, 5, timeout=2)
-        await asyncio.sleep(0.3)
-        assert stream.writer_lagging is False
+        now = _synced_now_ms()
+        await sock.push(_trade_push(INST, 1, ts_ms=now - 30_000))
+        await asyncio.wait_for(anext(stream), timeout=2)
+        assert stream.exchange_lag >= 25
+        assert stream.writer_lagging
+        assert stream.writer_lag >= 5
+        kinds = [item.kind for item in stream._queue.items if item is not None]
+        assert "lag" in kinds
 
-    rec = StreamRecorder(cache_dir=tmp_path / "offset_plus", enabled=True, sync=False)
+
+@run_async
+async def test_slow_ramp_to_60s_alerts(tmp_path: Path) -> None:
+    rec = StreamRecorder(cache_dir=tmp_path, enabled=True, sync=False)
     broker = ScriptedConnector()
     sock = broker.add()
     async with OkxPublicStream(
@@ -1300,44 +1247,118 @@ async def test_socket_backlog_sets_lag_without_clock_false_alarm(tmp_path: Path)
         ping_interval=30,
         stale_timeout=0.2,
         lag_threshold=5.0,
+        time_fetcher=_synced_now_ms,
     ) as stream:
         await _wait_sent(sock, lambda s: "subscribe" in s)
-        now = int(time.time() * 1000)
-        for trade_id in range(1, 6):
-            await sock.push(_trade_push(INST, trade_id, ts_ms=now + 30_000 + trade_id))
-        await _collect(stream, 5, timeout=2)
-        await asyncio.sleep(0.3)
-        assert stream.writer_lagging is False
+        now = _synced_now_ms()
+        for trade_id, delay_s in ((1, 0), (2, 2), (3, 8), (4, 20), (5, 60)):
+            await sock.push(_trade_push(INST, trade_id, ts_ms=now - delay_s * 1000))
+            await asyncio.wait_for(anext(stream), timeout=2)
+        assert stream.exchange_lag >= 50
+        assert stream.writer_lagging
+        kinds = [item.kind for item in stream._queue.items if item is not None]
+        assert "lag" in kinds
 
+
+@run_async
+async def test_slow_disk_5ms_batch_alerts(tmp_path: Path) -> None:
     rec = StreamRecorder(
-        cache_dir=tmp_path / "backlog",
+        cache_dir=tmp_path,
         enabled=True,
-        write_queue_maxsize=1,
-        write_sleep=0.05,
-        offer_timeout=0.05,
+        write_queue_maxsize=256,
+        write_sleep=0.005,
+        offer_timeout=2.0,
         sync=False,
     )
     broker = ScriptedConnector()
     sock = broker.add()
+    now = _synced_now_ms()
     async with OkxPublicStream(
         [("trades", INST)],
         connector=broker,
         recorder=rec,
         ping_interval=30,
-        stale_timeout=0.1,
+        stale_timeout=0.2,
         lag_threshold=0.4,
+        time_fetcher=lambda: now,
     ) as stream:
         await _wait_sent(sock, lambda s: "subscribe" in s)
-        baseline = int(time.time() * 1000)
-        await sock.push(_trade_push(INST, 1, ts_ms=baseline))
-        await asyncio.wait_for(anext(stream), timeout=2)
-        stamped = int(time.time() * 1000)
-        for trade_id in range(2, 36):
-            await sock.push(_trade_push(INST, trade_id, ts_ms=stamped))
+        for trade_id in range(1, 121):
+            await sock.push(_trade_push(INST, trade_id, ts_ms=now))
         deadline = time.monotonic() + 3.0
         while time.monotonic() < deadline and not stream.writer_lagging:
             await asyncio.sleep(0.05)
         assert stream.writer_lagging
-        assert stream.writer_lag >= 0.4
+        assert rec.service_lag() >= 0.4
         kinds = [item.kind for item in stream._queue.items if item is not None]
         assert "lag" in kinds
+
+
+@run_async
+async def test_clock_jump_no_false_alert_then_real_lag(tmp_path: Path) -> None:
+    class Clocks:
+        def __init__(self) -> None:
+            self.wall = 1_700_000_000.0
+            self.mono = 10_000.0
+            self.server = 1_700_000_000.0
+
+        def wall_fn(self) -> float:
+            return self.wall
+
+        def mono_fn(self) -> float:
+            return self.mono
+
+        def fetch(self) -> int:
+            return int(self.server * 1000)
+
+    clocks = Clocks()
+    rec = StreamRecorder(cache_dir=tmp_path, enabled=True, sync=False)
+    broker = ScriptedConnector()
+    sock = broker.add()
+    async with OkxPublicStream(
+        [("trades", INST)],
+        connector=broker,
+        recorder=rec,
+        ping_interval=30,
+        stale_timeout=0.2,
+        lag_threshold=5.0,
+        time_fetcher=clocks.fetch,
+        time_poll_interval=60.0,
+        wall_clock=clocks.wall_fn,
+        mono_clock=clocks.mono_fn,
+    ) as stream:
+        await _wait_sent(sock, lambda s: "subscribe" in s)
+        await sock.push(_trade_push(INST, 1, ts_ms=int(clocks.server * 1000)))
+        await asyncio.wait_for(anext(stream), timeout=2)
+        assert stream.writer_lagging is False
+        clocks.wall += 30.0
+        clocks.mono += 0.01
+        stream._sync.maybe_poll()
+        await sock.push(_trade_push(INST, 2, ts_ms=int(clocks.server * 1000)))
+        await asyncio.wait_for(anext(stream), timeout=2)
+        assert stream.writer_lagging is False
+        await sock.push(_trade_push(INST, 3, ts_ms=int((clocks.server - 30) * 1000)))
+        await asyncio.wait_for(anext(stream), timeout=2)
+        assert stream.exchange_lag >= 25
+        assert stream.writer_lagging
+
+
+def test_clock_sync_absolute_delay_and_jump() -> None:
+    class Clocks:
+        def __init__(self) -> None:
+            self.wall = 1_000.0
+            self.mono = 50.0
+            self.server = 1_000.0
+
+        def fetch(self) -> int:
+            return int(self.server * 1000)
+
+    clocks = Clocks()
+    sync = ClockSync(fetch=clocks.fetch, poll_interval=60, wall=lambda: clocks.wall, mono=lambda: clocks.mono)
+    sync.poll()
+    assert sync.absolute_delay(int((clocks.server - 30) * 1000)) >= 29
+    clocks.wall += 30
+    clocks.mono += 0.01
+    sync.maybe_poll()
+    assert sync.absolute_delay(int(clocks.server * 1000)) < 1.0
+    assert sync.absolute_delay(int((clocks.server - 60) * 1000)) >= 55

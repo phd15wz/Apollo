@@ -187,6 +187,13 @@ def _gap_from_batch(batch: Sequence[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _shutdown_incomplete(records: Sequence[dict[str, Any]]) -> dict[str, Any]:
+    gap = _gap_from_batch(records)
+    gap["reason"] = "shutdown_incomplete"
+    gap["precise"] = False
+    return gap
+
+
 def _fold_summary_gap(existing: dict[str, Any], incoming: dict[str, Any]) -> None:
     extra = int(incoming.get("dropped") or 0)
     _merge_gap(existing, incoming, extra)
@@ -231,7 +238,11 @@ class RecordWriteQueue:
                 if self._closed or len(self._data) >= self.maxsize:
                     self._drop_batch(batch)
                     return False
-                self._data.append((time.monotonic(), batch))
+                recv_at = min(
+                    float(rec["_recv_mono"]) if rec.get("_recv_mono") is not None else time.monotonic()
+                    for rec in batch
+                )
+                self._data.append((recv_at, batch))
                 self.max_depth = max(self.max_depth, len(self._data))
                 self._cv.notify_all()
                 return True
@@ -265,6 +276,14 @@ class RecordWriteQueue:
             self._closed = True
             self._sentinel = True
             self._cv.notify_all()
+
+    def take_remaining(self) -> tuple[list[list[dict[str, Any]]], list[dict[str, Any]]]:
+        with self._cv:
+            batches = [batch for _recv, batch in self._data]
+            gaps = list(self._gaps)
+            self._data.clear()
+            self._gaps.clear()
+            return batches, gaps
 
     def backlog_age(self, now: float | None = None) -> float:
         now = time.monotonic() if now is None else now
@@ -332,6 +351,8 @@ class StreamRecorder:
     usage_rescan_interval_s: float = DEFAULT_USAGE_RESCAN_S
     flush_every: int = 64
     write_sleep: float = 0.0
+    write_sleep_on_close: bool = False
+    offer_delay: float = 0.0
     sync: bool = True
     files_written: list[Path] = field(default_factory=list)
     throughput: dict[str, ChannelThroughput] = field(default_factory=dict)
@@ -367,6 +388,7 @@ class StreamRecorder:
         self.accepted = 0
         self._write_lag = 0.0
         self._writing = 0
+        self._drop_leftover = False
         if self.enabled:
             self._scan_usage()
             self.apply_retention()
@@ -406,6 +428,7 @@ class StreamRecorder:
             return
         self.sync = False
         self._closed = False
+        self._drop_leftover = False
         if self.usage_scans == 0:
             self._scan_usage()
             self.apply_retention()
@@ -434,13 +457,11 @@ class StreamRecorder:
             while True:
                 item = self._queue.get(timeout=0.2)
                 if item is _WRITER_SENTINEL:
+                    self._finish_shutdown()
                     break
                 if item is None:
                     continue
-                if self.write_sleep > 0 and not self._closed:
-                    until = time.monotonic() + self.write_sleep
-                    while time.monotonic() < until and not self._closed:
-                        time.sleep(0.01)
+                self._maybe_write_sleep()
                 self._write_lag = self._queue.last_pop_age
                 self._writing += 1
                 try:
@@ -470,6 +491,43 @@ class StreamRecorder:
     def service_lag(self) -> float:
         return self.backlog_age()
 
+    def _maybe_write_sleep(self) -> None:
+        if self.write_sleep <= 0:
+            return
+        if self._closed and not self.write_sleep_on_close:
+            return
+        until = time.monotonic() + self.write_sleep
+        while time.monotonic() < until and not self._drop_leftover:
+            time.sleep(0.01)
+
+    def _finish_shutdown(self) -> None:
+        batches, gaps = self._queue.take_remaining()
+        pending = list(batches)
+        if gaps:
+            pending.append(gaps)
+        while pending:
+            if self._drop_leftover:
+                leftover: list[dict[str, Any]] = []
+                for batch in pending:
+                    leftover.extend(batch)
+                gap = _shutdown_incomplete(leftover)
+                self._queue.dropped += int(gap["dropped"])
+                self._write_one([gap])
+                return
+            self._maybe_write_sleep()
+            if self._drop_leftover:
+                continue
+            self._write_one(pending.pop(0))
+
+    def _write_one(self, records: list[dict[str, Any]]) -> None:
+        self._writing += 1
+        try:
+            self._write_batch(records)
+        except Exception:
+            pass
+        finally:
+            self._writing -= 1
+
     def _begin_offer(self) -> None:
         with self._offer_cv:
             self._offers += 1
@@ -480,11 +538,13 @@ class StreamRecorder:
             self._offer_cv.notify_all()
 
     def offer_batch_sync(self, records: list[dict[str, Any]], timeout: float | None = None) -> bool:
-        kept = [rec for rec in records if self.accept(str(rec.get("channel") or ""), str(rec.get("instId") or ""))]
-        if not kept:
-            return False
         self._begin_offer()
         try:
+            if self.offer_delay > 0:
+                time.sleep(self.offer_delay)
+            kept = [rec for rec in records if self.accept(str(rec.get("channel") or ""), str(rec.get("instId") or ""))]
+            if not kept:
+                return False
             self.accepted += sum(_drop_count(rec) for rec in kept)
             if self._closed:
                 with self._queue._cv:
@@ -623,8 +683,17 @@ class StreamRecorder:
                 self._offer_cv.wait(timeout=max(0.001, deadline - time.monotonic()))
         self._queue.put_sentinel()
         if self._writer is not None:
-            remaining = max(0.05, deadline - time.monotonic())
+            remaining = max(0.0, deadline - time.monotonic())
             self._writer.join(timeout=remaining)
+            if self._writer.is_alive():
+                self._drop_leftover = True
+                while self._writing > 0:
+                    time.sleep(0.005)
+                self._writer.join(timeout=2.0)
+            while self._writing > 0:
+                time.sleep(0.005)
+            if self._writer.is_alive():
+                self._writer.join()
             self._writer = None
         self.writer_dropped = self._queue.dropped
         elapsed = max(1e-6, self.clock() - self._started_at)

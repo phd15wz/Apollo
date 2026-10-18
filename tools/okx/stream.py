@@ -231,35 +231,88 @@ CONTROL_MAX = 64
 ALERT_KINDS = frozenset({"stale", "recovered", "book_resync", "low_disk", "record_error", "lag", "lag_cleared"})
 FEED_STATE_KINDS = frozenset({"stale", "recovered"})
 MAX_PENDING_GAPS = 256
-LAG_OFFSET_WINDOW = 128
+DEFAULT_TIME_POLL_INTERVAL = 60.0
+DEFAULT_TIME_MAX_RTT = 0.5
+WALL_JUMP_S = 2.0
 
 
-class LagTracker:
-    """Primary: monotonic processed-recv. Secondary: drift-corrected OKX ts."""
+class ClockSync:
+    """Correct local wall time from keyless OKX ``GET /api/v5/public/time``."""
 
-    def __init__(self, *, window: int = LAG_OFFSET_WINDOW, seed_offset: float | None = None) -> None:
-        self._offsets: deque[float] = deque(maxlen=window)
-        if seed_offset is not None:
-            self._offsets.append(float(seed_offset))
-        self.primary = 0.0
-        self.secondary = 0.0
-
-    def observe(
+    def __init__(
         self,
         *,
-        recv_mono: float,
-        recv_wall: float,
-        okx_ts_ms: int | None,
-        processed_mono: float | None = None,
-    ) -> float:
-        processed = time.monotonic() if processed_mono is None else processed_mono
-        self.primary = max(0.0, processed - recv_mono)
-        if okx_ts_ms not in (None, 0, ""):
-            offset = recv_wall - (int(okx_ts_ms) / 1000.0)
-            self._offsets.append(offset)
-            baseline = min(self._offsets)
-            self.secondary = max(0.0, offset - baseline)
-        return max(self.primary, self.secondary)
+        fetch: Callable[[], int | None] | None = None,
+        poll_interval: float = DEFAULT_TIME_POLL_INTERVAL,
+        max_rtt: float = DEFAULT_TIME_MAX_RTT,
+        wall: Clock | None = None,
+        mono: Clock | None = None,
+    ) -> None:
+        self.fetch = fetch
+        self.poll_interval = poll_interval
+        self.max_rtt = max_rtt
+        self._wall = wall or time.time
+        self._mono = mono or time.monotonic
+        self.offset = 0.0
+        self.polls = 0
+        self._origin_mono: float | None = None
+        self._origin_corrected: float | None = None
+        self._last_wall: float | None = None
+        self._last_mono: float | None = None
+        self._last_poll_mono = 0.0
+
+    def corrected_now(self) -> float:
+        if self._origin_mono is None or self._origin_corrected is None:
+            return self._wall()
+        return self._origin_corrected + (self._mono() - self._origin_mono)
+
+    def absolute_delay(self, okx_ts_ms: int | None) -> float:
+        if okx_ts_ms in (None, 0, ""):
+            return 0.0
+        return max(0.0, self.corrected_now() - int(okx_ts_ms) / 1000.0)
+
+    def needs_poll(self) -> bool:
+        if self.fetch is None:
+            return False
+        now_mono = self._mono()
+        if self._origin_mono is None:
+            return True
+        if now_mono - self._last_poll_mono >= self.poll_interval:
+            return True
+        if self._last_wall is not None and self._last_mono is not None:
+            expected = self._last_wall + (now_mono - self._last_mono)
+            if abs(self._wall() - expected) >= WALL_JUMP_S:
+                return True
+        return False
+
+    def maybe_poll(self) -> None:
+        if self.needs_poll():
+            self.poll()
+
+    def poll(self) -> None:
+        if self.fetch is None:
+            return
+        t0_wall, t0_mono = self._wall(), self._mono()
+        try:
+            server_ms = self.fetch()
+        except Exception:
+            return
+        t1_wall, t1_mono = self._wall(), self._mono()
+        rtt = t1_mono - t0_mono
+        if server_ms in (None, 0, "") or rtt > self.max_rtt:
+            self._last_wall = t1_wall
+            self._last_mono = t1_mono
+            return
+        mid_wall = (t0_wall + t1_wall) / 2.0
+        mid_mono = (t0_mono + t1_mono) / 2.0
+        server = int(server_ms) / 1000.0
+        self.offset = server - mid_wall
+        self._origin_mono = mid_mono
+        self._origin_corrected = server
+        self._last_wall = t1_wall
+        self._last_mono = t1_mono
+        self._last_poll_mono = t1_mono
+        self.polls += 1
 
 
 class EventQueue:
@@ -501,6 +554,11 @@ class OkxPublicStream:
         healthy_after: float = DEFAULT_HEALTHY_AFTER,
         lag_threshold: float = 5.0,
         shutdown_timeout: float = 8.0,
+        time_fetcher: Callable[[], int | None] | None = None,
+        time_poll_interval: float = DEFAULT_TIME_POLL_INTERVAL,
+        max_time_rtt: float = DEFAULT_TIME_MAX_RTT,
+        wall_clock: Clock | None = None,
+        mono_clock: Clock | None = None,
         clock: Clock | None = None,
         sleep: AsyncSleeper | None = None,
     ) -> None:
@@ -540,8 +598,21 @@ class OkxPublicStream:
         self.lag_threshold = lag_threshold
         self.shutdown_timeout = shutdown_timeout
         self.writer_lag = 0.0
+        self.exchange_lag = 0.0
         self.writer_lagging = False
-        self._lag = LagTracker()
+        self._wall = wall_clock or time.time
+        self._mono = mono_clock or time.monotonic
+        self._time_fetcher = time_fetcher
+        fetch = time_fetcher
+        if fetch is None and rest is not None:
+            fetch = self._fetch_okx_time
+        self._sync = ClockSync(
+            fetch=fetch,
+            poll_interval=time_poll_interval,
+            max_rtt=max_time_rtt,
+            wall=self._wall,
+            mono=self._mono,
+        )
         self.fallbacks: list[tuple[str, str]] = []
         self._url_override: dict[str, str] = {}
         self._clock = clock or time.monotonic
@@ -599,6 +670,7 @@ class OkxPublicStream:
             )
         self._cancel.clear()
         self.recorder.start()
+        await asyncio.to_thread(self._sync.maybe_poll)
         self._running = True
         public_args = [a for a in self.args if not endpoints.is_candle_channel(a["channel"])]
         business_args = [a for a in self.args if endpoints.is_candle_channel(a["channel"])]
@@ -750,6 +822,8 @@ class OkxPublicStream:
                 continue
             except Exception:
                 return
+            recv_mono = self._mono()
+            recv_wall = self._wall()
             self._last_rx[id(conn)] = self._clock()
             if raw is None:
                 return
@@ -757,7 +831,7 @@ class OkxPublicStream:
                 continue
             if isinstance(raw, bytes):
                 raw = raw.decode("utf-8", "replace")
-            await self._dispatch(raw, conn, recv_mono=time.monotonic(), recv_wall=time.time())
+            await self._dispatch(raw, conn, recv_mono=recv_mono, recv_wall=recv_wall)
 
     async def _dispatch(self, raw: str, conn: WsConnection, *, recv_mono: float | None = None, recv_wall: float | None = None) -> None:
         try:
@@ -778,7 +852,7 @@ class OkxPublicStream:
             return
         self._observe_message_lag(rows, recv_mono=recv_mono, recv_wall=recv_wall)
         if channel == "trades":
-            await self._on_trades(inst_id, rows, payload)
+            await self._on_trades(inst_id, rows, payload, recv_mono=recv_mono)
             return
         if channel == "books":
             await self._on_books(inst_id, payload, conn)
@@ -798,12 +872,19 @@ class OkxPublicStream:
                 raw=payload,
             )
             self._emit(msg)
-            await self._record_batch(channel, inst_id, [_record_payload(msg)])
+            await self._record_batch(channel, inst_id, [_record_payload(msg)], recv_mono=recv_mono)
 
     def _known(self, channel: str, inst_id: str) -> bool:
         return (channel, inst_id) in self._subs
 
-    async def _on_trades(self, inst_id: str, rows: list[Any], raw: dict[str, Any]) -> None:
+    async def _on_trades(
+        self,
+        inst_id: str,
+        rows: list[Any],
+        raw: dict[str, Any],
+        *,
+        recv_mono: float | None = None,
+    ) -> None:
         self._touch("trades", inst_id)
         parsed: list[tuple[Trade, int]] = []
         for row in rows:
@@ -858,7 +939,7 @@ class OkxPublicStream:
                 self._last_trade_id[inst_id] = last
         finally:
             if recorded:
-                await self._record_batch("trades", inst_id, recorded)
+                await self._record_batch("trades", inst_id, recorded, recv_mono=recv_mono)
 
     def _emit_trade(self, trade: Trade, raw: dict[str, Any] | None = None) -> None:
         msg = StreamMessage(
@@ -977,6 +1058,8 @@ class OkxPublicStream:
                             stale=True,
                         )
                     )
+            if self._sync.needs_poll():
+                await asyncio.to_thread(self._sync.poll)
             self._refresh_lag()
 
     def _emit(self, msg: StreamMessage) -> None:
@@ -999,6 +1082,16 @@ class OkxPublicStream:
                 self.record_error = exc
                 self._emit_record_error(exc)
 
+    def _fetch_okx_time(self) -> int | None:
+        if self._time_fetcher is not None:
+            return self._time_fetcher()
+        if self.rest is None:
+            return None
+        rows = self.rest.get(endpoints.SERVER_TIME)
+        if not rows:
+            return None
+        return int(rows[0]["ts"])
+
     def _observe_message_lag(
         self,
         rows: Any,
@@ -1006,16 +1099,17 @@ class OkxPublicStream:
         recv_mono: float | None,
         recv_wall: float | None,
     ) -> None:
-        recv_mono = time.monotonic() if recv_mono is None else recv_mono
-        recv_wall = time.time() if recv_wall is None else recv_wall
+        if self._sync.needs_poll():
+            self._sync.poll()
         okx_ts_ms = _first_okx_ts_ms(rows)
-        self._lag.observe(recv_mono=recv_mono, recv_wall=recv_wall, okx_ts_ms=okx_ts_ms)
+        self.exchange_lag = self._sync.absolute_delay(okx_ts_ms)
         self._refresh_lag()
 
     def _refresh_lag(self) -> None:
-        age = max(self._lag.primary, self._lag.secondary, self.recorder.service_lag())
+        writer = self.recorder.service_lag()
+        age = max(self.exchange_lag, writer)
         self.writer_lag = age
-        now_ms = int(time.time() * 1000)
+        now_ms = int(self._wall() * 1000)
         if age >= self.lag_threshold and not self.writer_lagging:
             self.writer_lagging = True
             self._emit(
@@ -1026,8 +1120,8 @@ class OkxPublicStream:
                     ts_ms=now_ms,
                     data={
                         "backlog_s": age,
-                        "primary_s": self._lag.primary,
-                        "secondary_s": self._lag.secondary,
+                        "exchange_s": self.exchange_lag,
+                        "writer_s": writer,
                     },
                 )
             )
@@ -1039,14 +1133,21 @@ class OkxPublicStream:
                     channel="",
                     inst_id="",
                     ts_ms=now_ms,
-                    data={"backlog_s": age},
+                    data={"backlog_s": age, "exchange_s": self.exchange_lag, "writer_s": writer},
                 )
             )
 
-    async def _record_batch(self, channel: str, inst_id: str, rows: list[dict[str, Any]]) -> None:
+    async def _record_batch(
+        self,
+        channel: str,
+        inst_id: str,
+        rows: list[dict[str, Any]],
+        *,
+        recv_mono: float | None = None,
+    ) -> None:
         if not rows or not self.recorder.accept(channel, inst_id):
             return
-        recv_mono = time.monotonic()
+        stamped = self._mono() if recv_mono is None else recv_mono
         records = [
             {
                 "ts": row.get("ts"),
@@ -1054,7 +1155,7 @@ class OkxPublicStream:
                 "channel": channel,
                 "instId": inst_id,
                 "data": row,
-                "_recv_mono": recv_mono,
+                "_recv_mono": stamped,
             }
             for row in rows
         ]

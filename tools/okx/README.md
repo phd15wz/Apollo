@@ -201,10 +201,12 @@ python3 -m tools.okx.stream_demo --inst SPCX-USDT-SWAP --channels trades,books5 
 2. **Stale-feed timeout.** Configurable per stream (`stale_timeout`,
    default 60 s). Silence emits `stale` and sets a flag
    (`stream.is_stale(...)` / `stream.stale_subscriptions`). The next data
-   message emits `recovered` and clears the flag. End-to-end lag (monotonic
-   processed-minus-receive, plus a drift-corrected OKX `ts` check) above
-   `lag_threshold` (default 5 s) emits `lag` / `lag_cleared` and is
-   exposed as `stream.writer_lag` / `stream.writer_lagging`.
+   message emits `recovered` and clears the flag. Lag is the larger of
+   writer delay (write time minus socket `recv` time) and absolute delay
+   (OKX `ts` versus local wall, corrected by keyless `GET /api/v5/public/time`
+   about every 60 s). Either side above `lag_threshold` (default 5 s)
+   emits `lag` / `lag_cleared`. `stream.writer_lag` / `stream.writer_lagging`
+   expose the flag.
 3. **Size caps and bounded queues.** Recording is **off by default**.
    `--record-channels trades` (or `record_channels=`) records a subset.
    When enabled it writes gzip JSONL under `OKX_DATA_DIR/recordings/`
