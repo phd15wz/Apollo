@@ -387,6 +387,7 @@ class StreamRecorder:
         self._offers = 0
         self.accepted = 0
         self._write_lag = 0.0
+        self._write_recv = 0.0
         self._writing = 0
         self._drop_leftover = False
         if self.enabled:
@@ -461,10 +462,11 @@ class StreamRecorder:
                     break
                 if item is None:
                     continue
-                self._maybe_write_sleep()
                 self._write_lag = self._queue.last_pop_age
+                self._write_recv = time.monotonic() - self._write_lag
                 self._writing += 1
                 try:
+                    self._maybe_write_sleep()
                     self._write_batch(item)
                 except BaseException as exc:
                     self._error = exc
@@ -483,9 +485,10 @@ class StreamRecorder:
     def backlog_age(self) -> float:
         if not self.enabled:
             return 0.0
-        age = self._queue.backlog_age()
+        now = time.monotonic()
+        age = self._queue.backlog_age(now)
         if self._writing:
-            age = max(age, self._write_lag)
+            age = max(age, now - self._write_recv, self._write_lag)
         return age
 
     def service_lag(self) -> float:

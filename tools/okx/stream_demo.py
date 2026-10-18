@@ -14,6 +14,7 @@ import time
 from collections import Counter
 from typing import Iterable
 
+from tools.okx import endpoints
 from tools.okx.archive import default_data_dir
 from tools.okx.client import PublicClient
 from tools.okx.record import StreamRecorder
@@ -52,7 +53,7 @@ def _print_message(msg: StreamMessage) -> None:
             f"{gap.last_missing_trade_id if gap else None} dropped={gap.dropped if gap else 0}"
         )
         return
-    if msg.kind in {"stale", "recovered", "book_resync", "low_disk", "record_error"}:
+    if msg.kind in {"stale", "recovered", "book_resync", "low_disk", "record_error", "lag", "lag_cleared"}:
         print(f"{msg.kind.upper()} {msg.channel} {msg.inst_id} {msg.data or ''}")
         return
     if msg.channel == "trades" and isinstance(msg.data, Trade):
@@ -98,6 +99,13 @@ async def _run(args: argparse.Namespace) -> int:
         channels=frozenset(record_channels) if record_channels else None,
     )
     rest = PublicClient()
+
+    def _okx_time_ms() -> int | None:
+        rows = rest.get(endpoints.SERVER_TIME)
+        if not rows:
+            return None
+        return int(rows[0]["ts"])
+
     counts: Counter[str] = Counter()
     started = time.monotonic()
     async with OkxPublicStream(
@@ -107,6 +115,7 @@ async def _run(args: argparse.Namespace) -> int:
         stale_timeout=args.stale_timeout,
         public_url=args.public_url,
         business_url=args.business_url,
+        time_fetcher=_okx_time_ms,
     ) as stream:
         end = started + args.seconds
         while time.monotonic() < end:

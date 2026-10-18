@@ -494,6 +494,19 @@ def test_alert_cap_merges_repeated_flaps() -> None:
     assert len(queue.alerts) + queue.merged_alerts == 10_000
 
 
+def test_alert_cap_bounds_distinct_slots() -> None:
+    queue = EventQueue(maxsize=10, control_max=CONTROL_MAX)
+    extra = 40
+    for i in range(CONTROL_MAX + extra):
+        queue.put(
+            StreamMessage(kind="lag", channel="trades", inst_id=f"INST-{i}", ts_ms=i),
+            control=True,
+        )
+    assert len(queue.alerts) == CONTROL_MAX
+    assert queue.merged_alerts == extra
+    assert CONTROL_MAX == 64
+
+
 def test_feed_state_delivers_latest_stale() -> None:
     queue = EventQueue(maxsize=10)
     for kind, ts in (("stale", 1), ("recovered", 2), ("stale", 3)):
@@ -586,6 +599,7 @@ def test_writer_non_adjacent_gaps_stay_separate(tmp_path: Path) -> None:
         cache_dir=tmp_path,
         enabled=True,
         write_queue_maxsize=1,
+        write_sleep=1.0,
         offer_timeout=0.0,
         sync=False,
     )
@@ -605,6 +619,10 @@ def test_writer_non_adjacent_gaps_stay_separate(tmp_path: Path) -> None:
                 for offset in range(10)
             ]
         )
+    pending_exact = sum(1 for gap in rec._queue._gaps if gap.get("precise", True))
+    assert pending_exact == MAX_PENDING_GAPS
+    assert sum(1 for gap in rec._queue._gaps if gap.get("precise") is False) == 1
+    assert len(rec._queue._gaps) == MAX_PENDING_GAPS + 1
     rec.close()
     rows = []
     for path in rec.files_written:
@@ -698,6 +716,7 @@ def test_close_waits_out_slow_disk_write(tmp_path: Path) -> None:
     rec.close(timeout=0.15)
     assert rec._writing == 0
     assert rec._writer is None
+    assert not any(t.is_alive() and t.name == "okx-record-writer" for t in threading.enumerate())
     rows = []
     for path in rec.files_written:
         rows.extend(_read_jsonl(path))

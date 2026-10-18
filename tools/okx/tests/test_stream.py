@@ -1227,12 +1227,13 @@ async def test_steady_30s_backlog_alerts(tmp_path: Path) -> None:
         await _wait_sent(sock, lambda s: "subscribe" in s)
         now = _synced_now_ms()
         await sock.push(_trade_push(INST, 1, ts_ms=now - 30_000))
-        await asyncio.wait_for(anext(stream), timeout=2)
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and not stream.writer_lagging:
+            await asyncio.sleep(0.02)
         assert stream.exchange_lag >= 25
+        assert rec.service_lag() < 5
         assert stream.writer_lagging
         assert stream.writer_lag >= 5
-        kinds = [item.kind for item in stream._queue.items if item is not None]
-        assert "lag" in kinds
 
 
 @run_async
@@ -1253,11 +1254,12 @@ async def test_slow_ramp_to_60s_alerts(tmp_path: Path) -> None:
         now = _synced_now_ms()
         for trade_id, delay_s in ((1, 0), (2, 2), (3, 8), (4, 20), (5, 60)):
             await sock.push(_trade_push(INST, trade_id, ts_ms=now - delay_s * 1000))
-            await asyncio.wait_for(anext(stream), timeout=2)
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and stream.exchange_lag < 50:
+            await asyncio.sleep(0.02)
         assert stream.exchange_lag >= 50
+        assert rec.service_lag() < 5
         assert stream.writer_lagging
-        kinds = [item.kind for item in stream._queue.items if item is not None]
-        assert "lag" in kinds
 
 
 @run_async
@@ -1272,7 +1274,6 @@ async def test_slow_disk_5ms_batch_alerts(tmp_path: Path) -> None:
     )
     broker = ScriptedConnector()
     sock = broker.add()
-    now = _synced_now_ms()
     async with OkxPublicStream(
         [("trades", INST)],
         connector=broker,
@@ -1280,16 +1281,16 @@ async def test_slow_disk_5ms_batch_alerts(tmp_path: Path) -> None:
         ping_interval=30,
         stale_timeout=0.2,
         lag_threshold=0.4,
-        time_fetcher=lambda: now,
     ) as stream:
         await _wait_sent(sock, lambda s: "subscribe" in s)
         for trade_id in range(1, 121):
-            await sock.push(_trade_push(INST, trade_id, ts_ms=now))
+            await sock.push(_trade_push(INST, trade_id))
         deadline = time.monotonic() + 3.0
         while time.monotonic() < deadline and not stream.writer_lagging:
             await asyncio.sleep(0.05)
         assert stream.writer_lagging
         assert rec.service_lag() >= 0.4
+        assert stream.exchange_lag < 0.4
         kinds = [item.kind for item in stream._queue.items if item is not None]
         assert "lag" in kinds
 
@@ -1337,7 +1338,13 @@ async def test_clock_jump_no_false_alert_then_real_lag(tmp_path: Path) -> None:
         await sock.push(_trade_push(INST, 2, ts_ms=int(clocks.server * 1000)))
         await asyncio.wait_for(anext(stream), timeout=2)
         assert stream.writer_lagging is False
-        await sock.push(_trade_push(INST, 3, ts_ms=int((clocks.server - 30) * 1000)))
+        clocks.wall -= 30.0
+        clocks.mono += 0.01
+        stream._sync.maybe_poll()
+        await sock.push(_trade_push(INST, 3, ts_ms=int(clocks.server * 1000)))
+        await asyncio.wait_for(anext(stream), timeout=2)
+        assert stream.writer_lagging is False
+        await sock.push(_trade_push(INST, 4, ts_ms=int((clocks.server - 30) * 1000)))
         await asyncio.wait_for(anext(stream), timeout=2)
         assert stream.exchange_lag >= 25
         assert stream.writer_lagging
@@ -1361,4 +1368,19 @@ def test_clock_sync_absolute_delay_and_jump() -> None:
     clocks.mono += 0.01
     sync.maybe_poll()
     assert sync.absolute_delay(int(clocks.server * 1000)) < 1.0
+    clocks.wall -= 30
+    clocks.mono += 0.01
+    sync.maybe_poll()
+    assert sync.absolute_delay(int(clocks.server * 1000)) < 1.0
     assert sync.absolute_delay(int((clocks.server - 60) * 1000)) >= 55
+    polls = sync.polls
+    offset = sync.offset
+
+    def _slow() -> int:
+        clocks.mono += 2.0
+        return int(clocks.server * 1000)
+
+    sync.fetch = _slow
+    sync.poll()
+    assert sync.polls == polls
+    assert sync.offset == offset

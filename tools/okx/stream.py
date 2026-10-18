@@ -267,7 +267,7 @@ class ClockSync:
         return self._origin_corrected + (self._mono() - self._origin_mono)
 
     def absolute_delay(self, okx_ts_ms: int | None) -> float:
-        if okx_ts_ms in (None, 0, ""):
+        if self._origin_mono is None or okx_ts_ms in (None, 0, ""):
             return 0.0
         return max(0.0, self.corrected_now() - int(okx_ts_ms) / 1000.0)
 
@@ -603,11 +603,8 @@ class OkxPublicStream:
         self._wall = wall_clock or time.time
         self._mono = mono_clock or time.monotonic
         self._time_fetcher = time_fetcher
-        fetch = time_fetcher
-        if fetch is None and rest is not None:
-            fetch = self._fetch_okx_time
         self._sync = ClockSync(
-            fetch=fetch,
+            fetch=time_fetcher,
             poll_interval=time_poll_interval,
             max_rtt=max_time_rtt,
             wall=self._wall,
@@ -1081,16 +1078,6 @@ class OkxPublicStream:
             except (LowDiskError, CacheBudgetExceeded) as exc:
                 self.record_error = exc
                 self._emit_record_error(exc)
-
-    def _fetch_okx_time(self) -> int | None:
-        if self._time_fetcher is not None:
-            return self._time_fetcher()
-        if self.rest is None:
-            return None
-        rows = self.rest.get(endpoints.SERVER_TIME)
-        if not rows:
-            return None
-        return int(rows[0]["ts"])
 
     def _observe_message_lag(
         self,
