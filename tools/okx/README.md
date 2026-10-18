@@ -204,8 +204,10 @@ python3 -m tools.okx.stream_demo --inst SPCX-USDT-SWAP --channels trades,books5 
    message emits `recovered` and clears the flag. Lag is the larger of
    writer delay (write time minus socket `recv` time) and absolute delay
    (OKX `ts` versus local wall, corrected by keyless `GET /api/v5/public/time`
-   about every 60 s). Either side above `lag_threshold` (default 5 s)
-   emits `lag` / `lag_cleared`. `stream.writer_lag` / `stream.writer_lagging`
+   about every 60 s, off the socket loop). Either side above
+   `lag_threshold` (default 5 s) emits `lag` / `lag_cleared`. A failed
+   time poll emits one `clock_sync_unavailable` and falls back to
+   uncorrected local time. `stream.writer_lag` / `stream.writer_lagging`
    expose the flag.
 3. **Size caps and bounded queues.** Recording is **off by default**.
    `--record-channels trades` (or `record_channels=`) records a subset.

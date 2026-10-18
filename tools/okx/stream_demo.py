@@ -53,7 +53,16 @@ def _print_message(msg: StreamMessage) -> None:
             f"{gap.last_missing_trade_id if gap else None} dropped={gap.dropped if gap else 0}"
         )
         return
-    if msg.kind in {"stale", "recovered", "book_resync", "low_disk", "record_error", "lag", "lag_cleared"}:
+    if msg.kind in {
+        "stale",
+        "recovered",
+        "book_resync",
+        "low_disk",
+        "record_error",
+        "lag",
+        "lag_cleared",
+        "clock_sync_unavailable",
+    }:
         print(f"{msg.kind.upper()} {msg.channel} {msg.inst_id} {msg.data or ''}")
         return
     if msg.channel == "trades" and isinstance(msg.data, Trade):

@@ -205,12 +205,13 @@ def _fold_summary_gap(existing: dict[str, Any], incoming: dict[str, Any]) -> Non
 class RecordWriteQueue:
     """Bounded batch queue. Pending gaps stay outside data slots."""
 
-    def __init__(self, maxsize: int) -> None:
+    def __init__(self, maxsize: int, *, mono: Callable[[], float] | None = None) -> None:
         if maxsize < 1:
             raise ValueError("write_queue_maxsize must be >= 1")
         self.maxsize = maxsize
         self.dropped = 0
         self.max_depth = 0
+        self._mono = mono or time.monotonic
         self._data: deque[tuple[float, list[dict[str, Any]]]] = deque()
         self._gaps: list[dict[str, Any]] = []
         self._waiting: list[float] = []
@@ -224,7 +225,7 @@ class RecordWriteQueue:
         started = time.monotonic()
         deadline = started + max(0.0, timeout)
         with self._cv:
-            self._waiting.append(started)
+            self._waiting.append(self._mono())
             try:
                 if self._closed:
                     self._drop_batch(batch)
@@ -239,7 +240,7 @@ class RecordWriteQueue:
                     self._drop_batch(batch)
                     return False
                 recv_at = min(
-                    float(rec["_recv_mono"]) if rec.get("_recv_mono") is not None else time.monotonic()
+                    float(rec["_recv_mono"]) if rec.get("_recv_mono") is not None else self._mono()
                     for rec in batch
                 )
                 self._data.append((recv_at, batch))
@@ -267,7 +268,7 @@ class RecordWriteQueue:
                 self.last_pop_age = 0.0
                 return [self._gaps.pop(0)]
             recv_at, batch = self._data.popleft()
-            self.last_pop_age = max(0.0, time.monotonic() - recv_at)
+            self.last_pop_age = max(0.0, self._mono() - recv_at)
             self._cv.notify_all()
             return batch
 
@@ -286,7 +287,7 @@ class RecordWriteQueue:
             return batches, gaps
 
     def backlog_age(self, now: float | None = None) -> float:
-        now = time.monotonic() if now is None else now
+        now = self._mono() if now is None else now
         with self._cv:
             times = [recv for recv, _batch in self._data] + list(self._waiting)
         if not times:
@@ -352,7 +353,9 @@ class StreamRecorder:
     flush_every: int = 64
     write_sleep: float = 0.0
     write_sleep_on_close: bool = False
+    write_hang: bool = False
     offer_delay: float = 0.0
+    mono: Callable[[], float] = time.monotonic
     sync: bool = True
     files_written: list[Path] = field(default_factory=list)
     throughput: dict[str, ChannelThroughput] = field(default_factory=dict)
@@ -379,7 +382,7 @@ class StreamRecorder:
         self._error: BaseException | None = None
         self._closed = False
         self._started_at = self.clock()
-        self._queue = RecordWriteQueue(self.write_queue_maxsize)
+        self._queue = RecordWriteQueue(self.write_queue_maxsize, mono=self.mono)
         self._writer: threading.Thread | None = None
         self._writer_ident: int | None = None
         self._lock = threading.Lock()
@@ -390,6 +393,8 @@ class StreamRecorder:
         self._write_recv = 0.0
         self._writing = 0
         self._drop_leftover = False
+        self._write_hanging = False
+        self.shutdown_incomplete = False
         if self.enabled:
             self._scan_usage()
             self.apply_retention()
@@ -445,12 +450,13 @@ class StreamRecorder:
             self._scan_usage()
 
     def _ensure_writer(self) -> None:
-        if self._closed:
-            return
-        if self._writer is not None and self._writer.is_alive():
-            return
-        self._writer = threading.Thread(target=self._writer_loop, name="okx-record-writer", daemon=True)
-        self._writer.start()
+        with self._lock:
+            if self._closed:
+                return
+            if self._writer is not None and self._writer.is_alive():
+                return
+            self._writer = threading.Thread(target=self._writer_loop, name="okx-record-writer", daemon=True)
+            self._writer.start()
 
     def _writer_loop(self) -> None:
         self._writer_ident = threading.get_ident()
@@ -463,7 +469,7 @@ class StreamRecorder:
                 if item is None:
                     continue
                 self._write_lag = self._queue.last_pop_age
-                self._write_recv = time.monotonic() - self._write_lag
+                self._write_recv = self.mono() - self._write_lag
                 self._writing += 1
                 try:
                     self._maybe_write_sleep()
@@ -485,7 +491,7 @@ class StreamRecorder:
     def backlog_age(self) -> float:
         if not self.enabled:
             return 0.0
-        now = time.monotonic()
+        now = self.mono()
         age = self._queue.backlog_age(now)
         if self._writing:
             age = max(age, now - self._write_recv, self._write_lag)
@@ -502,6 +508,18 @@ class StreamRecorder:
         until = time.monotonic() + self.write_sleep
         while time.monotonic() < until and not self._drop_leftover:
             time.sleep(0.01)
+
+    def _report_shutdown_incomplete(self) -> None:
+        self.shutdown_incomplete = True
+        batches, gaps = self._queue.take_remaining()
+        leftover: list[dict[str, Any]] = []
+        for batch in batches:
+            leftover.extend(batch)
+        leftover.extend(gaps)
+        if leftover:
+            gap = _shutdown_incomplete(leftover)
+            self._queue.dropped += int(gap["dropped"])
+        self.writer_dropped = self._queue.dropped
 
     def _finish_shutdown(self) -> None:
         batches, gaps = self._queue.take_remaining()
@@ -675,7 +693,7 @@ class StreamRecorder:
                 changed = True
         self._scan_usage()
 
-    def close(self, timeout: float = 10.0) -> None:
+    def close(self, timeout: float = 8.0) -> None:
         if self._writer is None and self._closed:
             return
         deadline = time.monotonic() + max(0.0, timeout)
@@ -690,15 +708,10 @@ class StreamRecorder:
             self._writer.join(timeout=remaining)
             if self._writer.is_alive():
                 self._drop_leftover = True
-                while self._writing > 0:
-                    time.sleep(0.005)
-                self._writer.join(timeout=2.0)
-            while self._writing > 0:
-                time.sleep(0.005)
+                leftover_join = max(0.0, deadline - time.monotonic())
+                self._writer.join(timeout=leftover_join)
             if self._writer.is_alive():
-                self._writer.join()
-            if self._writer.is_alive():
-                raise RuntimeError("recorder writer still running after close")
+                self._report_shutdown_incomplete()
             self._writer = None
         self.writer_dropped = self._queue.dropped
         elapsed = max(1e-6, self.clock() - self._started_at)
@@ -727,6 +740,10 @@ class StreamRecorder:
         return report
 
     def _write_batch(self, records: list[dict[str, Any]]) -> None:
+        if self.write_hang:
+            self._write_hanging = True
+            while self.write_hang:
+                time.sleep(0.05)
         if self._writer_ident is not None and threading.get_ident() != self._writer_ident:
             raise RuntimeError("only the writer thread may open or write recording files")
         grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}

@@ -92,7 +92,8 @@ class StreamMessage:
     """One item from :class:`OkxPublicStream`.
 
     ``kind`` is ``data``, ``gap``, ``stale``, ``recovered``,
-    ``book_resync``, ``low_disk``, ``lag``, or ``lag_cleared``. Treat
+    ``book_resync``, ``low_disk``, ``lag``, ``lag_cleared``, or
+    ``clock_sync_unavailable``. Treat
     ``gap`` as a missing interval, never as a quiet period. Repeated
     alerts carry ``repeats`` and ``first_ts_ms``.
     """
@@ -228,11 +229,15 @@ class LocalBook:
 
 
 CONTROL_MAX = 64
-ALERT_KINDS = frozenset({"stale", "recovered", "book_resync", "low_disk", "record_error", "lag", "lag_cleared"})
+ALERT_KINDS = frozenset(
+    {"stale", "recovered", "book_resync", "low_disk", "record_error", "lag", "lag_cleared", "clock_sync_unavailable"}
+)
 FEED_STATE_KINDS = frozenset({"stale", "recovered"})
 MAX_PENDING_GAPS = 256
 DEFAULT_TIME_POLL_INTERVAL = 60.0
 DEFAULT_TIME_MAX_RTT = 0.5
+DEFAULT_TIME_REQUEST_TIMEOUT = 3.0
+DEFAULT_TIME_BACKOFF_CAP = 600.0
 WALL_JUMP_S = 2.0
 
 
@@ -245,21 +250,33 @@ class ClockSync:
         fetch: Callable[[], int | None] | None = None,
         poll_interval: float = DEFAULT_TIME_POLL_INTERVAL,
         max_rtt: float = DEFAULT_TIME_MAX_RTT,
+        request_timeout: float = DEFAULT_TIME_REQUEST_TIMEOUT,
+        backoff_cap: float = DEFAULT_TIME_BACKOFF_CAP,
         wall: Clock | None = None,
         mono: Clock | None = None,
     ) -> None:
         self.fetch = fetch
         self.poll_interval = poll_interval
         self.max_rtt = max_rtt
+        self.request_timeout = request_timeout
+        self.backoff_cap = backoff_cap
         self._wall = wall or time.time
         self._mono = mono or time.monotonic
         self.offset = 0.0
         self.polls = 0
+        self.failures = 0
+        self.available = False
+        self.backoff = 0.0
         self._origin_mono: float | None = None
         self._origin_corrected: float | None = None
         self._last_wall: float | None = None
         self._last_mono: float | None = None
         self._last_poll_mono = 0.0
+        self._next_poll_mono = 0.0
+
+    @property
+    def unknown(self) -> bool:
+        return self.fetch is not None and not self.available
 
     def corrected_now(self) -> float:
         if self._origin_mono is None or self._origin_corrected is None:
@@ -267,7 +284,9 @@ class ClockSync:
         return self._origin_corrected + (self._mono() - self._origin_mono)
 
     def absolute_delay(self, okx_ts_ms: int | None) -> float:
-        if self._origin_mono is None or okx_ts_ms in (None, 0, ""):
+        if okx_ts_ms in (None, 0, ""):
+            return 0.0
+        if self.fetch is None:
             return 0.0
         return max(0.0, self.corrected_now() - int(okx_ts_ms) / 1000.0)
 
@@ -275,33 +294,65 @@ class ClockSync:
         if self.fetch is None:
             return False
         now_mono = self._mono()
-        if self._origin_mono is None:
-            return True
-        if now_mono - self._last_poll_mono >= self.poll_interval:
-            return True
         if self._last_wall is not None and self._last_mono is not None:
             expected = self._last_wall + (now_mono - self._last_mono)
             if abs(self._wall() - expected) >= WALL_JUMP_S:
                 return True
-        return False
+        if now_mono < self._next_poll_mono:
+            return False
+        if self._origin_mono is None:
+            return True
+        return now_mono - self._last_poll_mono >= self.poll_interval
+
+    def poll_wait(self) -> float:
+        if self.needs_poll():
+            return 0.0
+        now_mono = self._mono()
+        if self._next_poll_mono > now_mono:
+            return min(1.0, self._next_poll_mono - now_mono)
+        return min(1.0, max(0.05, self.poll_interval))
 
     def maybe_poll(self) -> None:
         if self.needs_poll():
             self.poll()
 
+    def _call_fetch(self) -> int | None:
+        if self.fetch is None:
+            return None
+        box: list[int | None] = []
+
+        def _run() -> None:
+            try:
+                box.append(self.fetch())
+            except Exception:
+                box.append(None)
+
+        worker = threading.Thread(target=_run, name="okx-time-fetch", daemon=True)
+        worker.start()
+        worker.join(self.request_timeout)
+        if worker.is_alive() or not box:
+            return None
+        return box[0]
+
+    def _fail(self, wall: float, mono: float) -> None:
+        self.failures += 1
+        if self.backoff <= 0:
+            self.backoff = min(self.poll_interval, self.backoff_cap)
+        else:
+            self.backoff = min(max(self.backoff * 2.0, self.poll_interval), self.backoff_cap)
+        self._last_wall = wall
+        self._last_mono = mono
+        self._next_poll_mono = mono + self.backoff
+
     def poll(self) -> None:
         if self.fetch is None:
             return
         t0_wall, t0_mono = self._wall(), self._mono()
-        try:
-            server_ms = self.fetch()
-        except Exception:
-            return
+        server_ms = self._call_fetch()
         t1_wall, t1_mono = self._wall(), self._mono()
         rtt = t1_mono - t0_mono
         if server_ms in (None, 0, "") or rtt > self.max_rtt:
-            self._last_wall = t1_wall
-            self._last_mono = t1_mono
+            self._fail(t1_wall, t1_mono)
             return
         mid_wall = (t0_wall + t1_wall) / 2.0
         mid_mono = (t0_mono + t1_mono) / 2.0
@@ -312,6 +363,9 @@ class ClockSync:
         self._last_wall = t1_wall
         self._last_mono = t1_mono
         self._last_poll_mono = t1_mono
+        self._next_poll_mono = t1_mono + self.poll_interval
+        self.backoff = 0.0
+        self.available = True
         self.polls += 1
 
 
@@ -557,6 +611,8 @@ class OkxPublicStream:
         time_fetcher: Callable[[], int | None] | None = None,
         time_poll_interval: float = DEFAULT_TIME_POLL_INTERVAL,
         max_time_rtt: float = DEFAULT_TIME_MAX_RTT,
+        time_request_timeout: float = DEFAULT_TIME_REQUEST_TIMEOUT,
+        time_backoff_cap: float = DEFAULT_TIME_BACKOFF_CAP,
         wall_clock: Clock | None = None,
         mono_clock: Clock | None = None,
         clock: Clock | None = None,
@@ -603,10 +659,13 @@ class OkxPublicStream:
         self._wall = wall_clock or time.time
         self._mono = mono_clock or time.monotonic
         self._time_fetcher = time_fetcher
+        self._clock_sync_alerted = False
         self._sync = ClockSync(
             fetch=time_fetcher,
             poll_interval=time_poll_interval,
             max_rtt=max_time_rtt,
+            request_timeout=time_request_timeout,
+            backoff_cap=time_backoff_cap,
             wall=self._wall,
             mono=self._mono,
         )
@@ -667,7 +726,6 @@ class OkxPublicStream:
             )
         self._cancel.clear()
         self.recorder.start()
-        await asyncio.to_thread(self._sync.maybe_poll)
         self._running = True
         public_args = [a for a in self.args if not endpoints.is_candle_channel(a["channel"])]
         business_args = [a for a in self.args if endpoints.is_candle_channel(a["channel"])]
@@ -679,6 +737,8 @@ class OkxPublicStream:
         if business_args:
             self._tasks.append(asyncio.create_task(self._run_socket(self.business_url, business_args), name="okx-ws-business"))
         self._tasks.append(asyncio.create_task(self._watchdog(), name="okx-ws-watchdog"))
+        if self._time_fetcher is not None:
+            self._tasks.append(asyncio.create_task(self._time_poller(), name="okx-ws-time"))
 
     async def stop(self) -> None:
         self._running = False
@@ -1055,9 +1115,14 @@ class OkxPublicStream:
                             stale=True,
                         )
                     )
+            self._refresh_lag()
+
+    async def _time_poller(self) -> None:
+        while self._running:
             if self._sync.needs_poll():
                 await asyncio.to_thread(self._sync.poll)
-            self._refresh_lag()
+                self._note_clock_sync()
+            await self._sleep(self._sync.poll_wait())
 
     def _emit(self, msg: StreamMessage) -> None:
         self._queue.put(msg, control=msg.kind != "data")
@@ -1086,11 +1151,27 @@ class OkxPublicStream:
         recv_mono: float | None,
         recv_wall: float | None,
     ) -> None:
-        if self._sync.needs_poll():
-            self._sync.poll()
         okx_ts_ms = _first_okx_ts_ms(rows)
         self.exchange_lag = self._sync.absolute_delay(okx_ts_ms)
         self._refresh_lag()
+
+    def _note_clock_sync(self) -> None:
+        if not self._sync.unknown or self._clock_sync_alerted:
+            return
+        self._clock_sync_alerted = True
+        self._emit(
+            StreamMessage(
+                kind="clock_sync_unavailable",
+                channel="",
+                inst_id="",
+                ts_ms=int(self._wall() * 1000),
+                data={"failures": self._sync.failures},
+            )
+        )
+
+    @property
+    def clock_sync_unknown(self) -> bool:
+        return self._sync.unknown
 
     def _refresh_lag(self) -> None:
         writer = self.recorder.service_lag()

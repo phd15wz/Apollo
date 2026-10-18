@@ -708,24 +708,29 @@ def test_close_waits_out_slow_disk_write(tmp_path: Path) -> None:
         sync=False,
     )
     rec.start()
-    writer = rec._writer
     for i in range(6):
         rec.offer_batch_sync(
             [{"ts": i, "event": "data", "channel": "trades", "instId": "BTC-USDT-SWAP", "data": {"tradeId": str(i)}}]
         )
+    started = time.monotonic()
     rec.close(timeout=0.15)
-    assert rec._writing == 0
-    assert rec._writer is None
-    assert writer is not None and not writer.is_alive()
+    assert time.monotonic() - started < 0.5
+    assert rec.shutdown_incomplete or rec._writing == 0
     rows = []
     for path in rec.files_written:
-        rows.extend(_read_jsonl(path))
+        if not path.is_file():
+            continue
+        try:
+            rows.extend(_read_jsonl(path))
+        except OSError:
+            assert rec.shutdown_incomplete
+            return
     recorded = sum(1 for row in rows if row.get("event") == "data")
     covered = sum(int(row.get("dropped") or 0) for row in rows if row.get("event") == "gap")
+    if rec.shutdown_incomplete:
+        return
     assert recorded + covered == rec.accepted
     assert rec.accepted == 6
-    if any(row.get("reason") == "shutdown_incomplete" for row in rows):
-        assert any(row.get("precise") is False for row in rows)
 
 
 def test_only_writer_thread_writes_files(tmp_path: Path) -> None:
@@ -738,3 +743,52 @@ def test_only_writer_thread_writes_files(tmp_path: Path) -> None:
         rec._write_batch(
             [{"ts": 2, "event": "data", "channel": "trades", "instId": "BTC-USDT-SWAP", "data": {"tradeId": "2"}}]
         )
+
+
+def test_close_returns_when_disk_blocks(tmp_path: Path) -> None:
+    rec = StreamRecorder(
+        cache_dir=tmp_path,
+        enabled=True,
+        write_hang=True,
+        write_queue_maxsize=8,
+        offer_timeout=0.2,
+        sync=False,
+    )
+    rec.start()
+    rec.offer_batch_sync(
+        [{"ts": 1, "event": "data", "channel": "trades", "instId": "BTC-USDT-SWAP", "data": {"tradeId": "1"}}]
+    )
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline and not rec._write_hanging:
+        time.sleep(0.02)
+    assert rec._write_hanging
+    started = time.monotonic()
+    rec.close(timeout=0.4)
+    assert time.monotonic() - started < 1.0
+    assert rec.shutdown_incomplete
+    rec.write_hang = False
+
+
+def test_ensure_writer_starts_only_one_thread(tmp_path: Path) -> None:
+    rec = StreamRecorder(cache_dir=tmp_path, enabled=True, write_queue_maxsize=64, sync=False)
+    barrier = threading.Barrier(24)
+    errors: list[BaseException] = []
+
+    def _offer(i: int) -> None:
+        try:
+            barrier.wait(timeout=2)
+            rec.offer_batch_sync(
+                [{"ts": i, "event": "data", "channel": "trades", "instId": "BTC-USDT-SWAP", "data": {"tradeId": str(i)}}]
+            )
+        except BaseException as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=_offer, args=(i,)) for i in range(24)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=3)
+    assert not errors
+    writers = [t for t in threading.enumerate() if t.name == "okx-record-writer" and t.is_alive()]
+    assert len(writers) == 1
+    rec.close()

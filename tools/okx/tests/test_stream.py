@@ -1204,6 +1204,7 @@ def test_default_lag_and_shutdown_bounds() -> None:
     assert stream.lag_threshold == 5.0
     assert stream.shutdown_timeout == 8.0
     assert stream.writer_lagging is False
+    assert stream.clock_sync_unknown is False
 
 
 def _synced_now_ms() -> int:
@@ -1225,6 +1226,9 @@ async def test_steady_30s_backlog_alerts(tmp_path: Path) -> None:
         time_fetcher=_synced_now_ms,
     ) as stream:
         await _wait_sent(sock, lambda s: "subscribe" in s)
+        ready = time.monotonic() + 2.0
+        while time.monotonic() < ready and not stream._sync.available:
+            await asyncio.sleep(0.02)
         now = _synced_now_ms()
         await sock.push(_trade_push(INST, 1, ts_ms=now - 30_000))
         deadline = time.monotonic() + 2.0
@@ -1251,6 +1255,9 @@ async def test_slow_ramp_to_60s_alerts(tmp_path: Path) -> None:
         time_fetcher=_synced_now_ms,
     ) as stream:
         await _wait_sent(sock, lambda s: "subscribe" in s)
+        ready = time.monotonic() + 2.0
+        while time.monotonic() < ready and not stream._sync.available:
+            await asyncio.sleep(0.02)
         now = _synced_now_ms()
         for trade_id, delay_s in ((1, 0), (2, 2), (3, 8), (4, 20), (5, 60)):
             await sock.push(_trade_push(INST, trade_id, ts_ms=now - delay_s * 1000))
@@ -1300,7 +1307,7 @@ async def test_clock_jump_no_false_alert_then_real_lag(tmp_path: Path) -> None:
     class Clocks:
         def __init__(self) -> None:
             self.wall = 1_700_000_000.0
-            self.mono = 10_000.0
+            self.mono = 10.0 * 86400.0
             self.server = 1_700_000_000.0
 
         def wall_fn(self) -> float:
@@ -1313,7 +1320,7 @@ async def test_clock_jump_no_false_alert_then_real_lag(tmp_path: Path) -> None:
             return int(self.server * 1000)
 
     clocks = Clocks()
-    rec = StreamRecorder(cache_dir=tmp_path, enabled=True, sync=False)
+    rec = StreamRecorder(cache_dir=tmp_path, enabled=True, sync=False, mono=clocks.mono_fn)
     broker = ScriptedConnector()
     sock = broker.add()
     async with OkxPublicStream(
@@ -1327,8 +1334,12 @@ async def test_clock_jump_no_false_alert_then_real_lag(tmp_path: Path) -> None:
         time_poll_interval=60.0,
         wall_clock=clocks.wall_fn,
         mono_clock=clocks.mono_fn,
+        clock=clocks.mono_fn,
     ) as stream:
         await _wait_sent(sock, lambda s: "subscribe" in s)
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and not stream._sync.available:
+            await asyncio.sleep(0.02)
         await sock.push(_trade_push(INST, 1, ts_ms=int(clocks.server * 1000)))
         await asyncio.wait_for(anext(stream), timeout=2)
         assert stream.writer_lagging is False
@@ -1384,3 +1395,97 @@ def test_clock_sync_absolute_delay_and_jump() -> None:
     sync.poll()
     assert sync.polls == polls
     assert sync.offset == offset
+
+
+@run_async
+async def test_slow_time_endpoint_does_not_block_loop() -> None:
+    attempts: list[float] = []
+
+    def _slow_fetch() -> int:
+        attempts.append(time.monotonic())
+        time.sleep(0.4)
+        raise OSError("unreachable")
+
+    broker = ScriptedConnector()
+    sock = broker.add()
+    max_delay = 0.0
+    probing = True
+
+    async def probe() -> None:
+        nonlocal max_delay
+        loop = asyncio.get_running_loop()
+        last = loop.time()
+        while probing:
+            await asyncio.sleep(0.05)
+            now = loop.time()
+            max_delay = max(max_delay, now - last - 0.05)
+            last = now
+
+    async with OkxPublicStream(
+        [("trades", INST)],
+        connector=broker,
+        ping_interval=0.1,
+        stale_timeout=30,
+        time_fetcher=_slow_fetch,
+        time_poll_interval=0.05,
+        time_request_timeout=0.15,
+        time_backoff_cap=0.4,
+    ) as stream:
+        probe_task = asyncio.create_task(probe())
+        try:
+            await _wait_sent(sock, lambda s: "subscribe" in s)
+            for trade_id in range(1, 6):
+                await sock.push(_trade_push(INST, trade_id))
+            await _collect(stream, 5, timeout=2)
+            deadline = time.monotonic() + 2.0
+            while time.monotonic() < deadline and stream._sync.failures < 3:
+                await asyncio.sleep(0.05)
+        finally:
+            probing = False
+            probe_task.cancel()
+            try:
+                await probe_task
+            except asyncio.CancelledError:
+                pass
+        assert max_delay < 0.25
+        assert stream._sync.failures >= 2
+        assert stream._sync.backoff >= stream._sync.poll_interval * 2
+        assert stream.clock_sync_unknown
+        if len(attempts) >= 3:
+            first = attempts[1] - attempts[0]
+            second = attempts[2] - attempts[1]
+            assert second > first
+
+
+@run_async
+async def test_clock_sync_unavailable_falls_back_to_local_time() -> None:
+    def _fail() -> int:
+        raise OSError("down")
+
+    broker = ScriptedConnector()
+    sock = broker.add()
+    async with OkxPublicStream(
+        [("trades", INST)],
+        connector=broker,
+        ping_interval=30,
+        stale_timeout=30,
+        lag_threshold=5.0,
+        time_fetcher=_fail,
+        time_poll_interval=0.05,
+        time_request_timeout=0.1,
+        time_backoff_cap=0.2,
+    ) as stream:
+        await _wait_sent(sock, lambda s: "subscribe" in s)
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and stream._sync.failures < 1:
+            await asyncio.sleep(0.02)
+        assert stream.clock_sync_unknown
+        now = _synced_now_ms()
+        await sock.push(_trade_push(INST, 1, ts_ms=now - 30_000))
+        ready = time.monotonic() + 2.0
+        while time.monotonic() < ready and stream.exchange_lag < 25:
+            await asyncio.sleep(0.02)
+        assert stream.exchange_lag >= 25
+        assert stream.writer_lagging
+        kinds = [item.kind for item in stream._queue.items if item is not None]
+        assert "clock_sync_unavailable" in kinds
