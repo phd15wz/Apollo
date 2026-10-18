@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+import inspect
+import json
+
+import pytest
+
+from tools.okx.client import HttpResponse
 from tools.okx.market import candles_range, funding_rate_history_range, history_trades_range
 from tools.okx.tests.conftest import FakeTransport, load_fixture, make_client
 from tools.okx.types import TRADE_DTYPE, trades_to_array
@@ -89,6 +95,7 @@ def test_history_trades_pagination_by_ts_returns_chronological() -> None:
     )
     assert [t.trade_id for t in trades] == [10, 20, 30]
     assert [t.ts_ms for t in trades] == [1700000010000, 1700000020000, 1700000030000]
+    assert all("before" not in call["params"] for call in transport.calls)
 
 
 def test_history_trades_pagination_by_trade_id() -> None:
@@ -111,10 +118,10 @@ def test_history_trades_pagination_by_trade_id() -> None:
         "BTC-USDT-SWAP",
         start_trade_id=10,
         end_trade_id=30,
-        pagination="tradeId",
         page_limit=2,
     )
     assert [t.trade_id for t in trades] == [10, 20, 30]
+    assert inspect.signature(history_trades_range).parameters["pagination"].default == "tradeId"
 
 
 def test_candles_and_range_helper() -> None:
@@ -182,3 +189,97 @@ def test_funding_history_range() -> None:
         end_ts_ms=1700028800000,
     )
     assert [r.funding_time_ms for r in rows] == [1700000000000, 1700028800000]
+
+
+class _OkxHistoryTape:
+    """Mimic OKX ``after``: exclusive tradeId (type=1) or exclusive ts (type=2)."""
+
+    def __init__(self, rows: list[dict[str, str]]) -> None:
+        self.rows = sorted(rows, key=lambda row: int(row["tradeId"]), reverse=True)
+        self.calls: list[dict[str, str]] = []
+
+    def request(
+        self,
+        method: str,
+        url: str,
+        *,
+        params: dict[str, str] | None,
+        headers: dict[str, str],
+        timeout: float,
+    ) -> HttpResponse:
+        query = dict(params or {})
+        self.calls.append(query)
+        after = query.get("after")
+        limit = int(query.get("limit") or 100)
+        page_type = query.get("type", "1")
+        rows = self.rows
+        if after:
+            if page_type == "1":
+                rows = [row for row in rows if int(row["tradeId"]) < int(after)]
+            else:
+                rows = [row for row in rows if int(row["ts"]) < int(after)]
+        page = rows[:limit]
+        return HttpResponse(200, {}, json.dumps({"code": "0", "data": page}).encode(), url)
+
+
+def _burst_rows() -> list[dict[str, str]]:
+    # Newest-first on the wire: ids 14..10, all but id 9 share one millisecond.
+    rows = []
+    for trade_id in range(10, 15):
+        rows.append(
+            {
+                "instId": "BTC-USDT-SWAP",
+                "side": "buy",
+                "sz": "1",
+                "px": "100",
+                "tradeId": str(trade_id),
+                "ts": "1700000001000",
+                "source": "0",
+            }
+        )
+    rows.append(
+        {
+            "instId": "BTC-USDT-SWAP",
+            "side": "sell",
+            "sz": "1",
+            "px": "99",
+            "tradeId": "9",
+            "ts": "1700000000999",
+            "source": "0",
+        }
+    )
+    return rows
+
+
+def test_trade_id_paging_keeps_ties_across_page_boundary() -> None:
+    tape = _OkxHistoryTape(_burst_rows())
+    client = make_client(tape)  # type: ignore[arg-type]
+    trades = history_trades_range(client, "BTC-USDT-SWAP", page_limit=2)
+    ids = [t.trade_id for t in trades]
+    assert ids == [9, 10, 11, 12, 13, 14]
+    assert len(ids) == len(set(ids))
+    assert all(call.get("type") == "1" for call in tape.calls)
+    assert all("before" not in call for call in tape.calls)
+
+
+def test_timestamp_paging_is_lossy_at_ms_boundary() -> None:
+    tape = _OkxHistoryTape(_burst_rows())
+    client = make_client(tape)  # type: ignore[arg-type]
+    trades = history_trades_range(
+        client,
+        "BTC-USDT-SWAP",
+        pagination="ts",
+        page_limit=2,
+    )
+    ids = [t.trade_id for t in trades]
+    assert 14 in ids and 13 in ids
+    assert ids != [9, 10, 11, 12, 13, 14]
+    assert 10 not in ids or 11 not in ids or 12 not in ids
+    assert all(call.get("type") == "2" for call in tape.calls)
+    assert all("before" not in call for call in tape.calls)
+
+
+def test_timestamp_mode_refuses_before_parameter() -> None:
+    client = make_client(FakeTransport())
+    with pytest.raises(ValueError, match="before"):
+        client.history_trades("BTC-USDT-SWAP", pagination="ts", before="1")

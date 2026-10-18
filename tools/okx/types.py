@@ -50,6 +50,26 @@ def _i(value: Any, default: int = 0) -> int:
     return int(text)
 
 
+def parse_trade_id(value: Any) -> int:
+    """Parse an exchange trade id with ``int()`` only — never ``float``.
+
+    ``int(float(id))`` rounds integers larger than 2**53, which would scramble
+    exchange order.
+    """
+    if isinstance(value, bool):
+        raise ValueError(f"invalid trade id {value!r}")
+    if isinstance(value, int):
+        if value < 0:
+            raise ValueError(f"invalid trade id {value!r}")
+        return value
+    text = _s(value).strip()
+    if text.startswith("+"):
+        text = text[1:]
+    if not text.isdigit():
+        raise ValueError(f"invalid trade id {value!r}")
+    return int(text)
+
+
 def _f(value: Any, default: float = float("nan")) -> float:
     text = _s(value).strip()
     if text == "":
@@ -188,7 +208,7 @@ class Trade:
     def from_dict(cls, row: dict[str, Any]) -> Trade:
         return cls(
             inst_id=_s(row.get("instId")),
-            trade_id=_i(row.get("tradeId", row.get("trade_id"))),
+            trade_id=parse_trade_id(row.get("tradeId", row.get("trade_id"))),
             price=_f(row.get("px", row.get("price"))),
             size=_f(row.get("sz", row.get("size"))),
             side=_s(row.get("side")).lower(),

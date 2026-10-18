@@ -36,3 +36,7 @@ class CacheBudgetExceeded(Exception):
         self.budget = budget
         self.extra = extra
         super().__init__(message)
+
+
+class UnsafeArchiveError(Exception):
+    """Zip member, path, or compression limits were violated."""

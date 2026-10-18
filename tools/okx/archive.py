@@ -27,19 +27,20 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
-from urllib.parse import urlparse
 
 import requests
 
 from tools.okx import endpoints
 from tools.okx.client import PublicClient
-from tools.okx.errors import CacheBudgetExceeded, OkxHttpError
-from tools.okx.types import ArchiveFile, Trade
+from tools.okx.errors import CacheBudgetExceeded, OkxHttpError, UnsafeArchiveError
+from tools.okx.types import ArchiveFile, Trade, parse_trade_id
 
 DATA_DIR_ENV = "OKX_DATA_DIR"
 BUDGET_ENV = "OKX_DATA_BUDGET_BYTES"
 RUN_BUDGET_ENV = "OKX_DATA_RUN_BUDGET_BYTES"
 DEFAULT_BUDGET_BYTES = 4 * 1024**3
+DEFAULT_MAX_UNCOMPRESSED_BYTES = 2 * 1024**3
+DEFAULT_MAX_COMPRESSION_RATIO = 100.0
 SIZE_TOLERANCE = 0.25
 CHUNK = 1024 * 256
 
@@ -77,9 +78,38 @@ def cache_usage_bytes(root: Path) -> int:
         return 0
     total = 0
     for path in root.rglob("*"):
-        if path.is_file() and path.suffix != ".part":
+        if path.is_file():
             total += path.stat().st_size
     return total
+
+
+def safe_archive_filename(filename: str) -> str:
+    """Reject traversal, absolute paths, and empty names; return a basename."""
+    name = str(filename or "")
+    if not name or name in {".", ".."}:
+        raise ValueError("empty or invalid archive filename")
+    if name.startswith("/") or name.startswith("\\"):
+        raise ValueError(f"refusing absolute archive filename {filename!r}")
+    if len(name) >= 2 and name[1] == ":":
+        raise ValueError(f"refusing absolute archive filename {filename!r}")
+    if "/" in name or "\\" in name or ".." in name:
+        raise ValueError(f"refusing archive filename {filename!r}")
+    base = Path(name).name
+    if base != name:
+        raise ValueError(f"refusing archive filename {filename!r}")
+    return base
+
+
+def cache_dest(root: Path, inst_id: str, filename: str) -> Path:
+    """Join a listing filename under the cache, then prove it stayed inside."""
+    endpoints.validate_inst_id(inst_id)
+    safe = safe_archive_filename(filename)
+    root_res = root.expanduser().resolve()
+    dest_root = (root_res / "trades" / _inst_type(inst_id) / inst_id).resolve()
+    dest = (dest_root / safe).resolve()
+    if not dest.is_relative_to(root_res) or not dest.is_relative_to(dest_root):
+        raise ValueError(f"refusing path outside cache dir: {dest}")
+    return dest
 
 
 def _inst_type(inst_id: str) -> str:
@@ -162,6 +192,7 @@ def list_daily_trade_files(
     end: date | str,
 ) -> list[ArchiveFile]:
     """Ask OKX which daily trade zips exist. Does not download them."""
+    endpoints.validate_inst_id(inst_id)
     start_d = _parse_day(start)
     end_d = _parse_day(end)
     kind = _inst_type(inst_id)
@@ -268,8 +299,9 @@ def _sha256_file(path: Path) -> str:
 def _zip_ok(path: Path) -> bool:
     try:
         with zipfile.ZipFile(path) as zf:
-            return zf.testzip() is None
-    except zipfile.BadZipFile:
+            _select_csv_member(zf)
+        return True
+    except (zipfile.BadZipFile, UnsafeArchiveError, ValueError, OSError):
         return False
 
 
@@ -289,10 +321,90 @@ def _within_size(path: Path, size_mb: float | None, content_length: int | None) 
     return low <= actual <= high
 
 
-def _assert_cdn_url(url: str) -> None:
-    host = (urlparse(url).hostname or "").lower()
-    if host != endpoints.CDN_HOST_SUFFIX and not host.endswith("." + endpoints.CDN_HOST_SUFFIX):
-        raise ValueError(f"refusing download host {host!r}; expected {endpoints.CDN_HOST_SUFFIX}")
+class _BoundedReader(io.BufferedIOBase):
+    """Count inflated bytes and abort if size or ratio caps are exceeded."""
+
+    def __init__(
+        self,
+        inner: Any,
+        *,
+        max_bytes: int,
+        max_ratio: float,
+        compressed_size: int,
+    ) -> None:
+        super().__init__()
+        self._inner = inner
+        self._max_bytes = max_bytes
+        self._max_ratio = max_ratio
+        self._compressed = max(int(compressed_size), 1)
+        self._n = 0
+
+    def readable(self) -> bool:
+        return True
+
+    def read(self, size: int | None = -1) -> bytes:
+        if size is None or size < 0:
+            chunks: list[bytes] = []
+            while True:
+                piece = self._take(65536)
+                if not piece:
+                    break
+                chunks.append(piece)
+            return b"".join(chunks)
+        return self._take(size)
+
+    def read1(self, size: int = -1) -> bytes:
+        want = 65536 if size is None or size < 0 else size
+        return self._take(want)
+
+    def _take(self, size: int) -> bytes:
+        buf = self._inner.read(size)
+        if not buf:
+            return b""
+        self._n += len(buf)
+        if self._n > self._max_bytes:
+            raise UnsafeArchiveError(
+                f"uncompressed size {self._n} exceeds cap {self._max_bytes}"
+            )
+        ratio = self._n / self._compressed
+        if ratio > self._max_ratio:
+            raise UnsafeArchiveError(
+                f"compression ratio {ratio:.1f} exceeds cap {self._max_ratio}"
+            )
+        return buf
+
+
+def _select_csv_member(
+    zf: zipfile.ZipFile,
+    *,
+    max_uncompressed_bytes: int = DEFAULT_MAX_UNCOMPRESSED_BYTES,
+    max_compression_ratio: float = DEFAULT_MAX_COMPRESSION_RATIO,
+) -> zipfile.ZipInfo:
+    infos = [info for info in zf.infolist() if not info.is_dir()]
+    if len(infos) != 1:
+        raise UnsafeArchiveError(f"expected a single file in archive, got {len(infos)}")
+    info = infos[0]
+    name = info.filename.replace("\\", "/")
+    base = name.rsplit("/", 1)[-1]
+    if not base or base in {".", ".."} or ".." in name.split("/"):
+        raise UnsafeArchiveError(f"unsafe zip member name {info.filename!r}")
+    if name.startswith("/") or (len(name) >= 2 and name[1] == ":"):
+        raise UnsafeArchiveError(f"unsafe zip member name {info.filename!r}")
+    if "/" in name:
+        raise UnsafeArchiveError(f"refusing nested zip member {info.filename!r}")
+    if not base.lower().endswith(".csv"):
+        raise UnsafeArchiveError(f"expected a .csv member, got {info.filename!r}")
+    uncompressed = int(info.file_size or 0)
+    compressed = int(info.compress_size or 0)
+    if uncompressed > max_uncompressed_bytes:
+        raise UnsafeArchiveError(
+            f"declared uncompressed size {uncompressed} exceeds cap {max_uncompressed_bytes}"
+        )
+    if compressed > 0 and uncompressed / compressed > max_compression_ratio:
+        raise UnsafeArchiveError(
+            f"declared compression ratio {uncompressed / compressed:.1f} exceeds cap {max_compression_ratio}"
+        )
+    return info
 
 
 def _check_budget(*, used: int, extra: int, budget: int, label: str) -> None:
@@ -322,19 +434,24 @@ def download_daily_trades(
     timeout: float = 120.0,
     streamer: Streamer | None = None,
     resume: bool = True,
+    allow_unofficial_hosts: bool = False,
+    max_uncompressed_bytes: int = DEFAULT_MAX_UNCOMPRESSED_BYTES,
+    max_compression_ratio: float = DEFAULT_MAX_COMPRESSION_RATIO,
 ) -> DownloadResult:
     """Download daily trade zips into the cache. Resumable, size-capped.
 
     Existing valid zips are skipped. Partial ``.part`` files are discarded
-    and retried. Checksums: zip CRC plus ``sizeMB`` / ``Content-Length``.
-    A sidecar ``.sha256`` is written after a successful fetch.
+    on any error. Checksums: zip member limits plus ``sizeMB`` /
+    ``Content-Length``. A sidecar ``.sha256`` is written after a good fetch.
     """
+    endpoints.validate_inst_id(inst_id)
     root = Path(cache_dir) if cache_dir is not None else default_data_dir()
     root = root.expanduser().resolve()
     budget = default_budget_bytes() if cache_budget_bytes is None else cache_budget_bytes
     run_budget = default_run_budget_bytes() if run_budget_bytes is None else run_budget_bytes
     if budget <= 0 or run_budget <= 0:
         raise ValueError("budgets must be positive; pass a larger explicit cap to override")
+    unofficial = allow_unofficial_hosts or getattr(client, "allow_unofficial_hosts", False)
     files = list_daily_trade_files(client, inst_id, start, end)
     stream = streamer or RequestsStreamer()
     dest_root = root / "trades" / _inst_type(inst_id) / inst_id
@@ -344,8 +461,9 @@ def download_daily_trades(
     kept: list[Path] = []
     skipped: list[Path] = []
     for item in files:
-        _assert_cdn_url(item.url)
-        dest = dest_root / item.filename
+        endpoints.assert_okx_url(item.url, allow_unofficial_hosts=unofficial)
+        dest = cache_dest(root, inst_id, item.filename)
+        dest.parent.mkdir(parents=True, exist_ok=True)
         meta_path = dest.with_suffix(dest.suffix + ".meta.json")
         hash_path = dest.with_suffix(dest.suffix + ".sha256")
         if resume and dest.exists() and _zip_ok(dest) and _within_size(dest, item.size_mb, None):
@@ -358,21 +476,22 @@ def download_daily_trades(
         if part.exists():
             part.unlink()
         headers = {"User-Agent": "apollo-okx-public/0.1", "Accept": "*/*"}
-        response = stream(item.url, headers, timeout)
-        if response.status_code != 200:
-            raise OkxHttpError(response.status_code, item.url, "archive download failed")
-        length_header = None
-        for key, value in response.headers.items():
-            if key.lower() == "content-length":
-                length_header = value
-                break
-        content_length = int(length_header) if length_header and length_header.isdigit() else None
-        expected = _expected_bytes(item.size_mb, length_header)
-        _check_budget(used=used, extra=expected or 0, budget=budget, label="total cache")
-        _check_budget(used=written, extra=expected or 0, budget=run_budget, label="per-run")
         got = 0
         digest = hashlib.sha256()
+        content_length: int | None = None
         try:
+            response = stream(item.url, headers, timeout)
+            if response.status_code != 200:
+                raise OkxHttpError(response.status_code, item.url, "archive download failed")
+            length_header = None
+            for key, value in response.headers.items():
+                if key.lower() == "content-length":
+                    length_header = value
+                    break
+            content_length = int(length_header) if length_header and length_header.isdigit() else None
+            expected = _expected_bytes(item.size_mb, length_header)
+            _check_budget(used=used, extra=expected or 0, budget=budget, label="total cache")
+            _check_budget(used=written, extra=expected or 0, budget=run_budget, label="per-run")
             with part.open("wb") as handle:
                 for chunk in response.iter_bytes(CHUNK):
                     if not chunk:
@@ -394,13 +513,18 @@ def download_daily_trades(
                         )
                     handle.write(chunk)
                     digest.update(chunk)
-        except CacheBudgetExceeded:
+            if not _zip_ok(part) or not _within_size(part, item.size_mb, content_length):
+                raise OkxHttpError(200, item.url, f"archive failed size/CRC checks: {item.filename}")
+            with zipfile.ZipFile(part) as zf:
+                _select_csv_member(
+                    zf,
+                    max_uncompressed_bytes=max_uncompressed_bytes,
+                    max_compression_ratio=max_compression_ratio,
+                )
+        except Exception:
             if part.exists():
                 part.unlink()
             raise
-        if not _zip_ok(part) or not _within_size(part, item.size_mb, content_length):
-            part.unlink(missing_ok=True)
-            raise OkxHttpError(200, item.url, f"archive failed size/CRC checks: {item.filename}")
         part.replace(dest)
         hash_path.write_text(digest.hexdigest() + "\n", encoding="utf-8")
         meta_path.write_text(
@@ -471,55 +595,80 @@ def _parse_ts(value: str) -> int:
     return int(parsed.timestamp() * 1000)
 
 
-def parse_trade_zip(path: Path | str, *, inst_id: str = "") -> list[Trade]:
-    """Parse a daily OKX trade zip. Milliseconds and trade ids are kept."""
+def parse_trade_zip(
+    path: Path | str,
+    *,
+    inst_id: str = "",
+    max_uncompressed_bytes: int = DEFAULT_MAX_UNCOMPRESSED_BYTES,
+    max_compression_ratio: float = DEFAULT_MAX_COMPRESSION_RATIO,
+) -> list[Trade]:
+    """Parse a daily OKX trade zip. Milliseconds and trade ids are kept.
+
+    Caps declared and observed uncompressed size and compression ratio.
+    CSV is streamed row by row so a lying header cannot inflate the process.
+    """
+    if inst_id:
+        endpoints.validate_inst_id(inst_id)
     zip_path = Path(path)
+    on_disk = max(zip_path.stat().st_size, 1)
     trades: list[Trade] = []
     with zipfile.ZipFile(zip_path) as zf:
-        names = [name for name in zf.namelist() if not name.endswith("/")]
-        if not names:
-            return []
-        csv_name = next((name for name in names if name.lower().endswith(".csv")), names[0])
-        raw = zf.read(csv_name)
-    try:
-        text = raw.decode("utf-8")
-    except UnicodeDecodeError:
-        text = raw.decode("latin-1")
-    reader = csv.reader(io.StringIO(text))
-    mapping: dict[str, int] | None = None
-    for row in reader:
-        if not row or all(not cell.strip() for cell in row):
-            continue
-        if mapping is None:
-            sniffed = _header_map(row)
-            if sniffed is not None:
-                mapping = sniffed
-                continue
-            mapping = {
-                "trade_id": 0,
-                "side": 1,
-                "size": 2,
-                "price": 3,
-                "ts_ms": 4,
-            }
-        try:
-            trade_id = int(float(row[mapping["trade_id"]].strip()))
-            side = row[mapping["side"]].strip().lower()
-            size = float(row[mapping["size"]].strip())
-            price = float(row[mapping["price"]].strip())
-            ts_ms = _parse_ts(row[mapping["ts_ms"]])
-        except (IndexError, ValueError):
-            continue
-        trades.append(
-            Trade(
-                inst_id=inst_id,
-                trade_id=trade_id,
-                price=price,
-                size=size,
-                side=side,
-                ts_ms=ts_ms,
-            )
+        info = _select_csv_member(
+            zf,
+            max_uncompressed_bytes=max_uncompressed_bytes,
+            max_compression_ratio=max_compression_ratio,
         )
+        compressed = max(int(info.compress_size or 0), on_disk)
+        raw = zf.open(info, "r")
+        bounded = _BoundedReader(
+            raw,
+            max_bytes=max_uncompressed_bytes,
+            max_ratio=max_compression_ratio,
+            compressed_size=compressed,
+        )
+        try:
+            text = io.TextIOWrapper(
+                bounded,
+                encoding="utf-8",
+                errors="replace",
+                newline="",
+            )
+            mapping: dict[str, int] | None = None
+            for row in csv.reader(text):
+                if not row or all(not cell.strip() for cell in row):
+                    continue
+                if mapping is None:
+                    sniffed = _header_map(row)
+                    if sniffed is not None:
+                        mapping = sniffed
+                        continue
+                    mapping = {
+                        "trade_id": 0,
+                        "side": 1,
+                        "size": 2,
+                        "price": 3,
+                        "ts_ms": 4,
+                    }
+                try:
+                    trade_id = parse_trade_id(row[mapping["trade_id"]])
+                    side = row[mapping["side"]].strip().lower()
+                    size = float(row[mapping["size"]].strip())
+                    price = float(row[mapping["price"]].strip())
+                    ts_ms = _parse_ts(row[mapping["ts_ms"]])
+                except (IndexError, ValueError):
+                    continue
+                trades.append(
+                    Trade(
+                        inst_id=inst_id,
+                        trade_id=trade_id,
+                        price=price,
+                        size=size,
+                        side=side,
+                        ts_ms=ts_ms,
+                    )
+                )
+        finally:
+            raw.close()
     trades.sort(key=lambda t: (t.ts_ms, t.trade_id))
     return trades
 
@@ -532,6 +681,7 @@ def load_cached_trades(
     cache_dir: Path | str | None = None,
 ) -> list[Trade]:
     """Read already-downloaded daily zips in ``[start, end]`` (inclusive)."""
+    endpoints.validate_inst_id(inst_id)
     root = Path(cache_dir) if cache_dir is not None else default_data_dir()
     folder = Path(root) / "trades" / _inst_type(inst_id) / inst_id
     start_d = _parse_day(start)

@@ -36,6 +36,18 @@ def test_sites_and_custom_base_url() -> None:
     assert custom.base_url == "https://www.okx.com"
     with pytest.raises(ValueError):
         PublicClient(site="cn")
+    with pytest.raises(ValueError, match="non-https"):
+        PublicClient(base_url="http://www.okx.com")
+    with pytest.raises(ValueError, match="refusing host"):
+        PublicClient(base_url="https://example.com")
+    override = PublicClient(
+        base_url="https://127.0.0.1",
+        allow_unofficial_hosts=True,
+        transport=transport,
+        clock=clock,
+        sleep=clock.sleep,
+    )
+    assert override.base_url == "https://127.0.0.1"
 
 
 def test_okx_business_error() -> None:

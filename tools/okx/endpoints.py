@@ -11,11 +11,35 @@ limits are per IP.
 
 from __future__ import annotations
 
+import re
+from urllib.parse import urlparse
+
 SITE_BASE_URLS: dict[str, str] = {
     "global": "https://www.okx.com",
     "eea": "https://eea.okx.com",
     "us": "https://us.okx.com",
 }
+
+# Documented REST/CDN hosts from the v5 docs (regional domains + static CDN).
+ALLOWED_HOSTS: frozenset[str] = frozenset(
+    {
+        "www.okx.com",
+        "openapi.okx.com",
+        "eea.okx.com",
+        "us.okx.com",
+        "my.okx.com",
+        "app.okx.com",
+        "static.okx.com",
+        "aws.okx.com",
+        "ws.okx.com",
+        "wsaws.okx.com",
+        "wspap.okx.com",
+        "tr.okx.com",
+        "okx.com",
+    }
+)
+
+INST_ID_RE = re.compile(r"^[A-Z0-9]+(-[A-Z0-9]+)*$")
 
 # Optional alias; docs still treat www.okx.com as valid for global REST.
 GLOBAL_OPENAPI = "https://openapi.okx.com"
@@ -116,3 +140,25 @@ BLOCKED_PREFIXES: tuple[str, ...] = (
     "/api/v5/tradingBot",
     "/api/v5/finance",
 )
+
+
+def validate_inst_id(inst_id: str) -> str:
+    if not inst_id or not INST_ID_RE.fullmatch(inst_id):
+        raise ValueError(
+            f"invalid inst_id {inst_id!r}; expected pattern {INST_ID_RE.pattern}"
+        )
+    return inst_id
+
+
+def assert_okx_url(url: str, *, allow_unofficial_hosts: bool = False) -> None:
+    """Require https and an official OKX host, unless tests opt out."""
+    parsed = urlparse(url)
+    if parsed.scheme != "https":
+        raise ValueError(f"refusing non-https URL {url!r}")
+    host = (parsed.hostname or "").lower()
+    if allow_unofficial_hosts:
+        return
+    if host not in ALLOWED_HOSTS:
+        raise ValueError(
+            f"refusing host {host!r}; official OKX hosts are {sorted(ALLOWED_HOSTS)}"
+        )

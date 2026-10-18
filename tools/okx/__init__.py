@@ -18,7 +18,13 @@ from tools.okx.archive import (
     parse_trade_zip,
 )
 from tools.okx.client import PublicClient, RateLimiter
-from tools.okx.errors import CacheBudgetExceeded, OkxError, OkxHttpError, UnsafeEndpointError
+from tools.okx.errors import (
+    CacheBudgetExceeded,
+    OkxError,
+    OkxHttpError,
+    UnsafeArchiveError,
+    UnsafeEndpointError,
+)
 from tools.okx.hygiene import (
     TieReport,
     aggregate_by_timestamp_side,
@@ -71,6 +77,7 @@ __all__ = [
     "Ticker",
     "TieReport",
     "Trade",
+    "UnsafeArchiveError",
     "UnsafeEndpointError",
     "aggregate_by_timestamp_side",
     "announcement_types",

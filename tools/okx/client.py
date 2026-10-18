@@ -151,11 +151,17 @@ class PublicClient:
         clock: Clock | None = None,
         sleep: Sleeper | None = None,
         user_agent: str = "apollo-okx-public/0.1",
+        allow_unofficial_hosts: bool = False,
     ) -> None:
         if site not in endpoints.SITE_BASE_URLS:
             raise ValueError(f"unknown site {site!r}; expected one of {sorted(endpoints.SITE_BASE_URLS)}")
         self.site = site
+        self.allow_unofficial_hosts = allow_unofficial_hosts
         self.base_url = (base_url or endpoints.SITE_BASE_URLS[site]).rstrip("/")
+        endpoints.assert_okx_url(
+            self.base_url + "/",
+            allow_unofficial_hosts=allow_unofficial_hosts,
+        )
         self.timeout = timeout
         self.max_retries = max_retries
         self._clock = clock or time.monotonic
@@ -293,9 +299,14 @@ class PublicClient:
         before: str | int | None = None,
         limit: int | None = None,
     ) -> list[Trade]:
-        page_type = "1" if pagination == "tradeId" else "2"
         if pagination not in {"tradeId", "ts"}:
             raise ValueError("pagination must be 'tradeId' or 'ts'")
+        if pagination == "ts" and before is not None:
+            raise ValueError(
+                "timestamp pagination does not support 'before'; "
+                "it is lossy at millisecond page boundaries unless you page by trade id"
+            )
+        page_type = "1" if pagination == "tradeId" else "2"
         params: dict[str, Any] = {"instId": inst_id, "type": page_type}
         if after is not None:
             params["after"] = str(after)

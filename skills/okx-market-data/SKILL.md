@@ -43,8 +43,8 @@ from tools.okx import (
 client = PublicClient(site="global")  # or "eea" / "us"
 ticker = client.ticker("BTC-USDT-SWAP")
 trades = history_trades_range(
-    client, "BTC-USDT-SWAP", start_ts_ms=start, end_ts_ms=end, pagination="ts"
-)
+    client, "BTC-USDT-SWAP", start_ts_ms=start, end_ts_ms=end
+)  # default: trade-id paging; pagination="ts" is lossy at ms boundaries
 ```
 
 REST history-trades is about three months. For longer SWAP tapes use the
@@ -63,10 +63,13 @@ keyless; use them as context, not as a trading signal.
 
 ## Rate-limit etiquette
 
-Public REST limits are **per IP**. This client already paces documented
-limits and retries 429 / `50011` / 5xx with backoff. Still:
+Public REST limits are **per IP**. The limiter on `PublicClient` is **per
+client object**, not per IP: two processes or two clients on the same IP can
+still exceed OKX's caps. This client paces documented limits and retries 429 /
+`50011` / 5xx with backoff. Still:
 
-- Prefer one process. Do not fan out many agents against the same IP.
+- Prefer one process and one `PublicClient`. Do not fan out many agents against
+  the same IP.
 - Use `history-candles` / `history-trades` pagination helpers instead of tight
   loops you write yourself.
 - For multi-day tapes, use `download_daily_trades` rather than hammering

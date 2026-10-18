@@ -2,6 +2,11 @@
 
 OKX returns newest-first pages. Helpers that take a time range reverse that
 and yield chronological records (trade_id / candle ts ascending).
+
+History trades default to **trade-id** paging. Timestamp paging is lossy at
+millisecond page boundaries (OKX ``after`` is exclusive on ``ts``, so prints
+that share the last timestamp of a page are dropped). Do not send ``before``
+in timestamp mode.
 """
 
 from __future__ import annotations
@@ -23,16 +28,22 @@ def history_trades_range(
     end_ts_ms: int | None = None,
     start_trade_id: int | None = None,
     end_trade_id: int | None = None,
-    pagination: Pagination = "ts",
+    pagination: Pagination = "tradeId",
     page_limit: int = 100,
     max_pages: int = 500,
 ) -> list[Trade]:
     """Page ``/api/v5/market/history-trades`` over a window (last 3 months).
 
-    Use ``pagination='tradeId'`` to walk by exchange trade id, or ``'ts'``
-    to walk by millisecond timestamp. Results are chronological and keep
-    exchange trade-id order within a millisecond. For ranges older than
-    three months use :mod:`tools.okx.archive`.
+    Default ``pagination='tradeId'`` walks exclusive ``after`` trade ids so
+    same-millisecond prints that straddle a page are not dropped. Results are
+    de-duplicated by trade id and returned in exchange order
+    ``(ts_ms, trade_id)``.
+
+    ``pagination='ts'`` is an explicit, lossy option: OKX returns rows
+    *earlier than* the last timestamp, so a burst at that millisecond on the
+    next page is omitted. Timestamp mode never sends ``before``.
+
+    For ranges older than three months use :mod:`tools.okx.archive`.
     """
     if pagination not in {"tradeId", "ts"}:
         raise ValueError("pagination must be 'tradeId' or 'ts'")

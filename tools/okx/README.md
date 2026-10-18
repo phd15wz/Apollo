@@ -29,10 +29,13 @@ OKX_LIVE=1 python3 -m pytest tools/okx/tests -q -m okx_live
 ## REST client
 
 Base URL is `https://www.okx.com` (`site="global"`). EU is `eea.okx.com`,
-US/AU is `us.okx.com`. JSON bodies with `code != "0"` raise. Timeouts default
-to 10s. 429, 5xx, and OKX `50011` retry with exponential backoff. A client-side
-limiter honours the documented per-endpoint IP limits (for example tickers
-20/2s, books 40/2s, history-trades 10/2s, system status 1/5s).
+US/AU is `us.okx.com`. Only `https` URLs on documented OKX hosts are accepted.
+JSON bodies with `code != "0"` raise. Timeouts default to 10s. 429, 5xx, and
+OKX `50011` retry with exponential backoff. A client-side limiter honours the
+documented per-endpoint IP limits (for example tickers 20/2s, books 40/2s,
+history-trades 10/2s, system status 1/5s). **The limiter is per `PublicClient`
+instance.** Two processes or two client objects sharing an IP can still exceed
+OKX's per-IP caps; prefer one client per process.
 
 ```python
 from tools.okx import PublicClient, candles_range, history_trades_range, upcoming_maintenance
@@ -45,11 +48,16 @@ candles = candles_range(client, "BTC-USDT-SWAP", start_ts_ms=..., end_ts_ms=...,
 ```
 
 Market methods: instruments (`SPOT` / `SWAP` / `FUTURES`), ticker(s), order
-book, recent trades, history trades (page by trade id or millisecond `ts`),
+book, recent trades, history trades (default: page by exchange trade id),
 candles / history candles, funding rate and history, open interest, mark
 price, index tickers. Results are dataclasses; trades and candles also convert
 to NumPy structured arrays (`trades_to_array`, `TRADE_DTYPE`) with integer
 millisecond timestamps.
+
+`history_trades_range(..., pagination="ts")` is an explicit, **lossy** option:
+OKX `after` is exclusive on timestamp, so same-millisecond prints that sit on
+a page boundary are dropped. Timestamp mode never sends `before`. Prefer the
+default trade-id pager.
 
 History-trades on REST only covers about three months. Older ticks come from
 the bulk archive below.
