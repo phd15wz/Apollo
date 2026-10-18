@@ -795,3 +795,28 @@ def test_ensure_writer_starts_only_one_thread(tmp_path: Path) -> None:
     assert rec._writer_starts == 1
     assert rec._writer is not None and rec._writer.is_alive()
     rec.close()
+
+
+def test_wait_put_does_not_leak_waiting(tmp_path: Path) -> None:
+    rec = StreamRecorder(cache_dir=tmp_path, enabled=True, sync=False)
+    rec.start()
+    now = time.monotonic()
+    for i in range(32):
+        accepted = rec._queue.wait_put(
+            [
+                {
+                    "ts": i,
+                    "event": "data",
+                    "channel": "trades",
+                    "instId": "BTC-USDT-SWAP",
+                    "data": {"tradeId": str(i)},
+                    "_recv_mono": now,
+                }
+            ],
+            1.0,
+        )
+        assert accepted is True
+    rec.flush()
+    assert rec._queue._waiting == []
+    assert rec.service_lag() == 0
+    rec.close()

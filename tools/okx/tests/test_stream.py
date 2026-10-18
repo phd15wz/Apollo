@@ -1489,3 +1489,31 @@ async def test_clock_sync_unavailable_falls_back_to_local_time() -> None:
         assert stream.writer_lagging
         kinds = [item.kind for item in stream._queue.items if item is not None]
         assert "clock_sync_unavailable" in kinds
+
+
+@run_async
+async def test_healthy_recorder_emits_no_lag_over_threshold(tmp_path: Path) -> None:
+    rec = StreamRecorder(cache_dir=tmp_path, enabled=True, sync=False)
+    broker = ScriptedConnector()
+    sock = broker.add()
+    async with OkxPublicStream(
+        [("trades", INST)],
+        connector=broker,
+        recorder=rec,
+        ping_interval=30,
+        stale_timeout=30,
+        lag_threshold=0.4,
+    ) as stream:
+        await _wait_sent(sock, lambda s: "subscribe" in s)
+        end = time.monotonic() + 0.6
+        trade_id = 1
+        while time.monotonic() < end:
+            await sock.push(_trade_push(INST, trade_id, ts_ms=_synced_now_ms()))
+            trade_id += 1
+            await asyncio.sleep(0.05)
+        rec.flush()
+        assert rec._queue._waiting == []
+        assert rec.service_lag() < 0.4
+        assert stream.writer_lagging is False
+        kinds = [item.kind for item in stream._queue.items if item is not None]
+        assert "lag" not in kinds

@@ -224,8 +224,9 @@ class RecordWriteQueue:
         """Wait for a data slot. On timeout or close, fold the batch into a gap."""
         started = time.monotonic()
         deadline = started + max(0.0, timeout)
+        token = self._mono()
         with self._cv:
-            self._waiting.append(self._mono())
+            self._waiting.append(token)
             try:
                 if self._closed:
                     self._drop_batch(batch)
@@ -249,7 +250,7 @@ class RecordWriteQueue:
                 return True
             finally:
                 try:
-                    self._waiting.remove(started)
+                    self._waiting.remove(token)
                 except ValueError:
                     pass
                 self._cv.notify_all()
