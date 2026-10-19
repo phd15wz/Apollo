@@ -11,14 +11,19 @@ in timestamp mode.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+import time
+import warnings
+from collections.abc import Callable, Iterator
 from typing import Literal
 
 from tools.okx.client import PublicClient
-from tools.okx.errors import PaginationBudgetExceeded
+from tools.okx.errors import HistoryWindowTooOld, HistoryWindowTooOldWarning, PaginationBudgetExceeded
 from tools.okx.types import Candle, FundingRate, Trade
 
 Pagination = Literal["tradeId", "ts"]
+
+# OKX documents REST history-trades as roughly the last three months.
+HISTORY_TRADES_MAX_AGE_MS = 93 * 24 * 60 * 60 * 1000
 
 
 def history_trades_range(
@@ -32,6 +37,8 @@ def history_trades_range(
     pagination: Pagination = "tradeId",
     page_limit: int = 100,
     max_pages: int = 500,
+    now_ms: int | None = None,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> list[Trade]:
     """Page ``/api/v5/market/history-trades`` over a window (last 3 months).
 
@@ -41,14 +48,21 @@ def history_trades_range(
     ``(ts_ms, trade_id)``.
 
     When paging by trade id and the window has an ``end_ts_ms`` but no
-    ``end_trade_id``, one timestamp-mode request (OKX ``type=2``) locates a
-    trade id at or just after the window end; paging then continues by trade
-    id from that cursor. Walking from the newest trade would otherwise spend
-    the page budget on prints newer than the window and return empty.
+    ``end_trade_id``, one timestamp-mode request (OKX ``type=2``) fetches a
+    page of trades at or before the window end and uses the **highest**
+    trade id on that page as the cursor. Paging then continues by trade id.
+    Walking from the newest trade would otherwise spend the page budget on
+    prints newer than the window and return empty.
 
     Hitting ``max_pages`` before passing the window start raises
-    :class:`PaginationBudgetExceeded` instead of returning a silent partial
-    or empty list.
+    :class:`PaginationBudgetExceeded` (with the trades already fetched on
+    ``exc.trades``) instead of returning a silent partial or empty list.
+
+    A window whose end is older than OKX's ~3-month REST retention raises
+    :class:`HistoryWindowTooOld` and points at the bulk archive. A window
+    whose start is older than that but whose end is still inside REST
+    coverage warns with :class:`HistoryWindowTooOldWarning` (the older
+    side is missing from REST).
 
     ``pagination='ts'`` is an explicit, lossy option: OKX returns rows
     *earlier than* the last timestamp, so a burst at that millisecond on the
@@ -58,6 +72,8 @@ def history_trades_range(
     """
     if pagination not in {"tradeId", "ts"}:
         raise ValueError("pagination must be 'tradeId' or 'ts'")
+    clock_ms = int(time.time() * 1000) if now_ms is None else now_ms
+    _assert_rest_history_window(start_ts_ms, end_ts_ms, now_ms=clock_ms)
     collected: list[Trade] = []
     after: str | int | None
     if pagination == "tradeId":
@@ -66,13 +82,24 @@ def history_trades_range(
             inst_id,
             end_trade_id=end_trade_id,
             end_ts_ms=end_ts_ms,
+            page_limit=page_limit,
         )
         if end_trade_id is None and end_ts_ms is not None and after is None:
-            return []
+            raise HistoryWindowTooOld(
+                f"no REST history-trades at or before end_ts_ms={end_ts_ms} "
+                f"for {inst_id}. OKX keeps about three months on "
+                "/api/v5/market/history-trades. For older ticks use the bulk "
+                "archive GET /api/v5/public/market-data-history "
+                "(download_daily_trades).",
+                start_ts_ms=start_ts_ms,
+                end_ts_ms=end_ts_ms,
+            )
     else:
         after = None if end_ts_ms is None else end_ts_ms + 1
     seen: set[int] = set()
     for _ in range(max_pages):
+        if should_cancel is not None and should_cancel():
+            raise InterruptedError("history_trades_range cancelled")
         page = client.history_trades(
             inst_id,
             pagination=pagination,
@@ -108,6 +135,7 @@ def history_trades_range(
         if stop or len(page) < page_limit:
             break
     else:
+        collected.sort(key=lambda t: (t.ts_ms, t.trade_id))
         raise PaginationBudgetExceeded(
             f"history_trades_range for {inst_id} hit max_pages={max_pages} "
             "before reaching the start of the requested window "
@@ -115,9 +143,40 @@ def history_trades_range(
             "Raise max_pages or narrow the window.",
             pages=max_pages,
             max_pages=max_pages,
+            trades=collected,
         )
     collected.sort(key=lambda t: (t.ts_ms, t.trade_id))
     return collected
+
+
+def _assert_rest_history_window(
+    start_ts_ms: int | None,
+    end_ts_ms: int | None,
+    *,
+    now_ms: int,
+) -> None:
+    end = end_ts_ms if end_ts_ms is not None else start_ts_ms
+    if end is None:
+        return
+    cutoff = now_ms - HISTORY_TRADES_MAX_AGE_MS
+    if end < cutoff:
+        raise HistoryWindowTooOld(
+            f"history-trades window end_ts_ms={end} is older than OKX's "
+            f"~3-month REST retention ({HISTORY_TRADES_MAX_AGE_MS} ms). "
+            "Use the bulk archive GET /api/v5/public/market-data-history "
+            "(download_daily_trades) instead of /market/history-trades.",
+            start_ts_ms=start_ts_ms,
+            end_ts_ms=end_ts_ms,
+        )
+    if start_ts_ms is not None and start_ts_ms < cutoff:
+        warnings.warn(
+            f"history-trades start_ts_ms={start_ts_ms} is older than OKX's "
+            f"~3-month REST retention. REST will omit the older side; use "
+            "GET /api/v5/public/market-data-history (download_daily_trades) "
+            "for the archive portion.",
+            HistoryWindowTooOldWarning,
+            stacklevel=3,
+        )
 
 
 def _trade_id_after_cursor(
@@ -126,23 +185,29 @@ def _trade_id_after_cursor(
     *,
     end_trade_id: int | None,
     end_ts_ms: int | None,
+    page_limit: int = 100,
 ) -> int | None:
-    """Exclusive ``after`` trade id at or just past the window end."""
+    """Exclusive ``after`` trade id of the newest trade at or before the end.
+
+    Fetches a timestamp-mode page and takes the highest trade id with
+    ``ts_ms <= end_ts_ms``. Does not assume OKX lists same-timestamp trades
+    newest first.
+    """
     if end_trade_id is not None:
         return end_trade_id + 1
     if end_ts_ms is None:
         return None
-    # OKX type=2 ``after`` is exclusive on ts. Newest row with ts <= end is
-    # a trade-id cursor; +1 makes the following type=1 pages include it.
+    # OKX type=2 ``after`` is exclusive on ts, so after=end+1 yields ts <= end.
     page = client.history_trades(
         inst_id,
         pagination="ts",
         after=end_ts_ms + 1,
-        limit=1,
+        limit=page_limit,
     )
-    if not page:
+    eligible = [trade for trade in page if trade.ts_ms <= end_ts_ms]
+    if not eligible:
         return None
-    return page[0].trade_id + 1
+    return max(trade.trade_id for trade in eligible) + 1
 
 
 def candles_range(

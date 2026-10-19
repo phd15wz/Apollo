@@ -11,8 +11,9 @@ limits are per IP.
 
 from __future__ import annotations
 
+import os
 import re
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 
 SITE_BASE_URLS: dict[str, str] = {
     "global": "https://www.okx.com",
@@ -34,10 +35,76 @@ ALLOWED_HOSTS: frozenset[str] = frozenset(
         "ws.okx.com",
         "wsaws.okx.com",
         "wspap.okx.com",
+        "wseea.okx.com",
+        "wsus.okx.com",
         "tr.okx.com",
         "okx.com",
     }
 )
+
+# Public / business WebSocket hosts (production, AWS, demo, regional).
+ALLOWED_WS_HOSTS: frozenset[str] = frozenset(
+    {
+        "ws.okx.com",
+        "wsaws.okx.com",
+        "wspap.okx.com",
+        "wseea.okx.com",
+        "wsus.okx.com",
+    }
+)
+
+DEFAULT_PUBLIC_WS_URL = "wss://ws.okx.com:8443/ws/v5/public"
+DEFAULT_BUSINESS_WS_URL = "wss://ws.okx.com:8443/ws/v5/business"
+PUBLIC_WS_URL_ENV = "OKX_WS_PUBLIC_URL"
+BUSINESS_WS_URL_ENV = "OKX_WS_BUSINESS_URL"
+
+PUBLIC_WS_PATHS: frozenset[str] = frozenset({"/ws/v5/public", "/ws/v5/business"})
+PRIVATE_WS_PATH = "/ws/v5/private"
+
+# Public, keyless channels this package will subscribe to.
+PUBLIC_WS_CHANNELS: frozenset[str] = frozenset(
+    {
+        "trades",
+        "tickers",
+        "books",
+        "books5",
+        "bbo-tbt",
+        "funding-rate",
+        "mark-price",
+    }
+)
+
+CANDLE_CHANNEL_RE = re.compile(
+    r"^candle(?:1s|3m|1m|5m|15m|30m|1H|2H|4H|6H|12H|1D|2D|3D|5D|1W|1M|3M)(?:utc)?$"
+)
+
+# Names we refuse with a private-channel error even if someone asks.
+PRIVATE_WS_CHANNELS: frozenset[str] = frozenset(
+    {
+        "account",
+        "positions",
+        "orders",
+        "orders-algo",
+        "orders-algo-advance",
+        "balance_and_position",
+        "balance-and-position",
+        "account-greeks",
+        "liquidation-warning",
+        "account-risk-data",
+        "deposit-info",
+        "withdrawal-info",
+        "grid-orders-spot",
+        "grid-orders-contract",
+        "grid-orders-moon",
+        "algo-advance",
+        "price-limit",
+        "fills",
+    }
+)
+
+# Connection attempts per IP, subscribe/unsubscribe/login ops per connection.
+WS_CONNECT_RATE: tuple[int, float] = (3, 1.0)
+WS_SUBSCRIBE_RATE: tuple[int, float] = (480, 3600.0)
 
 # Path-safe instrument ids. Hyphen *and* underscore show up on live FUTURES
 # (e.g. BTC-USD_UM-261030). Still rejects '/', '\\', '.', and empty strings.
@@ -164,3 +231,138 @@ def assert_okx_url(url: str, *, allow_unofficial_hosts: bool = False) -> None:
         raise ValueError(
             f"refusing host {host!r}; official OKX hosts are {sorted(ALLOWED_HOSTS)}"
         )
+
+
+ALLOWED_WS_PORTS: frozenset[int] = frozenset({443, 8443})
+
+
+def assert_okx_ws_url(
+    url: str,
+    *,
+    allow_unofficial_hosts: bool = False,
+    allow_insecure: bool = False,
+) -> None:
+    """Require wss and a documented OKX public/business WebSocket host.
+
+    ``allow_unofficial_hosts`` still requires ``wss`` unless ``allow_insecure``
+    is also set (local tests only). Env vars cannot enable either flag.
+    """
+    from tools.okx.errors import UnsafeEndpointError
+
+    parsed = urlparse(url)
+    path = (parsed.path or "").rstrip("/") or "/"
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError(f"refusing WebSocket URL with user-info: {url!r}")
+    if parsed.query or parsed.params or parsed.fragment:
+        raise ValueError(f"refusing WebSocket URL with query or fragment: {url!r}")
+    if PRIVATE_WS_PATH in path or path.endswith("/private"):
+        raise UnsafeEndpointError(f"refusing private WebSocket path {path}")
+    if parsed.scheme == "ws" and not allow_insecure:
+        raise ValueError(
+            f"refusing non-wss URL {url!r}; pass allow_insecure=True for local tests"
+        )
+    if allow_unofficial_hosts:
+        if parsed.scheme not in {"ws", "wss"}:
+            raise ValueError(f"refusing non-ws URL {url!r}")
+        if parsed.scheme == "ws" and not allow_insecure:
+            raise ValueError(f"refusing non-wss URL {url!r}")
+        return
+    if parsed.scheme != "wss":
+        raise ValueError(f"refusing non-wss URL {url!r}")
+    host = (parsed.hostname or "").lower()
+    if host not in ALLOWED_WS_HOSTS:
+        raise ValueError(
+            f"refusing host {host!r}; official OKX WebSocket hosts are "
+            f"{sorted(ALLOWED_WS_HOSTS)}"
+        )
+    port = parsed.port
+    if port is not None and port not in ALLOWED_WS_PORTS:
+        raise ValueError(
+            f"refusing WebSocket port {port}; official ports are {sorted(ALLOWED_WS_PORTS)}"
+        )
+    if path not in PUBLIC_WS_PATHS:
+        raise UnsafeEndpointError(f"refusing WebSocket path {path}")
+
+
+def is_candle_channel(channel: str) -> bool:
+    return bool(CANDLE_CHANNEL_RE.fullmatch(channel))
+
+
+def is_public_ws_channel(channel: str) -> bool:
+    return channel in PUBLIC_WS_CHANNELS or is_candle_channel(channel)
+
+
+def resolve_ws_url(
+    explicit: str | None,
+    *,
+    env_name: str,
+    default: str,
+    allow_unofficial_hosts: bool = False,
+    allow_insecure: bool = False,
+) -> str:
+    """Constructor arg, then env, then default. Env cannot enable unofficial hosts."""
+    if explicit is not None and str(explicit).strip():
+        url = str(explicit).strip()
+    else:
+        url = os.environ.get(env_name, "").strip() or default
+    assert_okx_ws_url(
+        url,
+        allow_unofficial_hosts=allow_unofficial_hosts,
+        allow_insecure=allow_insecure,
+    )
+    return url
+
+
+def ws_url_on_port(url: str, port: int) -> str:
+    """Return ``url`` with only the port changed. Host, path, and scheme stay."""
+    parsed = urlparse(url)
+    host = parsed.hostname
+    if not host:
+        raise ValueError(f"WebSocket URL has no host: {url!r}")
+    userinfo = ""
+    if parsed.username:
+        userinfo = parsed.username
+        if parsed.password:
+            userinfo += f":{parsed.password}"
+        userinfo += "@"
+    host_part = f"[{host}]" if ":" in host else host
+    candidate = urlunparse(parsed._replace(netloc=f"{userinfo}{host_part}:{int(port)}"))
+    assert_same_ws_host_path(url, candidate)
+    return candidate
+
+
+def assert_same_ws_host_path(original: str, candidate: str) -> None:
+    """Refuse a fallback candidate that changes scheme, host, or path."""
+    left = urlparse(original)
+    right = urlparse(candidate)
+    if (left.scheme or "") != (right.scheme or ""):
+        raise ValueError("WebSocket fallback must not change scheme")
+    if (left.hostname or "").lower() != (right.hostname or "").lower():
+        raise ValueError("WebSocket fallback must not change host")
+    if (left.path or "") != (right.path or ""):
+        raise ValueError("WebSocket fallback must not change path")
+
+
+def fallback_ws_port_443(
+    url: str,
+    *,
+    allow_unofficial_hosts: bool = False,
+    allow_insecure: bool = False,
+) -> str | None:
+    """If ``url`` uses port 8443, return the same host/path on port 443.
+
+    Re-validates the allowlist. Returns ``None`` when the URL is not on 8443.
+    """
+    parsed = urlparse(url)
+    if parsed.port != 8443:
+        return None
+    candidate = ws_url_on_port(url, 443)
+    assert_same_ws_host_path(url, candidate)
+    if urlparse(candidate).port != 443:
+        raise ValueError("WebSocket fallback may only switch to port 443")
+    assert_okx_ws_url(
+        candidate,
+        allow_unofficial_hosts=allow_unofficial_hosts,
+        allow_insecure=allow_insecure,
+    )
+    return candidate

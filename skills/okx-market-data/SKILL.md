@@ -1,13 +1,14 @@
 # OKX public market data
 
-Use `tools/okx/` for **keyless** OKX v5 market data, bulk trade history, and
-exchange maintenance windows. Python 3.11+, `requests` + `numpy`. Do not
+Use `tools/okx/` for **keyless** OKX v5 market data, the public WebSocket,
+bulk trade history, and exchange maintenance windows. Python 3.11+,
+`requests` + `numpy`. The stream client needs optional `websockets`. Do not
 import OKX's Agent Trade Kit. Do not add API keys.
 
 ## When to use
 
 - Public instruments, tickers, books, trades, candles, funding, open interest,
-  mark/index price.
+  mark/index price, including the public WebSocket for live trades / books.
 - Historical ticks for Hawkes / order-flow research (`BTC-USDT-SWAP` and
   similar).
 - Isaac's maintenance reminders: upcoming OKX windows in UTC.
@@ -32,6 +33,7 @@ around the allowlist.
 
 ```python
 from tools.okx import (
+    OkxPublicStream,
     PublicClient,
     candles_range,
     download_daily_trades,
@@ -44,11 +46,39 @@ client = PublicClient(site="global")  # or "eea" / "us"
 ticker = client.ticker("BTC-USDT-SWAP")
 trades = history_trades_range(
     client, "BTC-USDT-SWAP", start_ts_ms=start, end_ts_ms=end
-)  # locates via one type=2 request, then pages by trade id; pagination="ts" is lossy
+)  # locates the newest trade at or before the end, then pages by trade id; pagination="ts" is lossy
 ```
 
-REST history-trades is about three months. For longer SWAP tapes use the
-official zip archive (below).
+REST history-trades is about three months. Windows older than that raise
+`HistoryWindowTooOld` — use the official zip archive (below), not an empty
+list. `PaginationBudgetExceeded.trades` keeps any rows already fetched.
+
+Live public stream (optional `websockets` package):
+
+```python
+async with OkxPublicStream(
+    [("trades", "SPCX-USDT-SWAP"), ("books5", "SPCX-USDT-SWAP")],
+    rest=client,
+) as stream:
+    async for msg in stream:
+        if msg.kind == "gap" or stream.is_stale(msg.channel, msg.inst_id):
+            continue  # hole in the tape; never a quiet Hawkes period
+```
+
+```bash
+python3 -m tools.okx.stream_demo --inst SPCX-USDT-SWAP --channels trades,books5 --seconds 60
+# 8443 blocked: set OKX_WS_PUBLIC_URL=wss://ws.okx.com:443/ws/v5/public
+# or --public-url (wss + official hosts only; env cannot enable unofficial hosts)
+```
+
+Recording is **off by default**. `--record` writes gzip JSONL under
+`OKX_DATA_DIR/recordings/` (daily rotation by default; hourly optional).
+`--record-channels trades` records a subset. The same cache/run budgets
+apply. `OKX_MIN_FREE_DISK_BYTES` (default 10 GiB) stops recording. Full
+`books` records periodic snapshots, not every update. Consumer-queue
+overflow coalesces into one gap event (not written to disk). Writer-queue
+overflow coalesces into a `writer_overflow` gap that is written so Hawkes
+fits cannot mistake a hole for silence.
 
 Maintenance:
 

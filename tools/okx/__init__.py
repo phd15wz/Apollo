@@ -1,8 +1,9 @@
 """Stage-1 OKX public market-data client. Keyless. Cannot trade.
 
-Use ``PublicClient`` for REST market data, ``download_daily_trades`` for
-the official historical zip archive, and ``handle_ties`` before Hawkes
-fits. There is no signing path in this package.
+Use ``PublicClient`` for REST market data, ``OkxPublicStream`` for the
+public WebSocket, ``download_daily_trades`` for the official historical
+zip archive, and ``handle_ties`` before Hawkes fits. There is no signing
+path in this package.
 """
 
 from tools.okx.archive import (
@@ -20,9 +21,12 @@ from tools.okx.archive import (
 from tools.okx.client import PublicClient, RateLimiter
 from tools.okx.errors import (
     CacheBudgetExceeded,
+    HistoryWindowTooOld,
+    LowDiskError,
     OkxError,
     OkxHttpError,
     PaginationBudgetExceeded,
+    PrivateChannelError,
     UnsafeArchiveError,
     UnsafeEndpointError,
 )
@@ -34,6 +38,8 @@ from tools.okx.hygiene import (
     stable_within_ms,
 )
 from tools.okx.market import candles_range, funding_rate_history_range, history_trades_range
+from tools.okx.record import StreamRecorder
+from tools.okx.stream import GapInfo, OkxPublicStream, StreamMessage, book_crc32, run_public_stream
 from tools.okx.status import announcement_types, announcements, upcoming_maintenance
 from tools.okx.types import (
     CANDLE_DTYPE,
@@ -63,6 +69,9 @@ __all__ = [
     "ArchiveFile",
     "CacheBudgetExceeded",
     "Candle",
+    "GapInfo",
+    "HistoryWindowTooOld",
+    "LowDiskError",
     "DownloadResult",
     "FundingRate",
     "IndexTicker",
@@ -71,11 +80,15 @@ __all__ = [
     "MarkPrice",
     "OkxError",
     "OkxHttpError",
+    "OkxPublicStream",
     "OpenInterest",
     "OrderBook",
     "PaginationBudgetExceeded",
+    "PrivateChannelError",
     "PublicClient",
     "RateLimiter",
+    "StreamMessage",
+    "StreamRecorder",
     "Ticker",
     "TieReport",
     "Trade",
@@ -84,6 +97,7 @@ __all__ = [
     "aggregate_by_timestamp_side",
     "announcement_types",
     "announcements",
+    "book_crc32",
     "cache_usage_bytes",
     "candles_range",
     "candles_to_array",
@@ -97,6 +111,7 @@ __all__ = [
     "load_cached_trades",
     "parse_trade_zip",
     "report_ties",
+    "run_public_stream",
     "stable_within_ms",
     "trades_to_array",
     "upcoming_maintenance",
