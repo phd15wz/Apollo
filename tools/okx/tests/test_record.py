@@ -955,8 +955,7 @@ def test_writer_dropped_plus_written_equals_offered(tmp_path: Path) -> None:
         cache_dir=tmp_path,
         enabled=True,
         write_queue_maxsize=4,
-        write_sleep=0.05,
-        write_sleep_on_close=True,
+        write_sleep=0.01,
         offer_timeout=0.0,
         sync=False,
     )
@@ -972,14 +971,46 @@ def test_writer_dropped_plus_written_equals_offered(tmp_path: Path) -> None:
                 "data": {"tradeId": str(i)},
             }
         )
-    rec.close(timeout=0.2)
+    rec.close(timeout=8.0)
     written, dropped, _rows = _tape_counts(rec)
     assert rec.offered == offered
     assert rec.accepted == offered
+    assert rec.shutdown_incomplete is False
     assert written + rec.writer_dropped == rec.offered
-    if not rec.shutdown_incomplete:
-        assert written + dropped == rec.offered
-        assert rec.writer_dropped == dropped
+    assert rec.writer_dropped == dropped
+    assert rec.writer_dropped == offered - written
+    assert dropped == offered - written
+
+
+def test_mark_incomplete_does_not_double_count_overflow_gaps(tmp_path: Path) -> None:
+    rec = StreamRecorder(cache_dir=tmp_path, enabled=True, sync=False)
+    rec._queue.dropped = 10
+    leftover = [
+        {
+            "event": "gap",
+            "reason": "writer_overflow",
+            "channel": "trades",
+            "instId": "BTC-USDT-SWAP",
+            "dropped": 10,
+            "ts": 10,
+            "startTs": 1,
+            "endTs": 10,
+        },
+        {
+            "event": "data",
+            "channel": "trades",
+            "instId": "BTC-USDT-SWAP",
+            "data": {"tradeId": "11"},
+            "ts": 11,
+        },
+    ]
+    gap = rec._mark_incomplete(leftover)
+    assert gap is not None
+    assert int(gap["dropped"]) == 11
+    assert rec.writer_dropped == 11
+    assert rec._queue.dropped == 11
+    assert rec.offered == 0
+    assert 0 + rec.writer_dropped == 11
 
 
 @fail_if_hangs(8)
@@ -1005,11 +1036,14 @@ def test_shutdown_incomplete_does_not_double_count(tmp_path: Path) -> None:
     assert written + rec.writer_dropped == rec.offered
     leftover = offered - written
     assert leftover == rec.writer_dropped
+    assert rec.writer_dropped == leftover
+    assert written + rec.writer_dropped == rec.offered
+    assert rec.writer_dropped == dropped
+    assert written + dropped == rec.offered
     incomplete = [row for row in rows if row.get("reason") == "shutdown_incomplete"]
     assert rec.shutdown_incomplete
     assert leftover > 0
-    if incomplete:
-        assert int(incomplete[0]["dropped"]) <= leftover
+    assert incomplete or dropped == leftover
 
 
 def test_symlinked_recordings_inside_data_dir_is_ok(tmp_path: Path) -> None:
@@ -1066,6 +1100,44 @@ def test_large_batch_does_not_overshoot_run_budget(tmp_path: Path) -> None:
     assert written < 200
     assert dropped > 0 or rec.writer_dropped > 0
     assert any(row.get("event") == "gap" for row in rows) or rec.writer_dropped > 0
+
+
+def test_writer_overflow_keeps_drops_on_their_instrument(tmp_path: Path) -> None:
+    rec = StreamRecorder(
+        cache_dir=tmp_path,
+        enabled=True,
+        write_queue_maxsize=1,
+        write_sleep=0.2,
+        offer_timeout=0.0,
+        sync=False,
+    )
+    rec.start()
+    rec.offer_batch_sync(
+        [{"ts": 0, "event": "data", "channel": "trades", "instId": "BTC-USDT-SWAP", "data": {"tradeId": "0"}}]
+    )
+    mixed = [
+        {
+            "ts": i + 1,
+            "event": "data",
+            "channel": "trades",
+            "instId": f"INST{i}-USDT-SWAP",
+            "data": {"tradeId": str(i + 1)},
+        }
+        for i in range(80)
+    ]
+    rec.offer_batch_sync(mixed)
+    rec.close(timeout=8.0)
+    _written, _dropped, rows = _tape_counts(rec)
+    inst_dropped: dict[str, int] = {}
+    for row in rows:
+        if row.get("event") != "gap":
+            continue
+        inst = str(row.get("instId") or "")
+        inst_dropped[inst] = inst_dropped.get(inst, 0) + int(row.get("dropped") or 0)
+    for i in range(80):
+        inst = f"INST{i}-USDT-SWAP"
+        assert inst_dropped.get(inst) == 1, inst_dropped
+    assert inst_dropped.get("BTC-USDT-SWAP", 0) in {0, 1}
 
 
 def test_overflow_drops_stay_on_their_instrument() -> None:

@@ -62,6 +62,8 @@ def _print_message(msg: StreamMessage) -> None:
         "lag",
         "lag_cleared",
         "clock_sync_unavailable",
+        "clock_sample_rejected",
+        "clock_offset_adopted",
     }:
         print(f"{msg.kind.upper()} {msg.channel} {msg.inst_id} {msg.data or ''}")
         return

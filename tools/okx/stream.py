@@ -92,8 +92,9 @@ class StreamMessage:
     """One item from :class:`OkxPublicStream`.
 
     ``kind`` is ``data``, ``gap``, ``stale``, ``recovered``,
-    ``book_resync``, ``low_disk``, ``lag``, ``lag_cleared``, or
-    ``clock_sync_unavailable``. Treat
+    ``book_resync``, ``low_disk``, ``lag``, ``lag_cleared``,
+    ``clock_sync_unavailable``, ``clock_sample_rejected``, or
+    ``clock_offset_adopted``. Treat
     ``gap`` as a missing interval, never as a quiet period. Repeated
     alerts carry ``repeats`` and ``first_ts_ms``.
     """
@@ -230,7 +231,18 @@ class LocalBook:
 
 CONTROL_MAX = 64
 ALERT_KINDS = frozenset(
-    {"stale", "recovered", "book_resync", "low_disk", "record_error", "lag", "lag_cleared", "clock_sync_unavailable"}
+    {
+        "stale",
+        "recovered",
+        "book_resync",
+        "low_disk",
+        "record_error",
+        "lag",
+        "lag_cleared",
+        "clock_sync_unavailable",
+        "clock_sample_rejected",
+        "clock_offset_adopted",
+    }
 )
 FEED_STATE_KINDS = frozenset({"stale", "recovered"})
 MAX_PENDING_GAPS = 256
@@ -240,6 +252,7 @@ DEFAULT_TIME_REQUEST_TIMEOUT = 3.0
 DEFAULT_TIME_BACKOFF_CAP = 600.0
 WALL_JUMP_S = 2.0
 OFFSET_JUMP_S = 3.0
+OFFSET_CONFIRM_SAMPLES = 3
 UNKNOWN_LOG_INTERVAL_S = 5.0
 
 
@@ -276,6 +289,8 @@ class ClockSync:
         self._last_mono: float | None = None
         self._last_poll_mono = 0.0
         self._next_poll_mono = 0.0
+        self._pending: list[tuple[float, float, float]] = []
+        self.last_event: dict[str, Any] | None = None
 
     @property
     def unknown(self) -> bool:
@@ -347,42 +362,103 @@ class ClockSync:
         self._last_mono = mono
         self._next_poll_mono = mono + self.backoff
 
-    def poll(self) -> None:
+    def _expected_server(self, mid_mono: float) -> float | None:
+        if self._origin_mono is None or self._origin_corrected is None:
+            return None
+        return self._origin_corrected + (mid_mono - self._origin_mono)
+
+    def _note_pending(self, server: float, mid_mono: float, mid_wall: float) -> None:
+        if self._pending:
+            prev_server, prev_mono, _prev_wall = self._pending[-1]
+            if abs(server - (prev_server + (mid_mono - prev_mono))) > OFFSET_JUMP_S:
+                self._pending = []
+        self._pending.append((server, mid_mono, mid_wall))
+
+    def _pending_agree(self) -> bool:
+        if len(self._pending) < OFFSET_CONFIRM_SAMPLES:
+            return False
+        recent = self._pending[-OFFSET_CONFIRM_SAMPLES:]
+        base_server, base_mono, _base_wall = recent[0]
+        return all(
+            abs(server - (base_server + (mid_mono - base_mono))) <= OFFSET_JUMP_S
+            for server, mid_mono, _mid_wall in recent
+        )
+
+    def _stamp_poll(self, t1_wall: float, t1_mono: float) -> None:
+        self._last_wall = t1_wall
+        self._last_mono = t1_mono
+        self._last_poll_mono = t1_mono
+        self._next_poll_mono = t1_mono + self.poll_interval
+
+    def _apply(
+        self,
+        server: float,
+        mid_mono: float,
+        mid_wall: float,
+        t1_wall: float,
+        t1_mono: float,
+    ) -> dict[str, Any]:
+        previous = self.offset
+        self.offset = server - mid_wall
+        self._origin_mono = mid_mono
+        self._origin_corrected = server
+        self._stamp_poll(t1_wall, t1_mono)
+        self.backoff = 0.0
+        self.available = True
+        self.polls += 1
+        self._pending.clear()
+        event = {
+            "kind": "clock_offset_adopted",
+            "offset": self.offset,
+            "previous_offset": previous,
+            "server_s": server,
+            "polls": self.polls,
+        }
+        self.last_event = event
+        return event
+
+    def poll(self) -> dict[str, Any] | None:
         if self.fetch is None:
-            return
+            return None
         t0_wall, t0_mono = self._wall(), self._mono()
         server_ms = self._call_fetch()
         t1_wall, t1_mono = self._wall(), self._mono()
         rtt = t1_mono - t0_mono
         if server_ms in (None, 0, "") or rtt > self.max_rtt:
             self._fail(t1_wall, t1_mono)
-            return
+            return None
         mid_wall = (t0_wall + t1_wall) / 2.0
         mid_mono = (t0_mono + t1_mono) / 2.0
         server = int(server_ms) / 1000.0
         new_offset = server - mid_wall
-        if self.available and abs(new_offset - self.offset) > OFFSET_JUMP_S:
+        expected = self._expected_server(mid_mono)
+        if expected is not None and abs(server - expected) > OFFSET_JUMP_S:
             self.rejected_samples += 1
+            self._note_pending(server, mid_mono, mid_wall)
             _LOG.warning(
-                "ignoring implausible OKX /public/time offset jump %+0.3fs -> %+0.3fs",
-                self.offset,
+                "ignoring implausible OKX /public/time sample %+0.3fs vs monotonic projection %+0.3fs",
                 new_offset,
+                expected - mid_wall,
             )
-            self._last_wall = t1_wall
-            self._last_mono = t1_mono
-            self._last_poll_mono = t1_mono
-            self._next_poll_mono = t1_mono + self.poll_interval
-            return
-        self.offset = new_offset
-        self._origin_mono = mid_mono
-        self._origin_corrected = server
-        self._last_wall = t1_wall
-        self._last_mono = t1_mono
-        self._last_poll_mono = t1_mono
-        self._next_poll_mono = t1_mono + self.poll_interval
-        self.backoff = 0.0
-        self.available = True
-        self.polls += 1
+            if self._pending_agree():
+                return self._apply(server, mid_mono, mid_wall, t1_wall, t1_mono)
+            self._stamp_poll(t1_wall, t1_mono)
+            event = {
+                "kind": "clock_sample_rejected",
+                "offset": new_offset,
+                "current_offset": self.offset,
+                "server_s": server,
+                "expected_s": expected,
+                "rejected_samples": self.rejected_samples,
+                "pending": len(self._pending),
+            }
+            self.last_event = event
+            return event
+        was_available = self.available
+        event = self._apply(server, mid_mono, mid_wall, t1_wall, t1_mono)
+        if was_available:
+            return None
+        return event
 
 
 class EventQueue:
@@ -1151,9 +1227,23 @@ class OkxPublicStream:
     async def _time_poller(self) -> None:
         while self._running:
             if self._sync.needs_poll():
-                await asyncio.to_thread(self._sync.poll)
+                event = await asyncio.to_thread(self._sync.poll)
+                self._emit_clock_event(event)
                 self._note_clock_sync()
             await self._sleep(self._sync.poll_wait())
+
+    def _emit_clock_event(self, event: dict[str, Any] | None) -> None:
+        if not event:
+            return
+        self._emit(
+            StreamMessage(
+                kind=str(event.get("kind") or "clock_sample_rejected"),
+                channel="",
+                inst_id="",
+                ts_ms=int(self._wall() * 1000),
+                data=dict(event),
+            )
+        )
 
     def _emit(self, msg: StreamMessage) -> None:
         self._queue.put(msg, control=msg.kind != "data")
