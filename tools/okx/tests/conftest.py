@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import faulthandler
+import functools
 import json
+import signal
 from collections import defaultdict, deque
 from pathlib import Path
 from typing import Any, Mapping
@@ -117,6 +120,30 @@ def make_client(transport: FakeTransport, **kwargs: Any) -> PublicClient:
         sleep=clock.sleep,
         **kwargs,
     )
+
+
+def fail_if_hangs(seconds: float = 8.0):
+    """Fail a close/shutdown test with TimeoutError instead of hanging the suite."""
+
+    def decorator(fn):
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            def _on_alarm(signum: int, frame: object) -> None:
+                raise TimeoutError(f"{fn.__name__} exceeded {seconds}s (close/shutdown hang)")
+
+            faulthandler.dump_traceback_later(seconds, exit=False)
+            previous = signal.signal(signal.SIGALRM, _on_alarm)
+            signal.setitimer(signal.ITIMER_REAL, seconds)
+            try:
+                return fn(*args, **kwargs)
+            finally:
+                signal.setitimer(signal.ITIMER_REAL, 0.0)
+                signal.signal(signal.SIGALRM, previous)
+                faulthandler.cancel_dump_traceback_later()
+
+        return wrapper
+
+    return decorator
 
 
 @pytest.fixture

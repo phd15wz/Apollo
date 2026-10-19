@@ -18,6 +18,7 @@ from tools.okx.record import StreamRecorder
 from tools.okx.stream import (
     DEFAULT_PING_INTERVAL,
     DEFAULT_RECONNECT_MAX,
+    OFFSET_JUMP_S,
     ClockSync,
     GapInfo,
     OkxPublicStream,
@@ -25,7 +26,7 @@ from tools.okx.stream import (
     book_crc32,
     validate_subscriptions,
 )
-from tools.okx.tests.conftest import FakeTransport, make_client
+from tools.okx.tests.conftest import FakeTransport, fail_if_hangs, make_client
 from tools.okx.types import Trade
 
 
@@ -1599,3 +1600,176 @@ async def test_healthy_recorder_emits_no_lag_over_threshold(tmp_path: Path) -> N
         assert stream.writer_lagging is False
         kinds = [item.kind for item in stream._queue.items if item is not None]
         assert "lag" not in kinds
+
+
+def test_public_time_offset_uses_rtt_midpoint() -> None:
+    class Clocks:
+        def __init__(self) -> None:
+            self.wall = 1_000.0
+            self.mono = 50.0
+
+        def fetch(self) -> int:
+            self.wall += 0.20
+            self.mono += 0.20
+            return 1_000_400
+
+    clocks = Clocks()
+    sync = ClockSync(fetch=clocks.fetch, poll_interval=60, wall=lambda: clocks.wall, mono=lambda: clocks.mono)
+    sync.poll()
+    assert sync.polls == 1
+    assert sync.offset == pytest.approx(0.3, abs=1e-9)
+    assert OFFSET_JUMP_S == 3.0
+
+
+def test_public_time_ignores_implausible_offset_jump() -> None:
+    class Clocks:
+        def __init__(self) -> None:
+            self.wall = 1_000.0
+            self.mono = 50.0
+            self.server = 1_000.0
+
+        def fetch(self) -> int:
+            return int(self.server * 1000)
+
+    clocks = Clocks()
+    sync = ClockSync(fetch=clocks.fetch, poll_interval=0, wall=lambda: clocks.wall, mono=lambda: clocks.mono)
+    sync.poll()
+    good = sync.offset
+    clocks.mono += 1.0
+    clocks.wall += 1.0
+    clocks.server += 30.0
+    sync.poll()
+    assert sync.rejected_samples >= 1
+    assert sync.offset == good
+    assert sync.polls == 1
+
+
+@run_async
+async def test_unsubscribed_pair_is_logged(caplog: pytest.LogCaptureFixture) -> None:
+    broker = ScriptedConnector()
+    sock = broker.add()
+    async with OkxPublicStream(
+        [("trades", INST)],
+        connector=broker,
+        ping_interval=30,
+        stale_timeout=30,
+    ) as stream:
+        await _wait_sent(sock, lambda s: "subscribe" in s)
+        with caplog.at_level("WARNING", logger="tools.okx.stream"):
+            await sock.push(_trade_push("ETH-USDT-SWAP", 1))
+            await sock.push(_trade_push("ETH-USDT-SWAP", 2))
+            await sock.push(_trade_push(INST, 3))
+            await asyncio.wait_for(anext(stream), timeout=1)
+    assert stream.rejected_messages >= 2
+    warnings = [item for item in caplog.records if "unsubscribed" in item.getMessage()]
+    assert warnings
+
+
+@run_async
+async def test_lag_clears_when_quiet_and_backlog_empty(tmp_path: Path) -> None:
+    rec = StreamRecorder(cache_dir=tmp_path, enabled=True, sync=False)
+    broker = ScriptedConnector()
+    sock = broker.add()
+    async with OkxPublicStream(
+        [("trades", INST)],
+        connector=broker,
+        recorder=rec,
+        ping_interval=30,
+        stale_timeout=0.2,
+        lag_threshold=0.15,
+        time_fetcher=_synced_now_ms,
+    ) as stream:
+        await _wait_sent(sock, lambda s: "subscribe" in s)
+        ready = time.monotonic() + 2.0
+        while time.monotonic() < ready and not stream._sync.available:
+            await asyncio.sleep(0.02)
+        now = _synced_now_ms()
+        await sock.push(_trade_push(INST, 1, ts_ms=now - 30_000))
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and not stream.writer_lagging:
+            await asyncio.sleep(0.02)
+        assert stream.writer_lagging
+        rec.flush()
+        clear_deadline = time.monotonic() + 2.0
+        while time.monotonic() < clear_deadline and stream.writer_lagging:
+            await asyncio.sleep(0.02)
+        assert stream.writer_lagging is False
+        kinds = [item.kind for item in stream._queue.items if item is not None]
+        assert "lag_cleared" in kinds
+
+
+@run_async
+async def test_receive_time_is_stamped_at_recv(tmp_path: Path) -> None:
+    rec = StreamRecorder(cache_dir=tmp_path, enabled=True, sync=False, write_sleep=0.15)
+    broker = ScriptedConnector()
+    sock = broker.add()
+    async with OkxPublicStream(
+        [("trades", INST)],
+        connector=broker,
+        recorder=rec,
+        ping_interval=30,
+        stale_timeout=30,
+        lag_threshold=0.08,
+    ) as stream:
+        await _wait_sent(sock, lambda s: "subscribe" in s)
+        await sock.push(_trade_push(INST, 1, ts_ms=_synced_now_ms()))
+        await asyncio.wait_for(anext(stream), timeout=2)
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and rec.service_lag() < 0.05:
+            await asyncio.sleep(0.01)
+        assert rec.service_lag() >= 0.05
+        rec.flush()
+        assert rec.service_lag() < 0.08
+
+
+@fail_if_hangs(15)
+@run_async
+async def test_stop_accounts_for_leftover_as_shutdown_incomplete(tmp_path: Path) -> None:
+    rec = StreamRecorder(
+        cache_dir=tmp_path,
+        enabled=True,
+        write_queue_maxsize=8,
+        write_sleep=0.05,
+        write_sleep_on_close=True,
+        offer_timeout=0.2,
+        sync=False,
+    )
+    broker = ScriptedConnector()
+    sock = broker.add()
+    stream = OkxPublicStream(
+        [("trades", INST)],
+        connector=broker,
+        recorder=rec,
+        ping_interval=30,
+        stale_timeout=30,
+        shutdown_timeout=0.15,
+    )
+    await stream.start()
+    try:
+        await _wait_sent(sock, lambda s: "subscribe" in s)
+        await sock.push(
+            {
+                "arg": {"channel": "trades", "instId": INST},
+                "data": [
+                    {
+                        "instId": INST,
+                        "tradeId": str(tid),
+                        "px": "1",
+                        "sz": "1",
+                        "side": "buy",
+                        "ts": str(1_700_000_000_000 + tid),
+                        "count": "1",
+                    }
+                    for tid in range(1, 81)
+                ],
+            }
+        )
+        await asyncio.sleep(0.05)
+    finally:
+        await stream.stop()
+    recorded, covered = _tape_coverage(rec)
+    assert rec.offered == rec.accepted
+    assert recorded + rec.writer_dropped == rec.accepted
+    assert rec.writer_dropped == covered
+    if rec.shutdown_incomplete:
+        assert covered > 0

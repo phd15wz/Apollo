@@ -35,6 +35,8 @@ DEFAULT_WRITE_QUEUE_MAX = 256
 DEFAULT_OFFER_TIMEOUT = 2.0
 DEFAULT_USAGE_RESCAN_S = 5.0
 MAX_PENDING_GAPS = 256
+UNKNOWN_LOG_INTERVAL_S = 5.0
+_GZIP_SLACK = 256
 _WRITER_SENTINEL = object()
 
 
@@ -54,19 +56,54 @@ def recording_period_key(ts: float, rotation: str) -> str:
     raise ValueError("rotation must be 'hourly' or 'daily'")
 
 
-def recording_dest(cache_dir: Path, inst_id: str, channel: str, ts: float, rotation: str) -> Path:
-    """Build a recording path and prove it stayed under ``recordings/``."""
+def recordings_root(cache_dir: Path) -> Path:
+    """Resolve ``cache_dir/recordings`` once and refuse a symlink that escapes it."""
+    cache = Path(cache_dir).expanduser().resolve()
+    recordings = cache / "recordings"
+    if recordings.is_symlink() or recordings.exists():
+        resolved = recordings.resolve()
+        if not resolved.is_relative_to(cache):
+            raise ValueError(f"refusing recordings symlink outside data dir: {resolved}")
+        return resolved
+    return recordings
+
+
+def recording_dest(
+    cache_dir: Path,
+    inst_id: str,
+    channel: str,
+    ts: float,
+    rotation: str,
+    *,
+    root: Path | None = None,
+) -> Path:
+    """Build a recording path and prove it stayed under the data dir / recordings root."""
     inst_id = endpoints.validate_inst_id(inst_id)
     if not endpoints.is_public_ws_channel(channel):
         raise ValueError(f"refusing recording channel {channel!r}")
     if "/" in channel or "\\" in channel or ".." in channel:
         raise ValueError(f"refusing recording channel {channel!r}")
     period = recording_period_key(ts, rotation)
-    root = (Path(cache_dir).expanduser().resolve() / "recordings").resolve()
+    cache = Path(cache_dir).expanduser().resolve()
+    if root is None:
+        root = recordings_root(cache)
+    else:
+        root = Path(root)
+        if root.exists() or root.is_symlink():
+            root = root.resolve()
+            if not root.is_relative_to(cache):
+                raise ValueError(f"refusing recordings symlink outside data dir: {root}")
     dest = (root / inst_id / channel / f"{period}.jsonl.gz").resolve()
+    if not dest.is_relative_to(cache):
+        raise ValueError(f"refusing path outside data dir: {dest}")
     if not dest.is_relative_to(root):
         raise ValueError(f"refusing path outside recordings root: {dest}")
     return dest
+
+
+def _encode_record(record: dict[str, Any]) -> bytes:
+    payload = {key: value for key, value in record.items() if not str(key).startswith("_")}
+    return json.dumps(payload, separators=(",", ":")).encode("utf-8") + b"\n"
 
 
 @dataclass
@@ -307,6 +344,16 @@ class RecordWriteQueue:
     def _drop_batch(self, batch: Sequence[dict[str, Any]]) -> None:
         if not batch:
             return
+        grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        for rec in batch:
+            key = (str(rec.get("channel") or ""), str(rec.get("instId") or ""))
+            grouped.setdefault(key, []).append(rec)
+        for group in grouped.values():
+            self._drop_group(group)
+
+    def _drop_group(self, batch: Sequence[dict[str, Any]]) -> None:
+        if not batch:
+            return
         gap = _gap_from_batch(batch)
         self.dropped += int(gap["dropped"])
         for existing in self._gaps:
@@ -320,7 +367,11 @@ class RecordWriteQueue:
             self._cv.notify_all()
             return
         for existing in self._gaps:
-            if existing.get("precise") is False and existing.get("channel") == gap.get("channel") and existing.get("instId") == gap.get("instId"):
+            if (
+                existing.get("precise") is False
+                and existing.get("channel") == gap.get("channel")
+                and existing.get("instId") == gap.get("instId")
+            ):
                 _fold_summary_gap(existing, gap)
                 self._cv.notify_all()
                 return
@@ -371,7 +422,7 @@ class StreamRecorder:
             raise ValueError("offer_timeout must be <= 2s (well under the 25s ping interval)")
         if isinstance(self.channels, Iterable) and not isinstance(self.channels, (str, frozenset)):
             self.channels = frozenset(str(ch) for ch in self.channels)
-        self.cache_dir = Path(self.cache_dir)
+        self.cache_dir = Path(self.cache_dir).expanduser().resolve()
         self._used = 0
         self._run_used = 0
         self._book_last: dict[str, float] = {}
@@ -388,8 +439,10 @@ class StreamRecorder:
         self._writer_ident: int | None = None
         self._lock = threading.Lock()
         self._offer_cv = threading.Condition()
+        self._shutdown_lock = threading.Lock()
         self._offers = 0
         self.accepted = 0
+        self.offered = 0
         self._write_lag = 0.0
         self._write_recv = 0.0
         self._writing = 0
@@ -398,7 +451,10 @@ class StreamRecorder:
         self.shutdown_incomplete = False
         self._writer_starts = 0
         self._unwritten: list[list[dict[str, Any]]] = []
+        self._reject_log_at: dict[tuple[str, str], float] = {}
+        self._recordings_root: Path | None = None
         if self.enabled:
+            self._recordings_root = recordings_root(self.cache_dir)
             self._scan_usage()
             self.apply_retention()
 
@@ -419,18 +475,30 @@ class StreamRecorder:
         try:
             endpoints.validate_inst_id(inst_id)
         except ValueError:
-            self.rejected += 1
-            _LOG.warning("refusing to record invalid instId %r on %s", inst_id, channel)
+            self._reject(channel, inst_id, "invalid instId")
             return False
         if not endpoints.is_public_ws_channel(channel):
-            self.rejected += 1
-            _LOG.warning("refusing to record channel %r", channel)
+            self._reject(channel, inst_id, "channel not on the public allowlist")
             return False
         if self.allowed_pairs is not None and (channel, inst_id) not in self.allowed_pairs:
-            self.rejected += 1
-            _LOG.warning("refusing to record unsubscribed %s %s", channel, inst_id)
+            self._reject(channel, inst_id, "unsubscribed pair")
             return False
         return True
+
+    def _reject(self, channel: str, inst_id: str, reason: str) -> None:
+        self.rejected += 1
+        key = (channel, inst_id)
+        now = self.clock()
+        last = self._reject_log_at.get(key)
+        if last is None or (now - last) >= UNKNOWN_LOG_INTERVAL_S:
+            _LOG.warning(
+                "refusing to record %s %s (%s; rejected=%s)",
+                channel,
+                inst_id,
+                reason,
+                self.rejected,
+            )
+            self._reject_log_at[key] = now
 
     def start(self) -> None:
         if not self.enabled:
@@ -533,7 +601,9 @@ class StreamRecorder:
         if not leftover:
             return None
         gap = _shutdown_incomplete(leftover)
-        self._queue.dropped += int(gap["dropped"])
+        already = sum(int(rec.get("dropped") or 0) for rec in leftover if rec.get("event") == "gap")
+        extra = max(0, int(gap["dropped"]) - already)
+        self._queue.dropped += extra
         self.writer_dropped = self._queue.dropped
         return gap
 
@@ -599,7 +669,9 @@ class StreamRecorder:
             kept = [rec for rec in records if self.accept(str(rec.get("channel") or ""), str(rec.get("instId") or ""))]
             if not kept:
                 return False
-            self.accepted += sum(_drop_count(rec) for rec in kept)
+            count = sum(_drop_count(rec) for rec in kept)
+            self.accepted += count
+            self.offered += count
             if self._closed:
                 with self._queue._cv:
                     self._queue._drop_batch(kept)
@@ -608,12 +680,23 @@ class StreamRecorder:
             self._maybe_rescan()
             self._assert_disk()
             self._assert_budgets(0)
+            if self.sync:
+                self._write_sync(kept)
+                self.writer_dropped = self._queue.dropped
+                return True
             self._ensure_writer()
             accepted = self._queue.wait_put(kept, timeout if timeout is not None else self.offer_timeout)
             self.writer_dropped = self._queue.dropped
             return accepted
         finally:
             self._end_offer()
+
+    def _write_sync(self, records: list[dict[str, Any]]) -> None:
+        self._writing += 1
+        try:
+            self._write_batch(records)
+        finally:
+            self._writing -= 1
 
     async def offer_batch(self, records: list[dict[str, Any]], timeout: float | None = None) -> bool:
         """Enqueue a batch without blocking the event-loop thread."""
@@ -728,6 +811,7 @@ class StreamRecorder:
 
     def close(self, timeout: float = 8.0) -> None:
         if self._writer is None and self._closed:
+            self._close_handles()
             return
         deadline = time.monotonic() + max(0.0, timeout)
         self._closed = True
@@ -748,6 +832,16 @@ class StreamRecorder:
             if self._writer.is_alive():
                 self._report_shutdown_incomplete()
             self._writer = None
+        else:
+            leftover = self._flatten(self._pending_leftover())
+            if leftover:
+                gap = self._mark_incomplete(leftover)
+                if gap is not None:
+                    try:
+                        self._write_sync([gap])
+                    except Exception:
+                        pass
+            self._close_handles()
         self.writer_dropped = self._queue.dropped
         elapsed = max(1e-6, self.clock() - self._started_at)
         for stats in self.throughput.values():
@@ -774,12 +868,22 @@ class StreamRecorder:
             }
         return report
 
+    def _remaining_budget(self) -> int:
+        return max(
+            0,
+            min(self.cache_budget_bytes - self._used, self.run_budget_bytes - self._run_used),
+        )
+
     def _write_batch(self, records: list[dict[str, Any]]) -> None:
         if self.write_hang:
             self._write_hanging = True
             while self.write_hang:
                 time.sleep(0.05)
-        if self._writer_ident is not None and threading.get_ident() != self._writer_ident:
+        if (
+            not self.sync
+            and self._writer_ident is not None
+            and threading.get_ident() != self._writer_ident
+        ):
             raise RuntimeError("only the writer thread may open or write recording files")
         grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
         for record in records:
@@ -790,41 +894,128 @@ class StreamRecorder:
             grouped.setdefault((inst_id, channel), []).append(record)
         groups = list(grouped.items())
         for gi, ((inst_id, channel), group) in enumerate(groups):
-            try:
-                dest, handle = self._handle(inst_id, channel)
-            except ValueError:
-                self.rejected += len(group)
+            leftover = self._write_group(inst_id, channel, group)
+            if leftover:
+                rest = leftover[:]
+                for _key, more in groups[gi + 1 :]:
+                    rest.extend(more)
+                self._stash_unwritten(rest)
+                return
+
+    def _write_group(self, inst_id: str, channel: str, group: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        try:
+            dest, handle = self._handle(inst_id, channel)
+        except ValueError:
+            self.rejected += len(group)
+            return []
+        remaining = self._remaining_budget()
+        keep: list[dict[str, Any]] = []
+        excess: list[dict[str, Any]] = []
+        encoded: list[bytes] = []
+        raw = 0
+        for record in group:
+            line = _encode_record(record)
+            is_gap = record.get("event") == "gap"
+            if keep and (not is_gap) and raw + len(line) + _GZIP_SLACK > remaining:
+                excess.append(record)
                 continue
-            raw = 0
+            if not keep and remaining <= 0 and not is_gap:
+                excess.append(record)
+                continue
+            keep.append(record)
+            encoded.append(line)
+            raw += len(line)
+        leftover_group: list[dict[str, Any]] = []
+        written_n = 0
+        written_raw = 0
+        if encoded:
             before = dest.stat().st_size if dest.exists() else 0
-            leftover_group: list[dict[str, Any]] = []
-            for index, record in enumerate(group):
-                payload = {key: value for key, value in record.items() if not str(key).startswith("_")}
-                line = json.dumps(payload, separators=(",", ":")).encode("utf-8") + b"\n"
-                raw += len(line)
-                handle.write(line)
-                if self._drop_leftover:
-                    leftover_group = group[index + 1 :]
-                    break
+            stop_between = self._drop_leftover or (self._closed and not self.sync)
+            if stop_between:
+                for index, _record in enumerate(keep):
+                    handle.write(encoded[index])
+                    written_n += 1
+                    written_raw += len(encoded[index])
+                    if self._drop_leftover:
+                        leftover_group = keep[index + 1 :]
+                        leftover_group.extend(excess)
+                        excess = []
+                        break
+            else:
+                handle.write(b"".join(encoded))
+                written_n = len(keep)
+                written_raw = raw
             handle.flush()
             after = dest.stat().st_size if dest.exists() else before
             delta = max(0, after - before)
             self._maybe_rescan()
             self._assert_disk()
-            self._assert_budgets(delta)
+            try:
+                self._assert_budgets(delta)
+            except CacheBudgetExceeded:
+                with self._lock:
+                    self._used += delta
+                    self._run_used += delta
+                stats = self.throughput.setdefault(channel, ChannelThroughput())
+                stats.messages += written_n
+                stats.raw_bytes += written_raw
+                self._note_file(dest)
+                rest = leftover_group or excess
+                if rest:
+                    with self._queue._cv:
+                        self._queue._drop_batch(rest)
+                    self.writer_dropped = self._queue.dropped
+                raise
             with self._lock:
                 self._used += delta
                 self._run_used += delta
             stats = self.throughput.setdefault(channel, ChannelThroughput())
-            stats.messages += len(group) - len(leftover_group)
-            stats.raw_bytes += raw
+            stats.messages += written_n
+            stats.raw_bytes += written_raw
             self._note_file(dest)
-            if leftover_group:
-                rest = leftover_group[:]
-                for _key, more in groups[gi + 1 :]:
-                    rest.extend(more)
-                self._stash_unwritten(rest)
+        if leftover_group:
+            return leftover_group
+        if excess:
+            self._fold_excess(excess)
+        return []
+
+    def _fold_excess(self, excess: Sequence[dict[str, Any]]) -> None:
+        if not excess:
+            return
+        already_gap = all(rec.get("event") == "gap" for rec in excess)
+        gap = _gap_from_batch(excess)
+        gap["reason"] = "writer_overflow"
+        with self._queue._cv:
+            if not already_gap:
+                self._queue.dropped += int(gap["dropped"])
+            self.writer_dropped = self._queue.dropped
+        if self._drop_leftover:
+            self._stash_unwritten([gap])
+            return
+        if self.sync:
+            try:
+                self._write_gap_record(gap)
                 return
+            except (CacheBudgetExceeded, LowDiskError, ValueError):
+                return
+        with self._queue._cv:
+            self._queue._gaps.append(gap)
+            self._queue._cv.notify_all()
+
+    def _write_gap_record(self, gap: dict[str, Any]) -> None:
+        channel = str(gap.get("channel") or "")
+        inst_id = str(gap.get("instId") or "")
+        dest, handle = self._handle(inst_id, channel)
+        before = dest.stat().st_size if dest.exists() else 0
+        handle.write(_encode_record(gap))
+        handle.flush()
+        after = dest.stat().st_size if dest.exists() else before
+        delta = max(0, after - before)
+        self._assert_budgets(delta)
+        with self._lock:
+            self._used += delta
+            self._run_used += delta
+        self._note_file(dest)
 
     def _handle(self, inst_id: str, channel: str) -> tuple[Path, Any]:
         period = recording_period_key(self.clock(), self.rotation)
@@ -836,12 +1027,20 @@ class StreamRecorder:
             current[2].close()
             del self._handles[key]
             self.apply_retention()
-        dest = recording_dest(self.cache_dir, inst_id, channel, self.clock(), self.rotation)
+        if self._recordings_root is None:
+            self._recordings_root = recordings_root(self.cache_dir)
+        dest = recording_dest(
+            self.cache_dir,
+            inst_id,
+            channel,
+            self.clock(),
+            self.rotation,
+            root=self._recordings_root,
+        )
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest = dest.resolve()
-        root = (self.cache_dir.resolve() / "recordings").resolve()
-        if not dest.is_relative_to(root):
-            raise ValueError(f"refusing path outside recordings root: {dest}")
+        if not dest.is_relative_to(self.cache_dir):
+            raise ValueError(f"refusing path outside data dir: {dest}")
         handle = gzip.open(dest, "ab")
         self._handles[key] = (period, dest, handle)
         self._note_file(dest)

@@ -239,6 +239,8 @@ DEFAULT_TIME_MAX_RTT = 0.5
 DEFAULT_TIME_REQUEST_TIMEOUT = 3.0
 DEFAULT_TIME_BACKOFF_CAP = 600.0
 WALL_JUMP_S = 2.0
+OFFSET_JUMP_S = 3.0
+UNKNOWN_LOG_INTERVAL_S = 5.0
 
 
 class ClockSync:
@@ -265,6 +267,7 @@ class ClockSync:
         self.offset = 0.0
         self.polls = 0
         self.failures = 0
+        self.rejected_samples = 0
         self.available = False
         self.backoff = 0.0
         self._origin_mono: float | None = None
@@ -357,7 +360,20 @@ class ClockSync:
         mid_wall = (t0_wall + t1_wall) / 2.0
         mid_mono = (t0_mono + t1_mono) / 2.0
         server = int(server_ms) / 1000.0
-        self.offset = server - mid_wall
+        new_offset = server - mid_wall
+        if self.available and abs(new_offset - self.offset) > OFFSET_JUMP_S:
+            self.rejected_samples += 1
+            _LOG.warning(
+                "ignoring implausible OKX /public/time offset jump %+0.3fs -> %+0.3fs",
+                self.offset,
+                new_offset,
+            )
+            self._last_wall = t1_wall
+            self._last_mono = t1_mono
+            self._last_poll_mono = t1_mono
+            self._next_poll_mono = t1_mono + self.poll_interval
+            return
+        self.offset = new_offset
         self._origin_mono = mid_mono
         self._origin_corrected = server
         self._last_wall = t1_wall
@@ -439,9 +455,6 @@ class EventQueue:
                 repeats=item.repeats + 1,
                 first_ts_ms=first,
             )
-            return
-        if len(self.alerts) >= self.control_max:
-            self.merged_alerts += 1
             return
         self.alerts.append(
             StreamMessage(
@@ -621,6 +634,7 @@ class OkxPublicStream:
         self.args = validate_subscriptions(subscriptions)
         self._subs = frozenset((arg["channel"], arg["instId"]) for arg in self.args)
         self.rejected_messages = 0
+        self._unknown_log_at: dict[tuple[str, str], float] = {}
         self.allow_unofficial_hosts = allow_unofficial_hosts
         self.allow_insecure = allow_insecure
         self.public_url = endpoints.resolve_ws_url(
@@ -673,7 +687,10 @@ class OkxPublicStream:
         self._url_override: dict[str, str] = {}
         self._clock = clock or time.monotonic
         self._sleep = sleep or asyncio.sleep
-        self._queue = EventQueue(queue_maxsize)
+        self._queue = EventQueue(
+            queue_maxsize,
+            control_max=max(CONTROL_MAX, len(self.args) + 8),
+        )
         self.record_error: BaseException | None = None
         self._stale: set[tuple[str, str]] = set()
         self._last_data_at: dict[tuple[str, str], float] = {}
@@ -905,7 +922,7 @@ class OkxPublicStream:
         inst_id = str(arg.get("instId") or "")
         rows = payload.get("data") or []
         if not self._known(channel, inst_id):
-            self.rejected_messages += 1
+            self._reject_unknown(channel, inst_id)
             return
         self._observe_message_lag(rows, recv_mono=recv_mono, recv_wall=recv_wall)
         if channel == "trades":
@@ -933,6 +950,20 @@ class OkxPublicStream:
 
     def _known(self, channel: str, inst_id: str) -> bool:
         return (channel, inst_id) in self._subs
+
+    def _reject_unknown(self, channel: str, inst_id: str) -> None:
+        self.rejected_messages += 1
+        key = (channel, inst_id)
+        now = self._clock()
+        last = self._unknown_log_at.get(key)
+        if last is None or (now - last) >= UNKNOWN_LOG_INTERVAL_S:
+            _LOG.warning(
+                "ignoring unsubscribed channel/inst pair %s %s (rejected=%s)",
+                channel,
+                inst_id,
+                self.rejected_messages,
+            )
+            self._unknown_log_at[key] = now
 
     async def _on_trades(
         self,
@@ -1175,6 +1206,10 @@ class OkxPublicStream:
 
     def _refresh_lag(self) -> None:
         writer = self.recorder.service_lag()
+        now = self._clock()
+        last = max(self._last_data_at.values()) if self._last_data_at else now
+        if writer <= 0 and (now - last) >= self.lag_threshold:
+            self.exchange_lag = 0.0
         age = max(self.exchange_lag, writer)
         self.writer_lag = age
         now_ms = int(self._wall() * 1000)

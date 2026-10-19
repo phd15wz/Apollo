@@ -16,8 +16,10 @@ from tools.okx.record import (
     StreamRecorder,
     recording_dest,
     recording_period_key,
+    recordings_root,
 )
 from tools.okx.stream import CONTROL_MAX, EventQueue, GapInfo, MAX_PENDING_GAPS, StreamMessage
+from tools.okx.tests.conftest import fail_if_hangs
 
 
 class WallClock:
@@ -31,6 +33,19 @@ class WallClock:
 def _read_jsonl(path: Path) -> list[dict]:
     with gzip.open(path, "rt", encoding="utf-8") as handle:
         return [json.loads(line) for line in handle if line.strip()]
+
+
+def _tape_counts(rec: StreamRecorder) -> tuple[int, int, list[dict]]:
+    rows: list[dict] = []
+    for path in rec.files_written:
+        if path.is_file():
+            try:
+                rows.extend(_read_jsonl(path))
+            except OSError:
+                continue
+    written = sum(1 for row in rows if row.get("event") == "data")
+    dropped = sum(int(row.get("dropped") or 0) for row in rows if row.get("event") == "gap")
+    return written, dropped, rows
 
 
 def test_recording_off_by_default(tmp_path: Path) -> None:
@@ -404,6 +419,7 @@ def test_batch_write_throughput(tmp_path: Path) -> None:
     assert sum(1 for row in _read_jsonl(rec.files_written[0]) if row.get("event") == "data") == 2000
 
 
+@fail_if_hangs(8)
 def test_close_is_idempotent_and_joins_writer(tmp_path: Path) -> None:
     rec = StreamRecorder(cache_dir=tmp_path, enabled=True, sync=False)
     rec.start()
@@ -502,8 +518,9 @@ def test_alert_cap_bounds_distinct_slots() -> None:
             StreamMessage(kind="lag", channel="trades", inst_id=f"INST-{i}", ts_ms=i),
             control=True,
         )
-    assert len(queue.alerts) == CONTROL_MAX
-    assert queue.merged_alerts == extra
+    assert len(queue.alerts) == CONTROL_MAX + extra
+    assert queue.merged_alerts == 0
+    assert {item.inst_id for item in queue.alerts} == {f"INST-{i}" for i in range(CONTROL_MAX + extra)}
     assert CONTROL_MAX == 64
 
 
@@ -663,6 +680,7 @@ def test_retention_still_counts_archive_bytes(tmp_path: Path) -> None:
     assert (tmp_path / "trades" / "old.zip").exists()
 
 
+@fail_if_hangs(8)
 def test_in_flight_offer_registered_before_closed_check(tmp_path: Path) -> None:
     rec = StreamRecorder(cache_dir=tmp_path, enabled=True, offer_delay=0.15, sync=False)
     rec.start()
@@ -697,6 +715,7 @@ def test_in_flight_offer_registered_before_closed_check(tmp_path: Path) -> None:
         _read_jsonl(path)
 
 
+@fail_if_hangs(8)
 def test_close_waits_out_slow_disk_write(tmp_path: Path) -> None:
     rec = StreamRecorder(
         cache_dir=tmp_path,
@@ -745,6 +764,7 @@ def test_only_writer_thread_writes_files(tmp_path: Path) -> None:
         )
 
 
+@fail_if_hangs(8)
 def test_close_returns_when_disk_blocks(tmp_path: Path) -> None:
     rec = StreamRecorder(
         cache_dir=tmp_path,
@@ -772,6 +792,7 @@ def test_close_returns_when_disk_blocks(tmp_path: Path) -> None:
         writer.join(timeout=1.0)
 
 
+@fail_if_hangs(8)
 def test_close_finishes_gzip_on_slow_disk(tmp_path: Path) -> None:
     rec = StreamRecorder(
         cache_dir=tmp_path,
@@ -807,6 +828,7 @@ def test_close_finishes_gzip_on_slow_disk(tmp_path: Path) -> None:
     assert int(incomplete[0]["dropped"]) == rec.accepted - recorded
 
 
+@fail_if_hangs(8)
 def test_close_stops_mid_batch_and_keeps_gzip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     real_open = gzip.open
 
@@ -926,3 +948,189 @@ def test_wait_put_does_not_leak_waiting(tmp_path: Path) -> None:
     assert rec._queue._waiting == []
     assert rec.service_lag() == 0
     rec.close()
+
+
+def test_writer_dropped_plus_written_equals_offered(tmp_path: Path) -> None:
+    rec = StreamRecorder(
+        cache_dir=tmp_path,
+        enabled=True,
+        write_queue_maxsize=4,
+        write_sleep=0.05,
+        write_sleep_on_close=True,
+        offer_timeout=0.0,
+        sync=False,
+    )
+    rec.start()
+    offered = 80
+    for i in range(offered):
+        rec.offer(
+            {
+                "ts": i,
+                "event": "data",
+                "channel": "trades",
+                "instId": "BTC-USDT-SWAP",
+                "data": {"tradeId": str(i)},
+            }
+        )
+    rec.close(timeout=0.2)
+    written, dropped, _rows = _tape_counts(rec)
+    assert rec.offered == offered
+    assert rec.accepted == offered
+    assert written + rec.writer_dropped == rec.offered
+    if not rec.shutdown_incomplete:
+        assert written + dropped == rec.offered
+        assert rec.writer_dropped == dropped
+
+
+@fail_if_hangs(8)
+def test_shutdown_incomplete_does_not_double_count(tmp_path: Path) -> None:
+    rec = StreamRecorder(
+        cache_dir=tmp_path,
+        enabled=True,
+        write_queue_maxsize=2,
+        write_sleep=0.08,
+        write_sleep_on_close=True,
+        offer_timeout=0.0,
+        sync=False,
+    )
+    rec.start()
+    offered = 40
+    for i in range(offered):
+        rec.offer_batch_sync(
+            [{"ts": i, "event": "data", "channel": "trades", "instId": "BTC-USDT-SWAP", "data": {"tradeId": str(i)}}]
+        )
+    rec.close(timeout=0.15)
+    written, dropped, rows = _tape_counts(rec)
+    assert rec.offered == offered
+    assert written + rec.writer_dropped == rec.offered
+    leftover = offered - written
+    assert leftover == rec.writer_dropped
+    incomplete = [row for row in rows if row.get("reason") == "shutdown_incomplete"]
+    assert rec.shutdown_incomplete
+    assert leftover > 0
+    if incomplete:
+        assert int(incomplete[0]["dropped"]) <= leftover
+
+
+def test_symlinked_recordings_inside_data_dir_is_ok(tmp_path: Path) -> None:
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    real = cache / "real-recordings"
+    real.mkdir()
+    (cache / "recordings").symlink_to(real)
+    rec = StreamRecorder(cache_dir=cache, enabled=True)
+    rec.write_data("trades", "BTC-USDT-SWAP", {"tradeId": "1"}, ts_ms=1)
+    rec.close()
+    assert list(real.rglob("*.jsonl.gz"))
+    assert recordings_root(cache) == real.resolve()
+
+
+def test_symlinked_recordings_outside_data_dir_is_refused(tmp_path: Path) -> None:
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (cache / "recordings").symlink_to(outside)
+    with pytest.raises(ValueError, match="outside data dir"):
+        StreamRecorder(cache_dir=cache, enabled=True)
+    assert list(outside.rglob("*.jsonl.gz")) == []
+
+
+def test_large_batch_does_not_overshoot_run_budget(tmp_path: Path) -> None:
+    rec = StreamRecorder(
+        cache_dir=tmp_path,
+        enabled=True,
+        cache_budget_bytes=10**9,
+        run_budget_bytes=900,
+        sync=True,
+    )
+    batch = [
+        {
+            "ts": i,
+            "event": "data",
+            "channel": "trades",
+            "instId": "BTC-USDT-SWAP",
+            "data": {"tradeId": str(i), "pad": "x" * 40},
+        }
+        for i in range(200)
+    ]
+    try:
+        rec.offer_batch_sync(batch)
+    except CacheBudgetExceeded:
+        pass
+    rec.close()
+    on_disk = sum(path.stat().st_size for path in rec.files_written if path.is_file())
+    assert on_disk <= 900 + 512
+    written, dropped, rows = _tape_counts(rec)
+    assert written + rec.writer_dropped == rec.offered
+    assert written < 200
+    assert dropped > 0 or rec.writer_dropped > 0
+    assert any(row.get("event") == "gap" for row in rows) or rec.writer_dropped > 0
+
+
+def test_overflow_drops_stay_on_their_instrument() -> None:
+    queue = EventQueue(maxsize=2)
+    n = 80
+    for i in range(n):
+        queue.put(
+            StreamMessage(
+                kind="data",
+                channel="trades",
+                inst_id=f"INST{i}-USDT-SWAP",
+                ts_ms=i + 1,
+                data=i + 1,
+            )
+        )
+    by_inst: dict[str, int] = {}
+    for item in queue.items:
+        if item is None or item.kind != "gap" or item.gap is None:
+            continue
+        by_inst[item.inst_id] = by_inst.get(item.inst_id, 0) + item.gap.dropped
+    assert queue.overflow_count == n - 2
+    assert queue.overflow_count == sum(by_inst.values())
+    assert all(count == 1 for count in by_inst.values())
+    assert len(by_inst) == n - 2
+
+
+def test_recv_stamp_drives_writer_lag(tmp_path: Path) -> None:
+    class Mono:
+        def __init__(self) -> None:
+            self.t = 100.0
+
+        def __call__(self) -> float:
+            return self.t
+
+    mono = Mono()
+    rec = StreamRecorder(cache_dir=tmp_path, enabled=True, sync=False, mono=mono, write_sleep=0.2)
+    rec.start()
+    rec._queue.wait_put(
+        [
+            {
+                "ts": 1,
+                "event": "data",
+                "channel": "trades",
+                "instId": "BTC-USDT-SWAP",
+                "data": {"tradeId": "1"},
+                "_recv_mono": 97.0,
+            }
+        ],
+        1.0,
+    )
+    assert rec.service_lag() >= 2.9
+    rec.close()
+
+
+def test_unsubscribed_pair_logs_rate_limited_warning(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    rec = StreamRecorder(
+        cache_dir=tmp_path,
+        enabled=True,
+        allowed_pairs=frozenset({("trades", "BTC-USDT-SWAP")}),
+        clock=WallClock(1_700_000_000.0),
+    )
+    with caplog.at_level("WARNING", logger="tools.okx.record"):
+        rec.write_data("trades", "ETH-USDT-SWAP", {"tradeId": "1"}, ts_ms=1)
+        rec.write_data("trades", "ETH-USDT-SWAP", {"tradeId": "2"}, ts_ms=2)
+    rec.close()
+    warnings = [rec_msg for rec_msg in caplog.records if "unsubscribed pair" in rec_msg.getMessage()]
+    assert rec.rejected >= 2
+    assert len(warnings) == 1
