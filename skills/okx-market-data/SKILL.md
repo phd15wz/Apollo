@@ -51,7 +51,8 @@ trades = history_trades_range(
 
 REST history-trades is about three months. Windows older than that raise
 `HistoryWindowTooOld` — use the official zip archive (below), not an empty
-list. `PaginationBudgetExceeded.trades` keeps any rows already fetched.
+list. `PaginationBudgetExceeded.trades` keeps any rows already fetched, including
+when the call had no start time.
 
 Live public stream (optional `websockets` package):
 
@@ -79,6 +80,14 @@ apply. `OKX_MIN_FREE_DISK_BYTES` (default 10 GiB) stops recording. Full
 overflow coalesces into one gap event (not written to disk). Writer-queue
 overflow coalesces into a `writer_overflow` gap that is written so Hawkes
 fits cannot mistake a hole for silence.
+
+Measured on SPCX-USDT-SWAP, Mon 19 Oct 2026 06:25–06:36 PT (weekday US
+session, across the 6:30 open): trades ~1,190 msgs/min / ~26 KB/min
+compressed; books5 ~548 msgs/min / ~36 KB/min compressed; ~3.8 MB/hour
+total compressed (~5–9× smaller than raw, about 14% of raw). The open
+spiked to ~20,000 contracts per 15 s. Keep the current 512 MiB recorder
+run budget and 4 GiB cache budget unless disk is tight or you record many
+instruments / full `books`.
 
 Maintenance:
 

@@ -56,10 +56,11 @@ to NumPy structured arrays (`trades_to_array`, `TRADE_DTYPE`) with integer
 millisecond timestamps.
 
 `history_trades_range` defaults to trade-id paging. When the window has an
-end time, it first makes one timestamp-mode request (`type=2`) to locate the
-**newest trade at or before the end**, then pages backward by trade id. Hitting
-`max_pages` before the window start raises `PaginationBudgetExceeded` (the
-trades already fetched are on `exc.trades`) rather than returning a silent
+end time, it first makes one timestamp-mode request (`type=2`) and takes the
+**highest trade id at that timestamp** (`ts <= end`), then pages backward by
+trade id. Hitting `max_pages` before the window start raises
+`PaginationBudgetExceeded` (the trades already fetched are on `exc.trades`,
+including when there was no start time) rather than returning a silent
 partial or empty list. A window older than OKX's ~3-month REST retention
 raises `HistoryWindowTooOld` and tells you to use the bulk archive.
 
@@ -223,10 +224,32 @@ python3 -m tools.okx.stream_demo --inst SPCX-USDT-SWAP --channels trades,books5 
 4. **Public only.** No keys, no `login`, no private path. Unofficial hosts
    still require `wss` unless `allow_insecure=True`.
 
+### Measured recording size (SPCX-USDT-SWAP)
+
+Weekday US session, Mon 19 Oct 2026, 06:25–06:36 PT (across the 6:30 open):
+
+| Channel | Messages / min | Compressed |
+| --- | --- | --- |
+| `trades` | ~1,190 | ~26 KB/min |
+| `books5` | ~548 | ~36 KB/min |
+
+Together ~3.8 MB/hour compressed, about 5–9× smaller than raw JSONL (~14% of
+raw). The 6:30 open itself spiked to ~20,000 contracts per 15 s.
+
+Those rates suggest a **512 MiB** per-run recording budget covers on the order
+of 100 hours of this pair (trades + books5) even through the open, and the
+**4 GiB** cache budget covers many such runs. Defaults stay at
+`OKX_DATA_BUDGET_BYTES=4 GiB`, recorder per-run 512 MiB when that env is unset,
+`OKX_MIN_FREE_DISK_BYTES=10 GiB`, and daily rotation. Raise the run budget
+only if you record many instruments or full `books` snapshots; lower it if
+disk is tight. Do not commit recordings.
+
 **Overflow policy (in-memory consumer queue):** default 10_000 *data*
-events. Alerts live in a capped lane (64). `stale`/`recovered` for one
-feed keep a single current state (a feed that ends stale delivers
-`stale` last). Other kinds merge repeats of `(kind, channel, instId)`.
+events. Repeated alerts for one `(kind, channel, instId)` merge in place
+(the default 64-slot cap no longer books a new instrument onto another
+feed). `stale`/`recovered` for one feed keep a single current state (a
+feed that ends stale delivers `stale` last). Other kinds merge repeats of
+`(kind, channel, instId)`.
 Gap events keep exact trade-id or timestamp ranges and merge only when
 those ranges touch, up to 256 pending holes; beyond that one summary
 gap is emitted (`precise=false`, hole count, trades missed, overall

@@ -18,6 +18,8 @@ from tools.okx.record import StreamRecorder
 from tools.okx.stream import (
     DEFAULT_PING_INTERVAL,
     DEFAULT_RECONNECT_MAX,
+    OFFSET_CONFIRM_SAMPLES,
+    OFFSET_JUMP_S,
     ClockSync,
     GapInfo,
     OkxPublicStream,
@@ -25,7 +27,7 @@ from tools.okx.stream import (
     book_crc32,
     validate_subscriptions,
 )
-from tools.okx.tests.conftest import FakeTransport, make_client
+from tools.okx.tests.conftest import FakeTransport, fail_if_hangs, make_client
 from tools.okx.types import Trade
 
 
@@ -144,6 +146,16 @@ async def _collect(stream: OkxPublicStream, n: int, timeout: float = 2.0) -> lis
     for _ in range(n):
         out.append(await asyncio.wait_for(anext(stream), timeout=timeout))
     return out
+
+
+async def _next_data(stream: OkxPublicStream, timeout: float = 2.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        remaining = max(0.01, deadline - time.monotonic())
+        msg = await asyncio.wait_for(anext(stream), timeout=remaining)
+        if msg.kind == "data":
+            return msg
+    raise AssertionError("timed out waiting for a data message")
 
 
 INST = "BTC-USDT-SWAP"
@@ -1341,22 +1353,22 @@ async def test_clock_jump_no_false_alert_then_real_lag(tmp_path: Path) -> None:
         while time.monotonic() < deadline and not stream._sync.available:
             await asyncio.sleep(0.02)
         await sock.push(_trade_push(INST, 1, ts_ms=int(clocks.server * 1000)))
-        await asyncio.wait_for(anext(stream), timeout=2)
+        await _next_data(stream)
         assert stream.writer_lagging is False
         clocks.wall += 30.0
         clocks.mono += 0.01
         stream._sync.maybe_poll()
         await sock.push(_trade_push(INST, 2, ts_ms=int(clocks.server * 1000)))
-        await asyncio.wait_for(anext(stream), timeout=2)
+        await _next_data(stream)
         assert stream.writer_lagging is False
         clocks.wall -= 30.0
         clocks.mono += 0.01
         stream._sync.maybe_poll()
         await sock.push(_trade_push(INST, 3, ts_ms=int(clocks.server * 1000)))
-        await asyncio.wait_for(anext(stream), timeout=2)
+        await _next_data(stream)
         assert stream.writer_lagging is False
         await sock.push(_trade_push(INST, 4, ts_ms=int((clocks.server - 30) * 1000)))
-        await asyncio.wait_for(anext(stream), timeout=2)
+        await _next_data(stream)
         assert stream.exchange_lag >= 25
         assert stream.writer_lagging
 
@@ -1599,3 +1611,336 @@ async def test_healthy_recorder_emits_no_lag_over_threshold(tmp_path: Path) -> N
         assert stream.writer_lagging is False
         kinds = [item.kind for item in stream._queue.items if item is not None]
         assert "lag" not in kinds
+
+
+def test_public_time_offset_uses_rtt_midpoint() -> None:
+    class Clocks:
+        def __init__(self) -> None:
+            self.wall = 1_000.0
+            self.mono = 50.0
+
+        def fetch(self) -> int:
+            self.wall += 0.20
+            self.mono += 0.20
+            return 1_000_400
+
+    clocks = Clocks()
+    sync = ClockSync(fetch=clocks.fetch, poll_interval=60, wall=lambda: clocks.wall, mono=lambda: clocks.mono)
+    sync.poll()
+    assert sync.polls == 1
+    assert sync.offset == pytest.approx(0.3, abs=1e-9)
+    assert OFFSET_JUMP_S == 3.0
+
+
+def test_public_time_ignores_implausible_offset_jump() -> None:
+    class Clocks:
+        def __init__(self) -> None:
+            self.wall = 1_000.0
+            self.mono = 50.0
+            self.server = 1_000.0
+
+        def fetch(self) -> int:
+            return int(self.server * 1000)
+
+    clocks = Clocks()
+    sync = ClockSync(fetch=clocks.fetch, poll_interval=0, wall=lambda: clocks.wall, mono=lambda: clocks.mono)
+    event = sync.poll()
+    assert event is not None and event["kind"] == "clock_offset_adopted"
+    good = sync.offset
+    clocks.mono += 1.0
+    clocks.wall += 1.0
+    clocks.server += 30.0
+    event = sync.poll()
+    assert event is not None and event["kind"] == "clock_sample_rejected"
+    assert sync.rejected_samples == 1
+    assert sync.offset == good
+    assert sync.polls == 1
+    clocks.mono += 1.0
+    clocks.wall += 1.0
+    clocks.server = 1_002.0
+    event = sync.poll()
+    assert event is None
+    assert sync.offset == pytest.approx(0.0, abs=1e-9)
+    assert sync.polls == 2
+    assert OFFSET_CONFIRM_SAMPLES == 3
+
+
+def test_bad_first_time_sample_converges_after_three_agreeing() -> None:
+    class Clocks:
+        def __init__(self) -> None:
+            self.wall = 1_000.0
+            self.mono = 50.0
+            self.server = 1_030.0
+
+        def fetch(self) -> int:
+            return int(self.server * 1000)
+
+    clocks = Clocks()
+    sync = ClockSync(fetch=clocks.fetch, poll_interval=0, wall=lambda: clocks.wall, mono=lambda: clocks.mono)
+    assert sync.poll()["kind"] == "clock_offset_adopted"
+    assert sync.offset == pytest.approx(30.0, abs=1e-9)
+    kinds: list[str] = []
+    for i in range(OFFSET_CONFIRM_SAMPLES):
+        clocks.mono += 1.0
+        clocks.wall += 1.0
+        clocks.server = 1_000.0 + (i + 1)
+        event = sync.poll()
+        assert event is not None
+        kinds.append(event["kind"])
+    assert kinds[: OFFSET_CONFIRM_SAMPLES - 1] == ["clock_sample_rejected"] * (OFFSET_CONFIRM_SAMPLES - 1)
+    assert kinds[-1] == "clock_offset_adopted"
+    assert sync.offset == pytest.approx(0.0, abs=1e-6)
+    assert sync.polls == 2
+    assert sync.rejected_samples == OFFSET_CONFIRM_SAMPLES
+
+
+def test_wall_clock_step_is_not_a_server_jump() -> None:
+    class Clocks:
+        def __init__(self) -> None:
+            self.wall = 1_000.0
+            self.mono = 50.0
+            self.server = 1_000.0
+
+        def fetch(self) -> int:
+            return int(self.server * 1000)
+
+    clocks = Clocks()
+    sync = ClockSync(fetch=clocks.fetch, poll_interval=0, wall=lambda: clocks.wall, mono=lambda: clocks.mono)
+    sync.poll()
+    assert sync.offset == pytest.approx(0.0, abs=1e-9)
+    clocks.wall += 30.0
+    clocks.mono += 0.05
+    clocks.server += 0.05
+    event = sync.poll()
+    assert event is None
+    assert sync.rejected_samples == 0
+    assert sync.polls == 2
+    assert abs(sync.offset - (-30.0)) < 1.0
+
+
+@run_async
+async def test_clock_sync_events_reach_the_consumer() -> None:
+    class Clocks:
+        def __init__(self) -> None:
+            self.wall = 1_700_000_000.0
+            self.mono = 10.0
+            self.server = 1_700_000_030.0
+            self.n = 0
+
+        def wall_fn(self) -> float:
+            return self.wall
+
+        def mono_fn(self) -> float:
+            return self.mono
+
+        def fetch(self) -> int:
+            self.n += 1
+            self.mono += 0.001
+            return int(self.server * 1000)
+
+    clocks = Clocks()
+    broker = ScriptedConnector()
+    sock = broker.add()
+    async with OkxPublicStream(
+        [("trades", INST)],
+        connector=broker,
+        ping_interval=30,
+        stale_timeout=30,
+        time_fetcher=clocks.fetch,
+        time_poll_interval=60.0,
+        wall_clock=clocks.wall_fn,
+        mono_clock=clocks.mono_fn,
+        clock=clocks.mono_fn,
+    ) as stream:
+        await _wait_sent(sock, lambda s: "subscribe" in s)
+        ready = time.monotonic() + 2.0
+        while time.monotonic() < ready and not stream._sync.available:
+            await asyncio.sleep(0.02)
+        assert stream._sync.available
+        kinds = [item.kind for item in stream._queue.items if item is not None]
+        assert "clock_offset_adopted" in kinds
+        emitted: list[str] = []
+        for step in range(OFFSET_CONFIRM_SAMPLES):
+            clocks.mono += 1.0
+            clocks.wall += 1.0
+            clocks.server = 1_700_000_000.0 + (clocks.mono - 10.0)
+            event = stream._sync.poll()
+            stream._emit_clock_event(event)
+            assert event is not None
+            emitted.append(str(event["kind"]))
+            if step < OFFSET_CONFIRM_SAMPLES - 1:
+                assert event["kind"] == "clock_sample_rejected"
+            else:
+                assert event["kind"] == "clock_offset_adopted"
+        kinds = [item.kind for item in stream._queue.items if item is not None]
+        assert "clock_sample_rejected" in kinds
+        assert "clock_offset_adopted" in kinds
+        assert emitted.count("clock_sample_rejected") == OFFSET_CONFIRM_SAMPLES - 1
+        assert emitted.count("clock_offset_adopted") == 1
+        rejected = [item for item in stream._queue.items if item is not None and item.kind == "clock_sample_rejected"]
+        adopted = [item for item in stream._queue.items if item is not None and item.kind == "clock_offset_adopted"]
+        assert rejected and rejected[0].repeats >= OFFSET_CONFIRM_SAMPLES - 1
+        assert adopted and adopted[0].repeats >= 1
+
+
+@run_async
+async def test_unsubscribed_pair_is_logged(caplog: pytest.LogCaptureFixture) -> None:
+    broker = ScriptedConnector()
+    sock = broker.add()
+    async with OkxPublicStream(
+        [("trades", INST)],
+        connector=broker,
+        ping_interval=30,
+        stale_timeout=30,
+        clock=lambda: 100.0,
+    ) as stream:
+        await _wait_sent(sock, lambda s: "subscribe" in s)
+        with caplog.at_level("WARNING", logger="tools.okx.stream"):
+            for trade_id in range(1, 21):
+                await sock.push(_trade_push("ETH-USDT-SWAP", trade_id))
+            await sock.push(_trade_push(INST, 21))
+            await asyncio.wait_for(anext(stream), timeout=1)
+            await asyncio.sleep(0.05)
+    assert stream.rejected_messages == 20
+    warnings = [item for item in caplog.records if "unsubscribed" in item.getMessage()]
+    assert len(warnings) == 1
+
+
+@run_async
+async def test_lag_clears_when_quiet_and_backlog_empty(tmp_path: Path) -> None:
+    rec = StreamRecorder(cache_dir=tmp_path, enabled=True, sync=False)
+    broker = ScriptedConnector()
+    sock = broker.add()
+    async with OkxPublicStream(
+        [("trades", INST)],
+        connector=broker,
+        recorder=rec,
+        ping_interval=30,
+        stale_timeout=0.2,
+        lag_threshold=0.15,
+        time_fetcher=_synced_now_ms,
+    ) as stream:
+        await _wait_sent(sock, lambda s: "subscribe" in s)
+        ready = time.monotonic() + 2.0
+        while time.monotonic() < ready and not stream._sync.available:
+            await asyncio.sleep(0.02)
+        now = _synced_now_ms()
+        await sock.push(_trade_push(INST, 1, ts_ms=now - 30_000))
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and not stream.writer_lagging:
+            await asyncio.sleep(0.02)
+        assert stream.writer_lagging
+        rec.flush()
+        clear_deadline = time.monotonic() + 2.0
+        while time.monotonic() < clear_deadline and stream.writer_lagging:
+            await asyncio.sleep(0.02)
+        assert stream.writer_lagging is False
+        kinds = [item.kind for item in stream._queue.items if item is not None]
+        assert "lag_cleared" in kinds
+
+
+@run_async
+async def test_receive_time_is_stamped_at_recv(tmp_path: Path) -> None:
+    class Mono:
+        def __init__(self) -> None:
+            self.t = 1_000.0
+
+        def __call__(self) -> float:
+            return self.t
+
+    mono = Mono()
+    rec = StreamRecorder(cache_dir=tmp_path, enabled=True, sync=False, mono=mono)
+    broker = ScriptedConnector()
+    sock = broker.add()
+    captured: dict[str, float | None] = {}
+    async with OkxPublicStream(
+        [("trades", INST)],
+        connector=broker,
+        recorder=rec,
+        ping_interval=30,
+        stale_timeout=30,
+        mono_clock=mono,
+        clock=mono,
+    ) as stream:
+        orig_record = stream._record_batch
+        orig_offer = rec.offer_batch_sync
+
+        async def delayed_record(*args: object, **kwargs: object) -> object:
+            captured["recv_arg"] = kwargs.get("recv_mono")  # type: ignore[assignment]
+            if captured["recv_arg"] is None and args:
+                pass
+            mono.t += 0.4
+            captured["record_at"] = mono.t
+            return await orig_record(*args, **kwargs)  # type: ignore[misc]
+
+        def wrap_offer(records: list, timeout: float | None = None) -> bool:
+            captured["stamped"] = float(records[0]["_recv_mono"])
+            captured["offer_at"] = mono.t
+            return orig_offer(records, timeout)
+
+        stream._record_batch = delayed_record  # type: ignore[method-assign]
+        rec.offer_batch_sync = wrap_offer  # type: ignore[method-assign]
+        await _wait_sent(sock, lambda s: "subscribe" in s)
+        recv_before = mono.t
+        await sock.push(_trade_push(INST, 1, ts_ms=_synced_now_ms()))
+        await asyncio.wait_for(anext(stream), timeout=2)
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and "stamped" not in captured:
+            await asyncio.sleep(0.01)
+    assert captured["stamped"] == pytest.approx(recv_before, abs=1e-9)
+    assert captured["record_at"] - captured["stamped"] == pytest.approx(0.4, abs=1e-9)
+    assert captured["offer_at"] - captured["stamped"] == pytest.approx(0.4, abs=1e-9)
+    assert captured["stamped"] != captured["record_at"]
+
+
+@fail_if_hangs(15)
+@run_async
+async def test_stop_accounts_for_leftover_as_shutdown_incomplete(tmp_path: Path) -> None:
+    rec = StreamRecorder(
+        cache_dir=tmp_path,
+        enabled=True,
+        write_queue_maxsize=8,
+        write_sleep=0.05,
+        write_sleep_on_close=True,
+        offer_timeout=0.2,
+        sync=False,
+    )
+    broker = ScriptedConnector()
+    sock = broker.add()
+    stream = OkxPublicStream(
+        [("trades", INST)],
+        connector=broker,
+        recorder=rec,
+        ping_interval=30,
+        stale_timeout=30,
+        shutdown_timeout=0.15,
+    )
+    await stream.start()
+    try:
+        await _wait_sent(sock, lambda s: "subscribe" in s)
+        await sock.push(
+            {
+                "arg": {"channel": "trades", "instId": INST},
+                "data": [
+                    {
+                        "instId": INST,
+                        "tradeId": str(tid),
+                        "px": "1",
+                        "sz": "1",
+                        "side": "buy",
+                        "ts": str(1_700_000_000_000 + tid),
+                        "count": "1",
+                    }
+                    for tid in range(1, 81)
+                ],
+            }
+        )
+        await asyncio.sleep(0.05)
+    finally:
+        await stream.stop()
+    recorded, covered = _tape_coverage(rec)
+    assert rec.offered == rec.accepted
+    assert recorded + rec.writer_dropped == rec.accepted
+    assert rec.writer_dropped == covered
+    if rec.shutdown_incomplete:
+        assert covered > 0
