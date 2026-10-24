@@ -13,7 +13,7 @@ inst_type: USDT-SWAP
 # Research AAOI is optical-related but stays research (not in optical).
 groups:
   chips:
-    shared_cap: false
+    shared_cap: true
     tickers: [NVDA, AMD, AVGO, INTC, MRVL, TSM]
   memory:
     shared_cap: true
