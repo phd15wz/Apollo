@@ -1,8 +1,8 @@
-# Rates and DXY puller (scaffold)
+# Rates and DXY puller
 
-Market-state feed for US Treasury yields and a research dollar index. The locked rules are in [`docs/macro-rates-dxy.md`](../../docs/macro-rates-dxy.md). This package is the scaffold Isaac fills. It does not call FRED or Yahoo.
+Market-state feed for US Treasury yields and a research dollar index. The locked rules are in [`docs/macro-rates-dxy.md`](../../docs/macro-rates-dxy.md).
 
-Pure transforms, the FRED `available_at` clock, and the cache layout are implemented. Live HTTP is a TODO in `fred.py`, `yahoo.py`, and `refresh.py`.
+`fred.fetch_observations` GETs the FRED observations endpoint. `yahoo.fetch_dxy_history` downloads daily `DX-Y.NYB` closes through `yfinance` (imported inside the download helper). `refresh_once` merges them into the cache, checks the published 2s10s spread, and returns the live gate. Tests inject those clients and do not open a socket.
 
 Requires Python 3.11+. Runtime deps already in the repo: `numpy`, `pandas` (only so closures go through `load_confirmed()`). No Numba.
 
@@ -15,13 +15,13 @@ python3 -m pip install -r requirements.txt
 python3 -m pytest tools/macro/tests -q
 ```
 
-The refresh command checks the key and the cache path, then stops. It does not open a socket:
+A live refresh needs `FRED_API_KEY` in the environment (from the secret store) and a cache outside the repo. `--backfill` is the manual run outside the 16:15 America/New_York window. It does not move `available_at` backward.
 
 ```bash
 FRED_API_KEY=... python3 -m tools.macro.refresh --cache-dir "$MACRO_DATA_DIR"
 ```
 
-Exit 2 means the key is missing or the cache path is inside the repo. Exit 3 means the HTTP refresh is still unimplemented.
+Exit 0 means the cache was updated. Exit 2 means the key is missing or the cache path is inside the repo. Any other failure, including the spread check and a closed pull window, exits 1. The pytest suite does not call FRED or Yahoo.
 
 ## Series
 
@@ -73,10 +73,8 @@ DXY: `dxy_available_at` is the Yahoo bar close in America/New_York.
 
 Do not commit cache files, the FRED key, or Yahoo HTML.
 
-## What Isaac fills
+## Refresh
 
-1. `fred.fetch_observations` — `GET https://api.stlouisfed.org/fred/series/observations` with `fred_query_params`. Drop FRED `"."` values. Do not log the params; they contain the key.
-2. `yahoo.fetch_dxy_history` — `yfinance` ticker `DX-Y.NYB` only. Store the close and the ticker.
-3. `refresh.refresh_once` — the steps are in that function's docstring. Wire the transforms, the spread check, the vintage merge, and the live gate.
+`refresh_once` pulls `DGS2`, `DGS10`, `T10Y2Y`, and `DFII10`, then `DX-Y.NYB`. It runs `assert_published_spread` on the merged book and writes nothing if that check fails. `upsert_print` keeps the first `available_at` when a level is replaced. Flags at `now` use only rows already visible. `live_hard_gate` reads `DGS10` and `DFII10`. Research flags are on the summary and do not open the gate.
 
-`FRED_API_KEY` comes from the environment, which the secret store exports for the process. A missing key raises `MissingFredApiKey`.
+`FRED_API_KEY` comes from the environment. A missing key raises `MissingFredApiKey`. FRED errors do not include the query string.

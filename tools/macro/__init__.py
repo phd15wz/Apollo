@@ -1,8 +1,8 @@
-"""Rates and DXY market-state scaffold.
+"""Rates and DXY market-state puller.
 
-Pure transforms, the FRED availability clock, and the outside-git cache
-layout are implemented. FRED and Yahoo HTTP are TODOs. The locked spec is
-``docs/macro-rates-dxy.md``.
+Pure transforms, the FRED availability clock, the outside-git cache, and the
+FRED and Yahoo clients live here. Tests inject those clients and do not hit
+the network. The locked spec is ``docs/macro-rates-dxy.md``.
 """
 
 from tools.macro.availability import (
@@ -28,11 +28,15 @@ from tools.macro.cache import (
 from tools.macro.fred import (
     FRED_API_KEY_ENV,
     FRED_OBSERVATIONS_URL,
+    FRED_TIMEOUT_SECONDS,
+    FredHttpError,
+    FredResponseError,
     MissingFredApiKey,
     fetch_observations,
     fred_api_key,
     fred_query_params,
 )
+from tools.macro.refresh import OutsidePullWindow, RefreshSummary, SeriesSnapshot
 from tools.macro.series import (
     ALL_SERIES,
     DXY_TICKER,
@@ -63,6 +67,12 @@ __all__ = [
     "FRED_API_KEY_ENV",
     "FRED_OBSERVATIONS_URL",
     "FRED_SERIES",
+    "FRED_TIMEOUT_SECONDS",
+    "FredHttpError",
+    "FredResponseError",
+    "OutsidePullWindow",
+    "RefreshSummary",
+    "SeriesSnapshot",
     "LIVE_HARD_GATE_SERIES",
     "RESEARCH_SERIES",
     "SERIES_ROLE",

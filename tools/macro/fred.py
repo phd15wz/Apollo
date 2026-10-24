@@ -1,8 +1,9 @@
-"""FRED client scaffold.
+"""FRED observations client.
 
 The API key is ``FRED_API_KEY`` in the environment, supplied from the secret
 store for the process. It is never hardcoded, logged, or written next to the
-cache. HTTP itself is a TODO for Isaac.
+cache. Query parameters contain the key, so errors from this module omit the
+URL and the response body.
 
 Observations endpoint (keyless description):
 https://fred.stlouisfed.org/docs/api/fred/series_observations.html
@@ -10,14 +11,29 @@ https://fred.stlouisfed.org/docs/api/fred/series_observations.html
 
 from __future__ import annotations
 
+import json
+import math
 import os
+import urllib.error
+import urllib.parse
+import urllib.request
 from datetime import date, datetime
-from typing import Mapping, NoReturn
+from typing import AbstractSet, Callable, Mapping
+from zoneinfo import ZoneInfo
 
-from tools.macro.series import FRED_SERIES
+from tools.macro.availability import fred_available_at
+from tools.macro.cache import CachedPrint
+from tools.macro.series import FRED_SERIES, FRED_SOURCE
 
 FRED_API_KEY_ENV = "FRED_API_KEY"
 FRED_OBSERVATIONS_URL = "https://api.stlouisfed.org/fred/series/observations"
+FRED_TIMEOUT_SECONDS = 30.0
+
+NY = ZoneInfo("America/New_York")
+
+# ``(url, params, timeout) -> (status, body)``. Params contain the API key.
+# Callers must not log them.
+FredGet = Callable[[str, Mapping[str, str], float], tuple[int, bytes]]
 
 
 class MissingFredApiKey(RuntimeError):
@@ -33,6 +49,18 @@ class MissingFredApiKey(RuntimeError):
             "FRED_API_KEY is not set. Export it from the secret store for this "
             "process. Do not commit the key."
         )
+
+
+class FredHttpError(RuntimeError):
+    """FRED responded with a non-200 status. The message has no URL and no body."""
+
+    def __init__(self, status: int) -> None:
+        self.status = status
+        super().__init__(f"FRED observations request failed with HTTP {status}")
+
+
+class FredResponseError(RuntimeError):
+    """The observations payload could not be read. The message has no body."""
 
 
 def fred_api_key(environ: Mapping[str, str] | None = None) -> str:
@@ -88,6 +116,83 @@ def fred_query_params(
     return params
 
 
+class _RefuseRedirects(urllib.request.HTTPRedirectHandler):
+    """A redirect would resend the query string. Refuse it."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
+        raise FredHttpError(int(code))
+
+
+def _http_get(url: str, params: Mapping[str, str], timeout: float) -> tuple[int, bytes]:
+    """GET the locked observations URL. Exceptions omit the URL and the body."""
+    if url != FRED_OBSERVATIONS_URL:
+        raise FredResponseError("FRED observations URL is not the locked endpoint")
+    query = urllib.parse.urlencode(params)
+    request = urllib.request.Request(f"{url}?{query}", method="GET")
+    opener = urllib.request.build_opener(_RefuseRedirects)
+    try:
+        with opener.open(request, timeout=timeout) as response:
+            status = int(getattr(response, "status", 200))
+            body = response.read()
+    except FredHttpError:
+        raise
+    except urllib.error.HTTPError as exc:
+        raise FredHttpError(int(exc.code)) from None
+    except urllib.error.URLError:
+        raise FredResponseError("FRED observations request failed") from None
+    if not isinstance(body, bytes):
+        raise FredResponseError("FRED observations response was not bytes")
+    return status, body
+
+
+def _fetch_clock(fetched_at: datetime | None) -> datetime:
+    clock = fetched_at if fetched_at is not None else datetime.now(NY)
+    if not isinstance(clock, datetime) or clock.tzinfo is None or clock.tzinfo.utcoffset(clock) is None:
+        raise ValueError("fetched_at must be a timezone-aware datetime")
+    return clock
+
+
+def _parse_observations(
+    series_id: str,
+    body: bytes,
+    fetched_at: datetime,
+    closures: AbstractSet[date] | None,
+) -> list[CachedPrint]:
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise FredResponseError("FRED observations response was not JSON") from None
+    rows = payload.get("observations") if isinstance(payload, dict) else None
+    if not isinstance(rows, list):
+        raise FredResponseError("FRED observations response has no observations list")
+    by_date: dict[date, CachedPrint] = {}
+    for item in rows:
+        if not isinstance(item, dict):
+            raise FredResponseError("FRED observation was not an object")
+        raw_date = item.get("date")
+        raw_value = item.get("value")
+        if not isinstance(raw_date, str) or not isinstance(raw_value, str):
+            raise FredResponseError(f"FRED observation for {series_id} is missing date or value")
+        if raw_value == ".":
+            continue
+        try:
+            obs_date = date.fromisoformat(raw_date)
+            level = float(raw_value)
+        except ValueError:
+            raise FredResponseError(f"FRED observation for {series_id} could not be parsed") from None
+        if not math.isfinite(level):
+            continue
+        by_date[obs_date] = CachedPrint(
+            series_id=series_id,
+            obs_date=obs_date,
+            level=level,
+            available_at=fred_available_at(obs_date, fetched_at, closures=closures),
+            source=FRED_SOURCE,
+            ticker=None,
+        )
+    return [by_date[key] for key in sorted(by_date)]
+
+
 def fetch_observations(
     series_id: str,
     *,
@@ -95,17 +200,20 @@ def fetch_observations(
     observation_end: date | None = None,
     key: str | None = None,
     environ: Mapping[str, str] | None = None,
-) -> NoReturn:
-    """Pull one locked FRED series. The HTTP body is not implemented.
+    get: FredGet | None = None,
+    fetched_at: datetime | None = None,
+    timeout: float = FRED_TIMEOUT_SECONDS,
+    closures: AbstractSet[date] | None = None,
+) -> list[CachedPrint]:
+    """GET one locked FRED series and return cache prints.
 
-    TODO(Isaac): ``GET`` ``FRED_OBSERVATIONS_URL`` with
-    :func:`fred_query_params`. Use a timeout. Parse ``observations``. FRED
-    missing values are ``"."``; drop those rows. Map ``date`` to ``obs_date``
-    and ``value`` to ``level`` (percent, as published). Stamp ``available_at``
-    with :func:`tools.macro.availability.fred_available_at` and the fetch
-    clock. Do not log the query params. Do not write the response into the
-    repository.
+    Missing FRED values (``"."``) are dropped. ``level`` is the published
+    percent. ``available_at`` comes from :func:`tools.macro.availability.fred_available_at`
+    and ``fetched_at`` (default: now in America/New_York). ``get`` replaces
+    the HTTP call in tests; it receives the query params and must not log them.
     """
+    if timeout <= 0:
+        raise ValueError("timeout must be positive")
     resolved = fred_api_key(environ) if key is None else key
     params = fred_query_params(
         series_id,
@@ -113,10 +221,9 @@ def fetch_observations(
         observation_start=observation_start,
         observation_end=observation_end,
     )
-    # ``params`` is built so a missing key fails before this TODO. The error
-    # text deliberately omits it.
-    series = params["series_id"]
-    raise NotImplementedError(
-        f"FRED HTTP fetch for {series} is not implemented ({FRED_OBSERVATIONS_URL}). "
-        "See docs/macro-rates-dxy.md."
-    )
+    clock = _fetch_clock(fetched_at)
+    getter = get if get is not None else _http_get
+    status, body = getter(FRED_OBSERVATIONS_URL, params, timeout)
+    if status != 200:
+        raise FredHttpError(status)
+    return _parse_observations(series_id, body, clock, closures)

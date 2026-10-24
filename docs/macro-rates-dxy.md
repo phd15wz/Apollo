@@ -1,6 +1,6 @@
 # Rates and DXY market-state feed
 
-Series, units, clocks, and the live gate are locked. The puller scaffold is [`tools/macro`](../tools/macro/README.md): pure transforms, the FRED availability clock, and the cache layout. Live FRED and Yahoo HTTP are still TODOs.
+Series, units, clocks, and the live gate are locked. The puller is [`tools/macro`](../tools/macro/README.md).
 
 Committee decision, with Isaac's series locks and Jessie's gate and `available_at` overrides. Reliability grades: [`data-source-reliability.md`](data-source-reliability.md).
 
