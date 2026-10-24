@@ -13,3 +13,11 @@ tools/okx/cache/
 *.zip.part
 *.jsonl.gz
 
+# Macro rates/DXY cache. Default is ~/.cache/apollo/macro (MACRO_DATA_DIR).
+# These entries catch accidental in-repo downloads. No FRED key, Yahoo HTML, or bulk dump.
+.macro-data/
+macro-data/
+data/macro/
+tools/macro/data/
+tools/macro/cache/
+
