@@ -12,3 +12,5 @@ exchange_calendars==4.13.2
 pandas_market_calendars==5.5.0
 pytest==9.1.1
 # optional: websockets>=12   # tools.okx public WebSocket client / stream_demo
+# tools/macro uses numpy for transforms. Pandas is used for Yahoo frames and
+# load_confirmed(). yfinance is imported only inside the DXY download. No Numba.

@@ -1,6 +1,6 @@
 # Rates and DXY market-state feed
 
-Spec only. Series, units, clocks, and the live gate are locked. The puller is not in this repository yet.
+Series, units, clocks, and the live gate are locked. The puller is [`tools/macro`](../tools/macro/README.md).
 
 Committee decision, with Isaac's series locks and Jessie's gate and `available_at` overrides. Reliability grades: [`data-source-reliability.md`](data-source-reliability.md).
 
@@ -103,4 +103,4 @@ NY business days are NYSE sessions. Full closures come from `load_confirmed()` o
 
 This repository keeps the spec. History and Yahoo payloads stay outside the git tree.
 
-Cache path: `$MACRO_DATA_DIR` when set. When unset, `~/.cache/apollo/macro`, the sibling of the default OKX cache `~/.cache/apollo/okx`. No FRED key, no Yahoo HTML, and no bulk dump in the repository.
+Cache path: `$MACRO_DATA_DIR` when set. When unset, `~/.cache/apollo/macro`, the sibling of the default OKX cache `~/.cache/apollo/okx`. No FRED key, no Yahoo HTML, and no bulk dump in the repository. `tools/macro` reads and writes only under that cache path and refuses a directory inside the repo.
