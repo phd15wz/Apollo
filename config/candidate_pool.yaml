@@ -30,6 +30,9 @@ groups:
   servers:
     shared_cap: false
     tickers: [SMCI, DELL]
+  other:
+    shared_cap: false
+    tickers: [MSFT, AMZN, PLTR, ARM, AMAT, QCOM, COHR, GLW, GEV, CRDO, ALAB, VRT, ASML, IREN, LRCX, WDC, AAOI, QQQ]
 
 instruments:
   # --- investment (18) ---
@@ -78,8 +81,7 @@ instruments:
     okx_inst_id: SNDK-USDT-SWAP
     tier: investment
     groups: [memory]
-    # Stays investment only if the OKX contract tracks SanDisk stock (confirmation pending).
-    note: SNDK stays investment only if the contract tracks SanDisk stock (confirmation pending).
+    pending_contract_confirm: true
   - ticker: CRWV
     name: CoreWeave
     okx_inst_id: CRWV-USDT-SWAP
@@ -131,73 +133,91 @@ instruments:
     name: Microsoft
     okx_inst_id: MSFT-USDT-SWAP
     tier: research
+    groups: [other]
   - ticker: AMZN
     name: Amazon
     okx_inst_id: AMZN-USDT-SWAP
     tier: research
+    groups: [other]
   - ticker: PLTR
     name: Palantir
     okx_inst_id: PLTR-USDT-SWAP
     tier: research
+    groups: [other]
   - ticker: ARM
     name: Arm
     okx_inst_id: ARM-USDT-SWAP
     tier: research
+    groups: [other]
   - ticker: AMAT
     name: Applied Materials
     okx_inst_id: AMAT-USDT-SWAP
     tier: research
+    groups: [other]
   - ticker: QCOM
     name: Qualcomm
     okx_inst_id: QCOM-USDT-SWAP
     tier: research
+    groups: [other]
   - ticker: COHR
     name: Coherent
     okx_inst_id: COHR-USDT-SWAP
     tier: research
+    groups: [other]
   - ticker: GLW
     name: Corning
     okx_inst_id: GLW-USDT-SWAP
     tier: research
+    groups: [other]
   - ticker: GEV
     name: GE Vernova
     okx_inst_id: GEV-USDT-SWAP
     tier: research
+    groups: [other]
   - ticker: CRDO
     name: Credo
     okx_inst_id: CRDO-USDT-SWAP
     tier: research
+    groups: [other]
   - ticker: ALAB
     name: Astera Labs
     okx_inst_id: ALAB-USDT-SWAP
     tier: research
+    groups: [other]
   - ticker: VRT
     name: Vertiv
     okx_inst_id: VRT-USDT-SWAP
     tier: research
+    groups: [other]
   - ticker: ASML
     name: ASML
     okx_inst_id: ASML-USDT-SWAP
     tier: research
+    groups: [other]
   - ticker: IREN
     name: IREN
     okx_inst_id: IREN-USDT-SWAP
     tier: research
+    groups: [other]
   - ticker: LRCX
     name: Lam Research
     okx_inst_id: LRCX-USDT-SWAP
     tier: research
+    groups: [other]
   - ticker: WDC
     name: Western Digital
     okx_inst_id: WDC-USDT-SWAP
     tier: research
+    groups: [other]
   - ticker: AAOI
     name: Applied Optoelectronics
     okx_inst_id: AAOI-USDT-SWAP
     tier: research
+    groups: [other]
 
   # --- hedge ---
   - ticker: QQQ
     name: QQQ
     okx_inst_id: QQQ-USDT-SWAP
     tier: hedge
+    groups: [other]
