@@ -1,0 +1,223 @@
+# Committee-agreed AI stock basket (Oct 2026).
+# Source of truth for the investment list, research list, and QQQ hedge.
+# OKX USDT-SWAP instIds are `{TICKER}-USDT-SWAP`.
+#
+# 30-day volume / spread / depth / tracking checks may move names between tiers.
+# No strategy logic lives here; loaders and backtests should read this file.
+
+agreed: "2026-10"
+venue: OKX
+inst_type: USDT-SWAP
+
+# Jessie risk-cap groups. Shared-cap groups share one cap across members.
+# Research AAOI is optical-related but stays research (not in optical).
+groups:
+  chips:
+    shared_cap: true
+    tickers: [NVDA, AMD, AVGO, INTC, MRVL, TSM]
+  memory:
+    shared_cap: true
+    tickers: [MU, SKHY, SNDK]
+  data_center_cloud:
+    shared_cap: true
+    tickers: [CRWV, NBIS]
+  optical:
+    shared_cap: false
+    tickers: [LITE]
+  platforms:
+    shared_cap: false
+    tickers: [GOOGL, META, ORCL, SPCX]
+  servers:
+    shared_cap: false
+    tickers: [SMCI, DELL]
+  other:
+    shared_cap: false
+    tickers: [MSFT, AMZN, PLTR, ARM, AMAT, QCOM, COHR, GLW, GEV, CRDO, ALAB, VRT, ASML, IREN, LRCX, WDC, AAOI, QQQ]
+
+instruments:
+  # --- investment (18) ---
+  - ticker: NVDA
+    name: Nvidia
+    okx_inst_id: NVDA-USDT-SWAP
+    tier: investment
+    groups: [chips]
+  - ticker: AMD
+    name: AMD
+    okx_inst_id: AMD-USDT-SWAP
+    tier: investment
+    groups: [chips]
+  - ticker: AVGO
+    name: Broadcom
+    okx_inst_id: AVGO-USDT-SWAP
+    tier: investment
+    groups: [chips]
+  - ticker: INTC
+    name: Intel
+    okx_inst_id: INTC-USDT-SWAP
+    tier: investment
+    groups: [chips]
+  - ticker: MRVL
+    name: Marvell
+    okx_inst_id: MRVL-USDT-SWAP
+    tier: investment
+    groups: [chips]
+  - ticker: TSM
+    name: TSMC
+    okx_inst_id: TSM-USDT-SWAP
+    tier: investment
+    groups: [chips]
+  - ticker: MU
+    name: Micron
+    okx_inst_id: MU-USDT-SWAP
+    tier: investment
+    groups: [memory]
+  - ticker: SKHY
+    name: SK hynix
+    okx_inst_id: SKHY-USDT-SWAP
+    tier: investment
+    groups: [memory]
+  - ticker: SNDK
+    name: SanDisk
+    okx_inst_id: SNDK-USDT-SWAP
+    tier: investment
+    groups: [memory]
+    pending_contract_confirm: true
+  - ticker: CRWV
+    name: CoreWeave
+    okx_inst_id: CRWV-USDT-SWAP
+    tier: investment
+    groups: [data_center_cloud]
+  - ticker: NBIS
+    name: Nebius
+    okx_inst_id: NBIS-USDT-SWAP
+    tier: investment
+    groups: [data_center_cloud]
+  - ticker: LITE
+    name: Lumentum
+    okx_inst_id: LITE-USDT-SWAP
+    tier: investment
+    groups: [optical]
+  - ticker: GOOGL
+    name: Google
+    okx_inst_id: GOOGL-USDT-SWAP
+    tier: investment
+    groups: [platforms]
+  - ticker: META
+    name: Meta
+    okx_inst_id: META-USDT-SWAP
+    tier: investment
+    groups: [platforms]
+  - ticker: ORCL
+    name: Oracle
+    okx_inst_id: ORCL-USDT-SWAP
+    tier: investment
+    groups: [platforms]
+  - ticker: SMCI
+    name: Super Micro
+    okx_inst_id: SMCI-USDT-SWAP
+    tier: investment
+    groups: [servers]
+  - ticker: DELL
+    name: Dell
+    okx_inst_id: DELL-USDT-SWAP
+    tier: investment
+    groups: [servers]
+  - ticker: SPCX
+    name: SpaceX
+    okx_inst_id: SPCX-USDT-SWAP
+    tier: investment
+    groups: [platforms]
+
+  # --- research (17) ---
+  - ticker: MSFT
+    name: Microsoft
+    okx_inst_id: MSFT-USDT-SWAP
+    tier: research
+    groups: [other]
+  - ticker: AMZN
+    name: Amazon
+    okx_inst_id: AMZN-USDT-SWAP
+    tier: research
+    groups: [other]
+  - ticker: PLTR
+    name: Palantir
+    okx_inst_id: PLTR-USDT-SWAP
+    tier: research
+    groups: [other]
+  - ticker: ARM
+    name: Arm
+    okx_inst_id: ARM-USDT-SWAP
+    tier: research
+    groups: [other]
+  - ticker: AMAT
+    name: Applied Materials
+    okx_inst_id: AMAT-USDT-SWAP
+    tier: research
+    groups: [other]
+  - ticker: QCOM
+    name: Qualcomm
+    okx_inst_id: QCOM-USDT-SWAP
+    tier: research
+    groups: [other]
+  - ticker: COHR
+    name: Coherent
+    okx_inst_id: COHR-USDT-SWAP
+    tier: research
+    groups: [other]
+  - ticker: GLW
+    name: Corning
+    okx_inst_id: GLW-USDT-SWAP
+    tier: research
+    groups: [other]
+  - ticker: GEV
+    name: GE Vernova
+    okx_inst_id: GEV-USDT-SWAP
+    tier: research
+    groups: [other]
+  - ticker: CRDO
+    name: Credo
+    okx_inst_id: CRDO-USDT-SWAP
+    tier: research
+    groups: [other]
+  - ticker: ALAB
+    name: Astera Labs
+    okx_inst_id: ALAB-USDT-SWAP
+    tier: research
+    groups: [other]
+  - ticker: VRT
+    name: Vertiv
+    okx_inst_id: VRT-USDT-SWAP
+    tier: research
+    groups: [other]
+  - ticker: ASML
+    name: ASML
+    okx_inst_id: ASML-USDT-SWAP
+    tier: research
+    groups: [other]
+  - ticker: IREN
+    name: IREN
+    okx_inst_id: IREN-USDT-SWAP
+    tier: research
+    groups: [other]
+  - ticker: LRCX
+    name: Lam Research
+    okx_inst_id: LRCX-USDT-SWAP
+    tier: research
+    groups: [other]
+  - ticker: WDC
+    name: Western Digital
+    okx_inst_id: WDC-USDT-SWAP
+    tier: research
+    groups: [other]
+  - ticker: AAOI
+    name: Applied Optoelectronics
+    okx_inst_id: AAOI-USDT-SWAP
+    tier: research
+    groups: [other]
+
+  # --- hedge ---
+  - ticker: QQQ
+    name: QQQ
+    okx_inst_id: QQQ-USDT-SWAP
+    tier: hedge
+    groups: [other]
