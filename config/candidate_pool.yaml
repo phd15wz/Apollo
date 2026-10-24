@@ -10,20 +10,23 @@ venue: OKX
 inst_type: USDT-SWAP
 
 # Jessie risk-cap groups. Shared-cap groups share one cap across members.
-# Research AAOI is optical-related but stays research (not in optical).
+# semiconductor_equipment is tool makers (ASML, AMAT, LRCX), not chip makers.
 groups:
   chips:
     shared_cap: true
-    tickers: [NVDA, AMD, AVGO, INTC, MRVL, TSM]
+    tickers: [NVDA, AMD, AVGO, INTC, MRVL, TSM, ARM, QCOM]
   memory:
     shared_cap: true
-    tickers: [MU, SKHY, SNDK]
+    tickers: [MU, SKHY, SNDK, WDC]
   data_center_cloud:
     shared_cap: true
     tickers: [CRWV, NBIS]
   optical:
-    shared_cap: false
-    tickers: [LITE]
+    shared_cap: true
+    tickers: [LITE, COHR, AAOI]
+  semiconductor_equipment:
+    shared_cap: true
+    tickers: [ASML, AMAT, LRCX]
   platforms:
     shared_cap: false
     tickers: [GOOGL, META, ORCL, SPCX]
@@ -32,7 +35,7 @@ groups:
     tickers: [SMCI, DELL]
   other:
     shared_cap: false
-    tickers: [MSFT, AMZN, PLTR, ARM, AMAT, QCOM, COHR, GLW, GEV, CRDO, ALAB, VRT, ASML, IREN, LRCX, WDC, AAOI, QQQ]
+    tickers: [MSFT, AMZN, PLTR, GLW, GEV, CRDO, ALAB, VRT, IREN, QQQ]
 
 instruments:
   # --- investment (18) ---
@@ -148,22 +151,22 @@ instruments:
     name: Arm
     okx_inst_id: ARM-USDT-SWAP
     tier: research
-    groups: [other]
+    groups: [chips]
   - ticker: AMAT
     name: Applied Materials
     okx_inst_id: AMAT-USDT-SWAP
     tier: research
-    groups: [other]
+    groups: [semiconductor_equipment]
   - ticker: QCOM
     name: Qualcomm
     okx_inst_id: QCOM-USDT-SWAP
     tier: research
-    groups: [other]
+    groups: [chips]
   - ticker: COHR
     name: Coherent
     okx_inst_id: COHR-USDT-SWAP
     tier: research
-    groups: [other]
+    groups: [optical]
   - ticker: GLW
     name: Corning
     okx_inst_id: GLW-USDT-SWAP
@@ -193,7 +196,7 @@ instruments:
     name: ASML
     okx_inst_id: ASML-USDT-SWAP
     tier: research
-    groups: [other]
+    groups: [semiconductor_equipment]
   - ticker: IREN
     name: IREN
     okx_inst_id: IREN-USDT-SWAP
@@ -203,17 +206,17 @@ instruments:
     name: Lam Research
     okx_inst_id: LRCX-USDT-SWAP
     tier: research
-    groups: [other]
+    groups: [semiconductor_equipment]
   - ticker: WDC
     name: Western Digital
     okx_inst_id: WDC-USDT-SWAP
     tier: research
-    groups: [other]
+    groups: [memory]
   - ticker: AAOI
     name: Applied Optoelectronics
     okx_inst_id: AAOI-USDT-SWAP
     tier: research
-    groups: [other]
+    groups: [optical]
 
   # --- hedge ---
   - ticker: QQQ
