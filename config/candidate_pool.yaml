@@ -22,7 +22,7 @@ groups:
     shared_cap: true
     tickers: [CRWV, NBIS]
   optical:
-    shared_cap: false
+    shared_cap: true
     tickers: [LITE, COHR, AAOI]
   semiconductor_equipment:
     shared_cap: true
