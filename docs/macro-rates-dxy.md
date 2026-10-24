@@ -50,13 +50,15 @@ Both windows are observation counts (prior available prints). They are not calen
 
 ## Sharp move
 
-`sharp_move` uses a rolling standard deviation of absolute 1-day changes. Expanding σ is not used.
+`sharp_move` uses a rolling standard deviation of **signed** 1-day changes. Expanding σ is not used.
 
-For the print under test, σ is the standard deviation of the preceding absolute 1-day changes: at most the last 60, and at least 40. The current change is compared with that σ and is not part of its own window. It joins the window on the next print.
+For the print under test, σ is the standard deviation of the preceding signed 1-day changes: at most the last 60, and at least 40. The current change is not part of its own window. It joins the window on the next print.
 
-`sharp_move` is true when at least 40 preceding absolute 1-day changes exist and the current absolute 1-day change is greater than 2σ. Both signs count. The threshold stays 2σ.
+`sharp_move` is true when at least 40 preceding signed 1-day changes exist and the absolute value of the current 1-day change is greater than 2σ. Both signs count. The threshold stays 2σ.
 
 With fewer than 40 preceding changes, `sharp_move` is false and the row records a short sample.
+
+Signed changes are the scale because a standard deviation of absolute 1-day changes fired on about 20% of days since 2024, too often for a hard gate in the FOMC-blackout class. Signed σ targets about 5% of days.
 
 ## Hard gate and soft signal
 
