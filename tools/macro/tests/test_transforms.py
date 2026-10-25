@@ -10,19 +10,23 @@ import pytest
 
 from tools.macro.series import (
     DXY_TICKER,
+    FRED_DEFAULT_OBSERVATION_START,
     FRED_SERIES,
     LIVE_HARD_GATE_SERIES,
     SHARP_PRIOR_MAX,
     SHARP_PRIOR_MIN,
     SHARP_SIGMA,
+    SPREAD_SERIES,
     SPREAD_TOLERANCE_PCT,
 )
 from tools.macro.transforms import (
     SpreadMismatch,
     assert_published_spread,
+    format_spread_skip,
     live_hard_gate,
     observation_changes,
     sharp_move,
+    spread_gaps,
 )
 
 NY = ZoneInfo("America/New_York")
@@ -36,6 +40,8 @@ def test_locked_thresholds() -> None:
     assert SHARP_PRIOR_MIN == 40
     assert SHARP_SIGMA == 2.0
     assert SPREAD_TOLERANCE_PCT == 0.01
+    assert SPREAD_SERIES == ("DGS10", "DGS2", "T10Y2Y")
+    assert FRED_DEFAULT_OBSERVATION_START == date(1992, 1, 1)
 
 
 def test_changes_are_one_and_five_prints() -> None:
@@ -166,7 +172,35 @@ def test_spread_past_one_basis_point_stops_on_that_date() -> None:
         )
     assert exc.value.obs_date == first
     assert exc.value.gap == pytest.approx(0.02)
-    assert "refresh stopped" in str(exc.value)
+    assert "exceeds 0.01" in str(exc.value)
+    assert "1 bp" in str(exc.value)
+
+
+def test_spread_gaps_lists_every_date_past_one_basis_point() -> None:
+    first = date(1990, 11, 21)
+    second = date(1990, 11, 23)
+    gaps = spread_gaps(
+        [first, second],
+        [8.40, 8.40],
+        [7.50, 7.50],
+        [0.92, 0.88],
+    )
+    assert [gap.obs_date for gap in gaps] == [first, second]
+    assert gaps[0].dgs10 == pytest.approx(8.40)
+    assert gaps[0].dgs2 == pytest.approx(7.50)
+    assert gaps[0].published == pytest.approx(0.92)
+    assert gaps[0].recomputed == pytest.approx(0.90)
+    assert gaps[0].gap == pytest.approx(0.02)
+    assert gaps[0].tolerance == 0.01
+    assert gaps[0].series_ids == ("DGS10", "DGS2", "T10Y2Y")
+    line = format_spread_skip(gaps[0])
+    assert "1990-11-21: skipping obs_date" in line
+    assert "series DGS10=8.400000 DGS2=7.500000 T10Y2Y=0.920000" in line
+    assert "observed T10Y2Y=0.920000" in line
+    assert "expected DGS10-DGS2=0.900000" in line
+    assert "tolerance=0.01 (1 bp)" in line
+    # A gap of exactly 1 bp stays inside the fail-closed band.
+    assert spread_gaps([first], [8.40], [7.50], [0.91]) == []
 
 
 def test_spread_skips_dates_missing_a_level() -> None:

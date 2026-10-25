@@ -20,6 +20,7 @@ from tools.macro.series import (
     SHARP_PRIOR_MAX,
     SHARP_PRIOR_MIN,
     SHARP_SIGMA,
+    SPREAD_SERIES,
     SPREAD_TOLERANCE_PCT,
 )
 
@@ -47,7 +48,9 @@ class SharpMove:
 class SpreadMismatch(RuntimeError):
     """Published ``T10Y2Y`` disagrees with ``DGS10 - DGS2`` by more than 1 bp.
 
-    The refresh must stop. The recomputed difference is not a stored series.
+    The 1 bp band stays fail-closed. :func:`assert_published_spread` raises
+    on the first date. Refresh logs that date and leaves it out of the cache
+    instead of aborting the run. The recomputed difference is not a stored series.
     """
 
     def __init__(self, obs_date: date, published: float, recomputed: float) -> None:
@@ -57,8 +60,40 @@ class SpreadMismatch(RuntimeError):
         self.gap = abs(self.published - self.recomputed)
         super().__init__(
             f"{obs_date.isoformat()}: |T10Y2Y - (DGS10 - DGS2)| = {self.gap:.6f} "
-            f"exceeds {SPREAD_TOLERANCE_PCT} (1 bp); refresh stopped"
+            f"exceeds {SPREAD_TOLERANCE_PCT} (1 bp)"
         )
+
+
+@dataclass(frozen=True)
+class SpreadGap:
+    """One observation date outside the 1 bp published-spread band."""
+
+    obs_date: date
+    dgs10: float
+    dgs2: float
+    published: float
+    recomputed: float
+    gap: float
+    tolerance: float
+
+    @property
+    def series_ids(self) -> tuple[str, ...]:
+        return SPREAD_SERIES
+
+
+def format_spread_skip(gap: SpreadGap) -> str:
+    """Log line for a date refresh will not write.
+
+    Names the observation date, the three series and their levels, the
+    published spread (observed), ``DGS10 - DGS2`` (expected), and the tolerance.
+    """
+    return (
+        f"{gap.obs_date.isoformat()}: skipping obs_date; "
+        f"series DGS10={gap.dgs10:.6f} DGS2={gap.dgs2:.6f} T10Y2Y={gap.published:.6f}; "
+        f"observed T10Y2Y={gap.published:.6f} "
+        f"expected DGS10-DGS2={gap.recomputed:.6f} "
+        f"tolerance={gap.tolerance:.2f} (1 bp)"
+    )
 
 
 def _as_1d(values: ArrayLike, name: str) -> np.ndarray:
@@ -158,19 +193,19 @@ def _as_date(value: date | datetime | str | np.datetime64) -> date:
     raise TypeError(f"cannot read an observation date from {value!r}")
 
 
-def assert_published_spread(
+def spread_gaps(
     obs_dates: Sequence[date | datetime | str | np.datetime64],
     dgs10: ArrayLike,
     dgs2: ArrayLike,
     t10y2y: ArrayLike,
     *,
     tolerance: float = SPREAD_TOLERANCE_PCT,
-) -> None:
-    """Require ``|T10Y2Y - (DGS10 - DGS2)| <= tolerance`` on complete dates.
+) -> list[SpreadGap]:
+    """Every complete date where ``|T10Y2Y - (DGS10 - DGS2)|`` exceeds ``tolerance``.
 
-    Dates missing any of the three levels are skipped. The first failure
-    raises :class:`SpreadMismatch` and stops the refresh. This does not write
-    ``DGS10 - DGS2`` back as the slope.
+    Dates missing any of the three levels are omitted. The tolerance default
+    is 1 basis point and is not widened. This does not write ``DGS10 - DGS2``
+    back as the slope.
     """
     if tolerance < 0:
         raise ValueError("tolerance must be non-negative")
@@ -179,6 +214,7 @@ def assert_published_spread(
     published = _as_1d(t10y2y, "t10y2y")
     if not (len(obs_dates) == ten_year.size == two_year.size == published.size):
         raise ValueError("obs_dates, DGS10, DGS2, and T10Y2Y must have the same length")
+    found: list[SpreadGap] = []
     for index, raw_date in enumerate(obs_dates):
         if not (
             np.isfinite(ten_year[index])
@@ -189,4 +225,35 @@ def assert_published_spread(
         recomputed = float(ten_year[index] - two_year[index])
         gap = abs(float(published[index]) - recomputed)
         if gap > tolerance + _SPREAD_SLACK:
-            raise SpreadMismatch(_as_date(raw_date), float(published[index]), recomputed)
+            found.append(
+                SpreadGap(
+                    obs_date=_as_date(raw_date),
+                    dgs10=float(ten_year[index]),
+                    dgs2=float(two_year[index]),
+                    published=float(published[index]),
+                    recomputed=recomputed,
+                    gap=gap,
+                    tolerance=float(tolerance),
+                )
+            )
+    return found
+
+
+def assert_published_spread(
+    obs_dates: Sequence[date | datetime | str | np.datetime64],
+    dgs10: ArrayLike,
+    dgs2: ArrayLike,
+    t10y2y: ArrayLike,
+    *,
+    tolerance: float = SPREAD_TOLERANCE_PCT,
+) -> None:
+    """Require ``|T10Y2Y - (DGS10 - DGS2)| <= tolerance`` on complete dates.
+
+    Dates missing any of the three levels are skipped. The first date outside
+    the band raises :class:`SpreadMismatch`. The band default is 1 basis point.
+    This does not write ``DGS10 - DGS2`` back as the slope.
+    """
+    gaps = spread_gaps(obs_dates, dgs10, dgs2, t10y2y, tolerance=tolerance)
+    if gaps:
+        first = gaps[0]
+        raise SpreadMismatch(first.obs_date, first.published, first.recomputed)

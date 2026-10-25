@@ -6,6 +6,8 @@ so the rest of the package cannot drift.
 
 from __future__ import annotations
 
+from datetime import date
+
 # FRED series ids. Levels are percent, as FRED publishes them (4.25, not 0.0425).
 FRED_SERIES: tuple[str, ...] = ("DGS2", "DGS10", "T10Y2Y", "DFII10")
 
@@ -30,6 +32,13 @@ SERIES_ROLE: dict[str, str] = {
 
 # |T10Y2Y - (DGS10 - DGS2)| must be within 1 basis point, in percent units.
 SPREAD_TOLERANCE_PCT = 0.01
+
+# The three series that enter the published-spread check, in log order.
+SPREAD_SERIES: tuple[str, ...] = ("DGS10", "DGS2", "T10Y2Y")
+
+# Default first obs_date on a FRED refresh. Callers override with
+# --observation-start. DX-Y.NYB stays on the full Yahoo history.
+FRED_DEFAULT_OBSERVATION_START = date(1992, 1, 1)
 
 # sharp_move: population σ of the preceding signed 1-day changes.
 SHARP_PRIOR_MAX = 60

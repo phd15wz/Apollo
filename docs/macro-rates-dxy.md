@@ -30,7 +30,9 @@ Price rule in the reliability doc: market data used as truth comes from an excha
 | 10-year TIPS real yield | `DFII10` | Live hard gate. |
 | ICE U.S. Dollar Index | `DX-Y.NYB` | Research. Yahoo ticker is locked. |
 
-`T10Y2Y` is the stored slope. The puller does not replace it with `DGS10 − DGS2`. When `DGS2`, `DGS10`, and `T10Y2Y` all have a level on the same `obs_date`, assert `|T10Y2Y − (DGS10 − DGS2)| ≤ 0.01` (1 basis point, in percent units). A failed assert stops that day's refresh. The recomputed difference is not written as the series.
+`T10Y2Y` is the stored slope. The puller does not replace it with `DGS10 − DGS2`. When `DGS2`, `DGS10`, and `T10Y2Y` all have a level on the same `obs_date`, require `|T10Y2Y − (DGS10 − DGS2)| ≤ 0.01` (1 basis point, in percent units). The 1 bp band stays fail-closed. A date outside the band is dropped from those three series, including a row already in the cache: the refresh logs that `obs_date`, the three series and their levels, the published spread, the recomputed `DGS10 − DGS2`, and the tolerance, then continues and writes the other dates. `DFII10` and `DX-Y.NYB` are not part of the check. Jessie risk-signed this skip-and-log behavior. The recomputed difference is not written as the series.
+
+FRED pulls request `observation_start` of 1992-01-01 unless the caller passes another date (`--observation-start` on the refresh CLI). That bound does not apply to `DX-Y.NYB`, which stays on the full Yahoo history.
 
 `DX-Y.NYB` is the only DXY ticker. Research pulls and the cache share that string. Store the pulled number and the ticker. Leave page HTML and bulk Yahoo dumps out of the repository.
 

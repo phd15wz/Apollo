@@ -15,13 +15,13 @@ python3 -m pip install -r requirements.txt
 python3 -m pytest tools/macro/tests -q
 ```
 
-A live refresh needs `FRED_API_KEY` in the environment (from the secret store) and a cache outside the repo. `--backfill` is the manual run outside the 16:15 America/New_York window. It does not move `available_at` backward.
+A live refresh needs `FRED_API_KEY` in the environment (from the secret store) and a cache outside the repo. `--backfill` is the manual run outside the 16:15 America/New_York window. It does not move `available_at` backward. `--observation-start YYYY-MM-DD` bounds the FRED window (default `1992-01-01`). It does not bound `DX-Y.NYB`.
 
 ```bash
 FRED_API_KEY=... python3 -m tools.macro.refresh --cache-dir "$MACRO_DATA_DIR"
 ```
 
-Exit 0 means the cache was updated. Exit 2 means the key is missing or the cache path is inside the repo. Any other failure, including the spread check and a closed pull window, exits 1. The pytest suite does not call FRED or Yahoo.
+Exit 0 means the cache was updated. A single observation date outside the 1 bp spread band is skipped and logged; it still exits 0 and writes the other rows. Exit 2 means the key is missing or the cache path is inside the repo. Any other failure, including a closed pull window, exits 1. The pytest suite does not call FRED or Yahoo.
 
 ## Series
 
@@ -41,7 +41,7 @@ Exit 0 means the cache was updated. Exit 2 means the key is missing or the cache
 
 `sharp_move` takes signed 1-day changes. σ is the population standard deviation (divide by N) of the preceding changes: at most the last 60, and only when at least 40 exist. The current change is not in its own window. Both signs count. `|change| > 2σ` is a sharp move; equal to 2σ is not. Fewer than 40 priors sets `short_sample` and leaves the flag false.
 
-`assert_published_spread` stops the refresh when `|T10Y2Y - (DGS10 - DGS2)|` is more than 1 basis point (0.01 in percent units) on a date where all three levels exist. It does not write the recomputed spread.
+`assert_published_spread` raises when `|T10Y2Y - (DGS10 - DGS2)|` is more than 1 basis point (0.01 in percent units) on a date where all three levels exist. The band is not widened. On refresh, that date is skipped and logged (date, `DGS10` / `DGS2` / `T10Y2Y` levels, observed published spread, expected `DGS10 - DGS2`, tolerance) and the other rows are still written. `DFII10` and `DX-Y.NYB` stay. The recomputed spread is not stored.
 
 ```python
 from tools.macro import (
@@ -75,6 +75,6 @@ Do not commit cache files, the FRED key, or Yahoo HTML.
 
 ## Refresh
 
-`refresh_once` pulls `DGS2`, `DGS10`, `T10Y2Y`, and `DFII10`, then `DX-Y.NYB`. It runs `assert_published_spread` on the merged book and writes nothing if that check fails. `upsert_print` keeps the first `available_at` when a level is replaced. Flags at `now` use only rows already visible. `live_hard_gate` reads `DGS10` and `DFII10`. Research flags are on the summary and do not open the gate.
+`refresh_once` pulls `DGS2`, `DGS10`, `T10Y2Y`, and `DFII10` from `observation_start` (default 1992-01-01), then `DX-Y.NYB` on full Yahoo history. It drops observation dates that miss the 1 bp published-spread band, including dates already cached, logs each one, and writes the remaining rows. `upsert_print` keeps the first `available_at` when a level is replaced. Flags at `now` use only rows already visible. `live_hard_gate` reads `DGS10` and `DFII10`. Research flags are on the summary and do not open the gate.
 
 `FRED_API_KEY` comes from the environment. A missing key raises `MissingFredApiKey`. FRED errors do not include the query string.
