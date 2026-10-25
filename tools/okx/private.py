@@ -2,9 +2,10 @@
 
 Public market data stays on ``PublicClient`` and never uses this module.
 Demo calls send ``x-simulated-trading: 1``. Live mode (``demo=False``) signs
-balance and positions only and omits that header. Place, amend, and cancel
-stay on demo. Withdrawal, deposit, and transfer routes are refused. Writes
-need an explicit go flag; see ``tools.okx.guards``.
+balance, positions, and funding balances only and omits that header. Place,
+amend, and cancel stay on demo. Withdrawal, deposit, transfer, and every
+other asset route are refused. Writes need an explicit go flag; see
+``tools.okx.guards``.
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ from tools.okx.auth import OkxCredentials, access_headers, load_credentials, red
 from tools.okx.client import HttpResponse, RateLimiter, RequestsTransport
 from tools.okx.errors import OkxError, OkxHttpError, RiskLimitError
 from tools.okx.guards import (
+    FUNDING_BALANCE_PATH,
     PRIVATE_RATE_LIMITS,
     RiskGuards,
     assert_live_read_only,
@@ -126,6 +128,19 @@ def _cl_ord_id(value: str) -> str:
     return text
 
 
+def _ccy_query(ccy: str, *, limit: int | None = None) -> list[tuple[str, str]]:
+    text = ccy.strip()
+    if not text:
+        return []
+    parts = text.split(",")
+    if limit is not None and len(parts) > limit:
+        raise ValueError(f"ccy accepts at most {limit} currencies")
+    for part in parts:
+        if not part.isalnum() or not part.isupper() or not 2 <= len(part) <= 16:
+            raise ValueError(f"invalid ccy {ccy!r}")
+    return [("ccy", text)]
+
+
 def _clean_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for key, value in payload.items():
@@ -175,6 +190,25 @@ class AccountBalance:
             if isinstance(item, dict)
         )
         return cls(total_eq_usd=_f(row.get("totalEq")), updated_ms=_i(row.get("uTime")), details=details)
+
+
+@dataclass(frozen=True, slots=True)
+class FundingBalance:
+    """One currency row from ``GET /api/v5/asset/balances``."""
+
+    ccy: str
+    bal: float
+    avail_bal: float
+    frozen_bal: float
+
+    @classmethod
+    def from_dict(cls, row: Mapping[str, Any]) -> FundingBalance:
+        return cls(
+            ccy=_s(row.get("ccy")),
+            bal=_f(row.get("bal")),
+            avail_bal=_f(row.get("availBal")),
+            frozen_bal=_f(row.get("frozenBal")),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -335,16 +369,17 @@ class PrivateClient:
         )
 
     def balance(self, ccy: str = "") -> AccountBalance:
-        query: list[tuple[str, str]] = []
-        text = ccy.strip()
-        if text:
-            parts = text.split(",")
-            for part in parts:
-                if not part.isalnum() or not part.isupper() or not 2 <= len(part) <= 16:
-                    raise ValueError(f"invalid ccy {ccy!r}")
-            query.append(("ccy", text))
-        payload = self._request("GET", "/api/v5/account/balance", query=query)
+        payload = self._request("GET", "/api/v5/account/balance", query=_ccy_query(ccy))
         return AccountBalance.from_rows(_data_list(payload))
+
+    def funding(self, ccy: str = "") -> list[FundingBalance]:
+        """Funding-account balances. ``ccy`` is optional (at most 20, comma-separated)."""
+        payload = self._request(
+            "GET",
+            FUNDING_BALANCE_PATH,
+            query=_ccy_query(ccy, limit=20),
+        )
+        return [FundingBalance.from_dict(row) for row in _data_list(payload)]
 
     def positions(self, inst_type: str = "", inst_id: str = "") -> list[Position]:
         query: list[tuple[str, str]] = []

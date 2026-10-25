@@ -1,14 +1,15 @@
 """CLI for OKX account reads, place, and cancel.
 
 Keys are read from the environment by ``PrivateClient``. This CLI has no key
-arguments and never calls a withdrawal route. ``balance`` and ``positions``
-run live when ``OKX_DEMO`` is unset (no ``--allow-orders``). Place, cancel,
-and order lookup stay on demo (``OKX_DEMO=1``).
+arguments and never calls a withdrawal route. ``balance``, ``positions``, and
+``funding`` run live when ``OKX_DEMO`` is unset (no ``--allow-orders``).
+Place, cancel, and order lookup stay on demo (``OKX_DEMO=1``).
 
 ::
 
     python -m tools.okx.private_cli balance
     python -m tools.okx.private_cli positions --inst BTC-USDT-SWAP
+    python -m tools.okx.private_cli funding --ccy USDT
     OKX_DEMO=1 python -m tools.okx.private_cli balance
     OKX_DEMO=1 python -m tools.okx.private_cli order --inst BTC-USDT-SWAP --ord-id 123
     OKX_DEMO=1 python -m tools.okx.private_cli --allow-orders cancel --inst BTC-USDT-SWAP --ord-id 123
@@ -37,13 +38,13 @@ from tools.okx.errors import (
 from tools.okx.guards import require_cli_demo, resolve_demo
 from tools.okx.private import PrivateClient
 
-_LIVE_READ_CMDS = frozenset({"balance", "positions"})
+_LIVE_READ_CMDS = frozenset({"balance", "positions", "funding"})
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "OKX private client. balance and positions can be live; "
+            "OKX private client. balance, positions, and funding can be live; "
             "place and cancel stay on demo. Read-only unless --allow-orders. No withdrawals."
         ),
     )
@@ -72,6 +73,9 @@ def _parser() -> argparse.ArgumentParser:
     positions.add_argument("--inst-type", default="")
     positions.add_argument("--inst", default="")
 
+    funding = sub.add_parser("funding", help="funding balances (live when OKX_DEMO is unset)")
+    funding.add_argument("--ccy", default="")
+
     place = sub.add_parser("place", help="place one demo order")
     place.add_argument("--inst", required=True)
     place.add_argument("--side", required=True)
@@ -99,8 +103,8 @@ def _parser() -> argparse.ArgumentParser:
 def cli_demo(command: str) -> bool:
     """Demo flag for a CLI command.
 
-    Balance and positions are live when ``OKX_DEMO`` is unset or off. Every
-    other command requires ``OKX_DEMO=1``. ``--allow-orders`` does not change this.
+    Balance, positions, and funding are live when ``OKX_DEMO`` is unset or off.
+    Every other command requires ``OKX_DEMO=1``. ``--allow-orders`` does not change this.
     """
     if command not in _LIVE_READ_CMDS:
         require_cli_demo()
@@ -139,6 +143,9 @@ def _run(args: argparse.Namespace, client: PrivateClient) -> None:
         return
     if args.cmd == "positions":
         _emit(client.positions(inst_type=args.inst_type, inst_id=args.inst))
+        return
+    if args.cmd == "funding":
+        _emit(client.funding(ccy=args.ccy))
         return
     if args.cmd == "place":
         _emit(

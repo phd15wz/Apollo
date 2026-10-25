@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from tools.okx.auth import OkxCredentials
+from tools.okx.auth import OkxCredentials, sign
 from tools.okx.client import PublicClient, RateLimiter
 from tools.okx.errors import (
     LiveTradingDisabled,
@@ -59,6 +59,8 @@ def test_public_client_still_refuses_private_paths() -> None:
         client.get("/api/v5/account/balance")
     with pytest.raises(UnsafeEndpointError):
         client.get("/api/v5/trade/order")
+    with pytest.raises(UnsafeEndpointError):
+        client.get("/api/v5/asset/balances")
 
 
 def test_balance_is_signed_demo_get() -> None:
@@ -168,7 +170,7 @@ def test_live_writes_and_other_reads_raise(monkeypatch: pytest.MonkeyPatch) -> N
         client.cancel_order("BTC-USDT-SWAP", ord_id="312269865356374016")
     with pytest.raises(LiveTradingDisabled, match="Live Trade"):
         client.amend_order("BTC-USDT-SWAP", ord_id="312269865356374016", new_px="60001", margin_usd=1)
-    with pytest.raises(LiveTradingDisabled, match="balance and positions"):
+    with pytest.raises(LiveTradingDisabled, match="balance, positions, and funding"):
         client.get_order("BTC-USDT-SWAP", ord_id="312269865356374016")
     assert transport.calls == []
 
@@ -359,10 +361,21 @@ def test_withdraw_helper_never_hits_transport() -> None:
     for method, path in (
         ("POST", "/api/v5/asset/withdrawal"),
         ("POST", "/api/v5/asset/transfer"),
+        ("POST", "/api/v5/asset/balances"),
+        ("GET", "/api/v5/asset/bills"),
+        ("GET", "/api/v5/asset/currencies"),
         ("GET", "/api/v5/account/max-withdrawal"),
     ):
         with pytest.raises(UnsafeEndpointError):
             client._request(method, path)
+    live, _clock = _client(FakeTransport(), demo=False, allow_orders=True)
+    for method, path in (
+        ("POST", "/api/v5/asset/balances"),
+        ("GET", "/api/v5/asset/deposit-address"),
+        ("GET", "/api/v5/asset/asset-valuation"),
+    ):
+        with pytest.raises(UnsafeEndpointError):
+            live._request(method, path)
     assert transport.calls == []
 
 
@@ -373,6 +386,57 @@ def test_price_only_amend_does_not_require_margin() -> None:
     ack = client.amend_order("BTC-USDT-SWAP", cl_ord_id="demo1", new_px="60100")
     assert ack.ord_id
     assert transport.calls[0]["path"] == "/api/v5/trade/amend-order"
+
+
+def test_funding_balance_is_signed_get_on_demo_and_live() -> None:
+    transport = FakeTransport()
+    transport.add("/api/v5/asset/balances", load_fixture("private_funding_balance.json"))
+    demo, _clock = _client(transport)
+    rows = demo.funding(ccy="USDT")
+    assert [(row.ccy, row.bal, row.avail_bal, row.frozen_bal) for row in rows] == [
+        ("USDT", 25.5, 20.0, 5.5),
+        ("BTC", 0.01, 0.01, 0.0),
+    ]
+    demo_call = transport.calls[0]
+    assert demo_call["method"] == "GET"
+    assert demo_call["url"].endswith("/api/v5/asset/balances?ccy=USDT")
+    assert demo_call["body"] is None
+    assert demo_call["headers"]["OK-ACCESS-SIGN"] == sign(
+        _SECRET, _TS, "GET", "/api/v5/asset/balances?ccy=USDT", ""
+    )
+    assert demo_call["headers"]["x-simulated-trading"] == "1"
+
+    live_transport = FakeTransport()
+    live_transport.add("/api/v5/asset/balances", load_fixture("private_funding_balance.json"))
+    live, _clock = _client(live_transport, demo=False)
+    assert live.funding()[0].ccy == "USDT"
+    live_call = live_transport.calls[0]
+    assert live_call["method"] == "GET"
+    assert live_call["url"].endswith("/api/v5/asset/balances")
+    assert "x-simulated-trading" not in live_call["headers"]
+    assert live_call["headers"]["OK-ACCESS-SIGN"] == sign(
+        _SECRET, _TS, "GET", "/api/v5/asset/balances", ""
+    )
+
+    with pytest.raises(ValueError, match="invalid ccy"):
+        live.funding(ccy="usdt")
+    many = ",".join(f"C{i:02d}" for i in range(21))
+    with pytest.raises(ValueError, match="at most 20"):
+        live.funding(ccy=many)
+    assert len(live_transport.calls) == 1
+
+
+def test_funding_rate_limit_waits() -> None:
+    clock = FakeClock()
+    transport = FakeTransport()
+    transport.add("/api/v5/asset/balances", load_fixture("private_funding_balance.json"))
+    client, _clock = _client(transport, clock=clock, demo=False)
+    for _ in range(6):
+        client.funding()
+    client.funding()
+    assert clock.sleeps
+    assert clock.sleeps[0] == pytest.approx(1.0)
+    assert "x-simulated-trading" not in transport.calls[-1]["headers"]
 
 
 def test_balance_rate_limit_waits() -> None:

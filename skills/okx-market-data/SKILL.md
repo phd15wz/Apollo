@@ -14,12 +14,13 @@ in the repository.
   similar).
 - Isaac's maintenance reminders: upcoming OKX windows in UTC.
 
-Use this skill for public market data. Account balances, positions, and
-demo orders are `PrivateClient` in `tools/okx/README.md` (stage 2). Live
-mode is read-only balance and positions (`demo=False`, or CLI with
-`OKX_DEMO` unset). Writes stay on demo unless a go flag is set, and there
-are no withdrawal methods. Do not use it as a market-data source. Do not
-add a live order path or a withdrawal path.
+Use this skill for public market data. Account balances, positions, funding
+balances, and demo orders are `PrivateClient` in `tools/okx/README.md`
+(stage 2). Live mode is read-only balance, positions, and
+`GET /api/v5/asset/balances` (`demo=False`, or CLI with `OKX_DEMO` unset).
+Writes stay on demo unless a go flag is set, and there are no withdrawal
+methods. Do not use it as a market-data source. Do not add a live order path
+or a withdrawal path.
 
 ## Safety stance
 
@@ -30,14 +31,15 @@ add a live order path or a withdrawal path.
    the README). Never from the repo, chat, or committed env files. Writes
    need `OKX_ALLOW_ORDERS=1` or `allow_orders=True`, stay on demo
    (`x-simulated-trading: 1`), and refuse withdraw / transfer / deposit URLs.
-   Live balance and positions omit that header. `OKX_ALLOW_ORDERS` does not
-   make a write live.
+   Live balance, positions, and funding balances omit that header.
+   `OKX_ALLOW_ORDERS` does not make a write live. The only asset route is
+   `GET /api/v5/asset/balances`.
 3. **Live Trade** is not enabled. `LIVE_TRADE_ENABLED` is a tripwire, not an
    unlock. Live reads do not flip it.
 
 If a task needs an endpoint outside the public allowlist and outside the
-stage-2 trade/account allowlist, stop and tell the owner. Do not work
-around either allowlist.
+stage-2 allowlist (trade, account, and `GET /api/v5/asset/balances`), stop
+and tell the owner. Do not work around either allowlist.
 
 ## How to call it
 
