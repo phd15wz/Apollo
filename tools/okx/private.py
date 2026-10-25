@@ -5,9 +5,10 @@ Demo calls send ``x-simulated-trading: 1``. Live mode (``demo=False``) signs
 balance, positions, and funding balances and omits that header. Live place
 and cancel are the BTC-USDT cash smoke and one BTC-USDT-SWAP smoke, and
 only when ``OKX_LIVE_TRADE=1`` (or ``live_trade=True``) is set with the
-order go flag. Amend stays on demo. This client does not set leverage or
-margin mode. Withdrawal, deposit, transfer, and every other asset route
-are refused. Writes need an explicit go flag; see ``tools.okx.guards``.
+order go flag. Amend stays on demo. The only account write is isolated
+set-leverage (USDT-SWAP, lever 1-5) under that same opt-in on live, or
+the demo go flag. Withdrawal, deposit, transfer, and every other asset
+route are refused. Writes need an explicit go flag; see ``tools.okx.guards``.
 """
 
 from __future__ import annotations
@@ -43,12 +44,14 @@ from tools.okx.guards import (
     LIVE_SWAP_SMOKE_TD_MODE,
     LIVE_TRADE_PATHS,
     PRIVATE_RATE_LIMITS,
+    SET_LEVERAGE_PATH,
     RiskGuards,
     assert_live_read_only,
     assert_live_smoke_cancel,
     assert_live_smoke_place,
     assert_live_trade_payload,
     assert_private_request,
+    assert_set_leverage_payload,
     resolve_allow_orders,
     resolve_demo,
     resolve_live_trade,
@@ -312,6 +315,25 @@ class OrderRecord:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class LeverageResult:
+    """One row from ``POST /api/v5/account/set-leverage``."""
+
+    inst_id: str
+    lever: str
+    mgn_mode: str
+    pos_side: str
+
+    @classmethod
+    def from_dict(cls, row: Mapping[str, Any]) -> LeverageResult:
+        return cls(
+            inst_id=_s(row.get("instId")),
+            lever=_s(row.get("lever")),
+            mgn_mode=_s(row.get("mgnMode")),
+            pos_side=_s(row.get("posSide")),
+        )
+
+
 def open_margins_from_positions(positions: list[Position]) -> dict[str, float]:
     """Sum position ``margin`` by instrument.
 
@@ -327,8 +349,9 @@ def open_margins_from_positions(positions: list[Position]) -> dict[str, float]:
 class PrivateClient:
     """Signed REST client. Demo unless ``demo=False``.
 
-    Live place and cancel need ``live_trade=True`` or ``OKX_LIVE_TRADE=1``
-    and still pass the order go flag. The library default leaves both off.
+    Live place, cancel, and set-leverage need ``live_trade=True`` or
+    ``OKX_LIVE_TRADE=1`` and still pass the order go flag. The library
+    default leaves both off. Demo set-leverage uses the go flag only.
     """
 
     def __init__(
@@ -416,6 +439,29 @@ class PrivateClient:
             query.append(("instId", endpoints.validate_inst_id(inst_id)))
         payload = self._request("GET", "/api/v5/account/positions", query=query)
         return [Position.from_dict(row) for row in _data_list(payload)]
+
+    def set_leverage(
+        self,
+        inst_id: str,
+        lever: str | int,
+        *,
+        mgn_mode: str = "isolated",
+        pos_side: str = "",
+    ) -> LeverageResult:
+        """Set isolated leverage from 1 to 5 on a USDT-SWAP.
+
+        Demo needs the order go flag. Live needs that flag and
+        ``live_trade`` / ``OKX_LIVE_TRADE=1``. ``mgn_mode`` must be
+        ``isolated``. ``pos_side`` is omitted unless it is ``long`` or
+        ``short`` (OKX isolated long/short mode). ``ccy`` is not sent.
+        """
+        self._refuse_live_write(SET_LEVERAGE_PATH)
+        self._guards.assert_orders_enabled()
+        body = assert_set_leverage_payload(
+            {"instId": inst_id, "lever": lever, "mgnMode": mgn_mode, "posSide": pos_side}
+        )
+        payload = self._request("POST", SET_LEVERAGE_PATH, payload=body)
+        return _one_leverage(payload)
 
     def _refuse_live_write(self, path: str) -> None:
         assert_live_read_only(self.demo, "POST", path, live_trade=self.live_trade)
@@ -691,7 +737,9 @@ class PrivateClient:
         path_only = assert_private_request(method, path)
         assert_live_read_only(self.demo, method, path_only, live_trade=self.live_trade)
         method_u = method.upper()
-        if not self.demo and (method_u, path_only) in LIVE_TRADE_PATHS:
+        if (method_u, path_only) == ("POST", SET_LEVERAGE_PATH):
+            payload = assert_set_leverage_payload(payload)
+        elif not self.demo and (method_u, path_only) in LIVE_TRADE_PATHS:
             assert_live_trade_payload(method_u, path_only, payload)
         if method_u == "POST":
             self._guards.assert_orders_enabled()
@@ -817,6 +865,13 @@ def _raise_subcodes(payload: Mapping[str, Any]) -> None:
         scode = _s(row.get("sCode")) or "0"
         if scode != "0":
             raise OkxError(scode, _s(row.get("sMsg")), payload)
+
+
+def _one_leverage(payload: Mapping[str, Any]) -> LeverageResult:
+    rows = _data_list(payload)
+    if not rows:
+        raise OkxError(str(payload.get("code", "?")), "empty set-leverage acknowledgement", payload)
+    return LeverageResult.from_dict(rows[0])
 
 
 def _one_ack(payload: Mapping[str, Any]) -> OrderAck:

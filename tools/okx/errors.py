@@ -96,8 +96,9 @@ class LiveTradingDisabled(UnsafeEndpointError):
     """Live Trade is closed, or this live call is outside the two smokes.
 
     The smokes are BTC-USDT cash and one BTC-USDT-SWAP limit. Live reads
-    remain balance, positions, and funding balances. Live place and cancel
-    need ``OKX_LIVE_TRADE=1`` and still cannot withdraw or change leverage.
+    remain balance, positions, and funding balances. Live place, cancel, and
+    isolated set-leverage (lever 1-5) need ``OKX_LIVE_TRADE=1`` and still
+    cannot withdraw or change position mode.
     """
 
 

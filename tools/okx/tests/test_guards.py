@@ -6,6 +6,8 @@ from tools.okx.errors import LiveTradingDisabled, OrdersDisabled, RiskLimitError
 from tools.okx.guards import (
     ALLOWED_PRIVATE,
     LIVE_TRADE_ENABLED,
+    LIVE_TRADE_PATHS,
+    SET_LEVERAGE_PATH,
     CapBook,
     CapGroup,
     assert_order_margin,
@@ -112,6 +114,11 @@ def test_live_trade_opt_in_is_place_and_cancel_only(monkeypatch: pytest.MonkeyPa
         assert_live_read_only(False, "GET", "/api/v5/trade/order", live_trade=True)
     with pytest.raises(LiveTradingDisabled):
         assert_live_read_only(False, "POST", "/api/v5/asset/balances", live_trade=True)
+    assert_live_read_only(False, "POST", SET_LEVERAGE_PATH, live_trade=True)
+    with pytest.raises(LiveTradingDisabled, match="Live Trade"):
+        assert_live_read_only(False, "POST", SET_LEVERAGE_PATH, live_trade=False)
+    with pytest.raises(LiveTradingDisabled, match="Live Trade"):
+        assert_live_read_only(False, "POST", "/api/v5/account/set-position-mode", live_trade=True)
 
     assert_live_smoke_place(
         inst_id="BTC-USDT",
@@ -264,6 +271,13 @@ def test_allowlist_is_trade_account_and_funding_balance() -> None:
     assert ("POST", "/api/v5/asset/balances") not in ALLOWED_PRIVATE
     assert ("POST", "/api/v5/trade/cancel-order") in ALLOWED_PRIVATE
     assert ("POST", "/api/v5/trade/order") in ALLOWED_PRIVATE
+    assert ("POST", SET_LEVERAGE_PATH) in ALLOWED_PRIVATE
+    assert ("POST", SET_LEVERAGE_PATH) in LIVE_TRADE_PATHS
+    assert assert_private_request("POST", SET_LEVERAGE_PATH) == SET_LEVERAGE_PATH
+    account_posts = sorted(
+        path for method, path in ALLOWED_PRIVATE if method == "POST" and path.startswith("/api/v5/account")
+    )
+    assert account_posts == [SET_LEVERAGE_PATH]
     assert assert_private_request("GET", "/api/v5/asset/balances") == "/api/v5/asset/balances"
     assert assert_private_request("GET", "/api/v5/asset/balances?ccy=USDT") == "/api/v5/asset/balances"
     for method, path in ALLOWED_PRIVATE:
@@ -295,9 +309,10 @@ def test_allowlist_is_trade_account_and_funding_balance() -> None:
         ("POST", "/api/v5/trade/batch-orders"),
         ("DELETE", "/api/v5/trade/order"),
         ("GET", "/api/v5/trade/order-algo"),
-        ("POST", "/api/v5/account/set-leverage"),
         ("POST", "/api/v5/account/set-position-mode"),
         ("POST", "/api/v5/account/set-account-level"),
+        ("GET", "/api/v5/account/set-leverage"),
+        ("POST", "/api/v5/account/config"),
     ],
 )
 def test_withdraw_and_unknown_paths_raise(method: str, path: str) -> None:

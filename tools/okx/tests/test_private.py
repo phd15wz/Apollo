@@ -352,7 +352,7 @@ def test_live_swap_smoke_needs_opt_in_and_cash_still_passes(
         client._request("POST", "/api/v5/asset/withdrawal", payload={"ccy": "USDT", "amt": "1"})
     with pytest.raises(UnsafeEndpointError):
         client._request("POST", "/api/v5/asset/transfer", payload={"ccy": "USDT", "amt": "1"})
-    with pytest.raises(UnsafeEndpointError):
+    with pytest.raises(ValueError, match="isolated"):
         client._request("POST", "/api/v5/account/set-leverage", payload={"instId": "BTC-USDT-SWAP", "lever": "5"})
     with pytest.raises(UnsafeEndpointError):
         client._request(
@@ -360,6 +360,8 @@ def test_live_swap_smoke_needs_opt_in_and_cash_still_passes(
             "/api/v5/account/set-position-mode",
             payload={"posMode": "net_mode"},
         )
+    with pytest.raises(UnsafeEndpointError):
+        client._request("POST", "/api/v5/account/set-account-level", payload={"acctLv": "2"})
     assert transport.calls == []
 
     funding = client.funding(ccy="USDT")
