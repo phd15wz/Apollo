@@ -76,11 +76,15 @@ class RequestsTransport:
         params: Mapping[str, Any] | None,
         headers: Mapping[str, str],
         timeout: float,
+        body: bytes | None = None,
     ) -> HttpResponse:
+        # ``body`` is for the demo private client. Public GET never sets it.
+        data = body if body is not None else None
         response = self.session.request(
             method,
             url,
             params=params,
+            data=data,
             headers=dict(headers),
             timeout=timeout,
         )

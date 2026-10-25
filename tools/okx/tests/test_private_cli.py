@@ -1,0 +1,136 @@
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from tools.okx.private_cli import client_options, main
+from tools.okx.tests.conftest import FakeTransport, load_fixture
+from tools.okx.tests.test_private import _client
+
+pytestmark = pytest.mark.usefixtures("clean_okx_env")
+
+
+def test_cli_requires_demo_and_hides_secrets(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    code = main(["balance"])
+    assert code == 2
+    assert "OKX_DEMO" in capsys.readouterr().err
+
+    monkeypatch.setenv("OKX_DEMO", "0")
+    code = main(["positions"])
+    assert code == 2
+    assert "Live" in capsys.readouterr().err
+
+    monkeypatch.setenv("OKX_DEMO", "1")
+    monkeypatch.setenv("OKX_API_SECRET", "super-secret-value")
+    code = main(["balance"])
+    captured = capsys.readouterr()
+    assert code == 2
+    assert "super-secret-value" not in captured.err
+    assert "super-secret-value" not in captured.out
+
+
+def test_cli_balance_and_cancel(capsys: pytest.CaptureFixture[str]) -> None:
+    transport = FakeTransport()
+    transport.add("/api/v5/account/balance", load_fixture("private_balance.json"))
+    transport.add("/api/v5/trade/cancel-order", load_fixture("private_order_ack.json"))
+    reader, _clock = _client(transport)
+    code = main(["balance", "--ccy", "USDT"], client=reader)
+    assert code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["details"][0]["ccy"] == "USDT"
+    assert "test-secret" not in json.dumps(payload)
+
+    code = main(
+        ["cancel", "--inst", "BTC-USDT-SWAP", "--ord-id", "312269865356374016"],
+        client=reader,
+    )
+    captured = capsys.readouterr()
+    assert code == 2
+    assert "refused" in captured.err
+    assert len(transport.calls) == 1
+
+    writer, _clock = _client(transport, allow_orders=True)
+    code = main(
+        ["cancel", "--inst", "BTC-USDT-SWAP", "--ord-id", "312269865356374016"],
+        client=writer,
+    )
+    assert code == 0
+    ack = json.loads(capsys.readouterr().out)
+    assert ack["ord_id"] == "312269865356374016"
+    assert transport.calls[-1]["path"] == "/api/v5/trade/cancel-order"
+
+
+def test_cli_place_reports_margin_and_order_status(capsys: pytest.CaptureFixture[str]) -> None:
+    transport = FakeTransport()
+    transport.add("/api/v5/trade/order", load_fixture("private_order_ack.json"), once=True)
+    transport.add("/api/v5/trade/order", load_fixture("private_order.json"))
+    writer, _clock = _client(transport, allow_orders=True)
+    code = main(
+        [
+            "place",
+            "--inst",
+            "BTC-USDT-SWAP",
+            "--side",
+            "buy",
+            "--sz",
+            "1",
+            "--td-mode",
+            "cross",
+            "--ord-type",
+            "market",
+            "--margin-usd",
+            "12",
+        ],
+        client=writer,
+    )
+    assert code == 2
+    assert "cap" in capsys.readouterr().err
+    assert transport.calls == []
+
+    code = main(
+        [
+            "place",
+            "--inst",
+            "BTC-USDT-SWAP",
+            "--side",
+            "buy",
+            "--sz",
+            "1",
+            "--td-mode",
+            "cross",
+            "--ord-type",
+            "limit",
+            "--px",
+            "60000",
+            "--margin-usd",
+            "4",
+            "--cl-ord-id",
+            "demo1",
+        ],
+        client=writer,
+    )
+    assert code == 0
+    placed = json.loads(capsys.readouterr().out)
+    assert placed["ord_id"] == "312269865356374016"
+
+    code = main(
+        ["order", "--inst", "BTC-USDT-SWAP", "--ord-id", "312269865356374016"],
+        client=writer,
+    )
+    assert code == 0
+    order = json.loads(capsys.readouterr().out)
+    assert order["state"] == "live"
+
+
+def test_client_options_from_flags() -> None:
+    parser_args = client_options(
+        type("A", (), {"allow_orders": True, "read_only": False, "risk_gate": True})()
+    )
+    assert parser_args == {"allow_orders": True, "read_only": None, "risk_gate": True}
+    readonly = client_options(
+        type("A", (), {"allow_orders": False, "read_only": True, "risk_gate": False})()
+    )
+    assert readonly["read_only"] is True
+    assert readonly["allow_orders"] is None
+    assert readonly["risk_gate"] is None

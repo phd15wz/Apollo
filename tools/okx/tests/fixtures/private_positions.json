@@ -1,0 +1,18 @@
+{
+  "code": "0",
+  "msg": "",
+  "data": [
+    {
+      "instId": "BTC-USDT-SWAP",
+      "instType": "SWAP",
+      "posSide": "net",
+      "pos": "1",
+      "avgPx": "60000",
+      "upl": "12.5",
+      "margin": "4.25",
+      "mgnMode": "cross",
+      "lever": "10",
+      "uTime": "1597026383085"
+    }
+  ]
+}
