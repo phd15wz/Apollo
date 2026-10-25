@@ -17,7 +17,7 @@ Never commit secrets, API keys, passphrases, account identifiers, order ids, or 
 
 ## Live place-cancel (not yet run)
 
-The client can place and cancel two resting limits on a live Trade key when `OKX_LIVE_TRADE=1` and `--allow-orders` are both set and `OKX_DEMO` is unset. Cash: `BTC-USDT`, size `0.001`, px at most `40000`, via `smoke`. SWAP: `BTC-USDT-SWAP`, size `1`, `tdMode` `isolated` only (strategy default), px at most `40000`, via `smoke-swap`. Both cancel in the same process. `cross` is not the live SWAP shape. Withdraw stays off. Log a run here only after it happens. Do not record secrets, order ids, or balances.
+The client can place and cancel two resting limits on a live Trade key when `OKX_LIVE_TRADE=1` and `--allow-orders` are both set and `OKX_DEMO` is unset. Cash: `BTC-USDT`, size `0.001`, px at most `40000`, via `smoke`. SWAP: `BTC-USDT-SWAP`, size `0.01`, `tdMode` `isolated` only (strategy default), px at most `40000`, via `smoke-swap`. Both cancel in the same process. `cross` is not the live SWAP shape. Withdraw stays off. Log a run here only after it happens. Do not record secrets, order ids, or balances.
 
 ## Log
 

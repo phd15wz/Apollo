@@ -289,8 +289,9 @@ Live place and cancel are a separate opt-in, off by default. Set
 limit buys at px at most `40000`, then cancel on that same client:
 
 - BTC-USDT cash, size `0.001` (the 2026-10-24 demo smoke). `smoke_place_cancel`.
-- BTC-USDT-SWAP, size `1` (fixture `minSz` and `lotSz`), `tdMode` `isolated`
-  only. That is the strategy default. `smoke_swap_place_cancel`.
+- BTC-USDT-SWAP, size `0.01` (live and fixture `minSz` and `lotSz`; `ctVal`
+  `0.01` BTC), `tdMode` `isolated` only. That is the strategy default.
+  `smoke_swap_place_cancel`.
 
 `cross` is still a demo `place_order` mode. It is not the live SWAP smoke.
 Anything else, including amend, another instrument, a larger size, a higher
@@ -381,7 +382,7 @@ Enforced now:
    positions, and funding balances. Live place and cancel also omit it, and
    only when `OKX_LIVE_TRADE=1` or `live_trade=True` is set with the go
    flag. The live orders are a BTC-USDT cash limit buy, size `0.001`,
-   px `<= 40000`, and a BTC-USDT-SWAP limit buy, size `1`, `tdMode`
+   px `<= 40000`, and a BTC-USDT-SWAP limit buy, size `0.01`, `tdMode`
    `isolated`, px `<= 40000`. Each is cancelled on that same client.
    Amend stays on demo. A live SWAP with `tdMode` `cross` is refused.
    Demo `place` still accepts `cross`.

@@ -9,7 +9,7 @@ The live place/cancel smokes also need ``OKX_LIVE_TRADE=1`` and
 ``--allow-orders``, with ``OKX_DEMO`` unset or off. ``smoke`` places one
 resting BTC-USDT cash limit (size 0.001, px at most 40000) and cancels it
 in that same process. ``smoke-swap`` places one resting BTC-USDT-SWAP
-limit buy (size 1, tdMode isolated, px at most 40000)
+limit buy (size 0.01, tdMode isolated, px at most 40000)
 and cancels it in that same process. A live ``place`` of either shape
 cancels before exit. Amend and order lookup stay on demo. This CLI does
 not set leverage or margin mode. Withdraw stays off.
@@ -23,7 +23,7 @@ not set leverage or margin mode. Withdraw stays off.
     OKX_DEMO=1 python -m tools.okx.private_cli order --inst BTC-USDT-SWAP --ord-id 123
     OKX_DEMO=1 python -m tools.okx.private_cli --allow-orders cancel --inst BTC-USDT-SWAP --ord-id 123
     OKX_DEMO=1 python -m tools.okx.private_cli --allow-orders place --inst BTC-USDT-SWAP \\
-        --side buy --sz 1 --td-mode isolated --ord-type limit --px 60000 --margin-usd 5
+        --side buy --sz 0.01 --td-mode isolated --ord-type limit --px 60000 --margin-usd 5
     OKX_LIVE_TRADE=1 python -m tools.okx.private_cli --allow-orders smoke
     OKX_LIVE_TRADE=1 python -m tools.okx.private_cli --allow-orders smoke-swap
 """
@@ -131,7 +131,7 @@ def _parser() -> argparse.ArgumentParser:
     swap = sub.add_parser(
         "smoke-swap",
         help=(
-            "place one BTC-USDT-SWAP min-size resting limit buy (tdMode isolated) "
+            "place one BTC-USDT-SWAP resting limit buy (size 0.01, tdMode isolated) "
             "and cancel it in this process"
         ),
     )

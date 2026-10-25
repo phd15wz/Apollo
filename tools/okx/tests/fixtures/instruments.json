@@ -13,8 +13,8 @@
       "ctVal": "0.01",
       "ctMult": "1",
       "tickSz": "0.1",
-      "lotSz": "1",
-      "minSz": "1",
+      "lotSz": "0.01",
+      "minSz": "0.01",
       "state": "live",
       "listTime": "1597026383085",
       "expTime": ""

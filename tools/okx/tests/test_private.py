@@ -306,7 +306,7 @@ def _swap_smoke_order(**overrides: object) -> dict[str, object]:
     order: dict[str, object] = {
         "inst_id": "BTC-USDT-SWAP",
         "side": "buy",
-        "sz": "1",
+        "sz": "0.01",
         "td_mode": "isolated",
         "ord_type": "limit",
         "px": "40000",
@@ -334,6 +334,7 @@ def test_live_swap_smoke_needs_opt_in_and_cash_still_passes(
     client, _clock = _client(transport, demo=False, allow_orders=True, live_trade=True)
     for bad in (
         _swap_smoke_order(ord_type="market", px=None),
+        _swap_smoke_order(sz="1"),
         _swap_smoke_order(sz="2"),
         _swap_smoke_order(px="40001"),
         _swap_smoke_order(side="sell"),
@@ -381,7 +382,7 @@ def test_live_swap_smoke_needs_opt_in_and_cash_still_passes(
     cancel_call = transport.calls[4]
     place_body = place_call["body"].decode()
     assert place_body == (
-        '{"instId":"BTC-USDT-SWAP","ordType":"limit","px":"40000","side":"buy","sz":"1","tdMode":"isolated"}'
+        '{"instId":"BTC-USDT-SWAP","ordType":"limit","px":"40000","side":"buy","sz":"0.01","tdMode":"isolated"}'
     )
     assert "x-simulated-trading" not in place_call["headers"]
     assert place_call["headers"]["OK-ACCESS-SIGN"] == sign(
@@ -395,7 +396,7 @@ def test_live_swap_smoke_needs_opt_in_and_cash_still_passes(
     assert lower_px.ord_id == lower_cancelled.ord_id
     assert transport.calls[5]["body"] == (
         b'{"instId":"BTC-USDT-SWAP","ordType":"limit","px":"10000",'
-        b'"side":"buy","sz":"1","tdMode":"isolated"}'
+        b'"side":"buy","sz":"0.01","tdMode":"isolated"}'
     )
 
     monkeypatch.setenv("OKX_READ_ONLY", "1")
@@ -416,7 +417,7 @@ def test_demo_swap_smoke_still_sends_the_simulated_header() -> None:
     assert placed.ord_id == cancelled.ord_id
     assert transport.calls[0]["headers"]["x-simulated-trading"] == "1"
     assert transport.calls[0]["body"] == (
-        b'{"instId":"BTC-USDT-SWAP","ordType":"limit","px":"40000","side":"buy","sz":"1","tdMode":"isolated"}'
+        b'{"instId":"BTC-USDT-SWAP","ordType":"limit","px":"40000","side":"buy","sz":"0.01","tdMode":"isolated"}'
     )
     assert transport.calls[1]["headers"]["x-simulated-trading"] == "1"
     assert b'"instId":"BTC-USDT-SWAP"' in transport.calls[1]["body"]
