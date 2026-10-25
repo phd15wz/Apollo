@@ -12,10 +12,14 @@ from tools.okx.guards import (
     assert_private_request,
     load_cap_book,
     assert_live_read_only,
+    assert_live_smoke_cancel,
+    assert_live_smoke_place,
+    assert_live_trade_payload,
     margin_ceiling,
     require_cli_demo,
     resolve_allow_orders,
     resolve_demo,
+    resolve_live_trade,
     resolve_risk_gate,
 )
 
@@ -60,6 +64,7 @@ def test_live_trade_constant_is_a_tripwire(monkeypatch: pytest.MonkeyPatch) -> N
     with pytest.raises(LiveTradingDisabled):
         resolve_demo(False)
     monkeypatch.setattr("tools.okx.guards.LIVE_TRADE_ENABLED", True)
+    monkeypatch.setenv("OKX_LIVE_TRADE", "1")
     with pytest.raises(LiveTradingDisabled):
         resolve_demo(True)
     with pytest.raises(LiveTradingDisabled):
@@ -83,6 +88,82 @@ def test_live_reads_are_balance_positions_and_funding() -> None:
         assert_live_read_only(False, "POST", "/api/v5/asset/balances")
     with pytest.raises(LiveTradingDisabled):
         assert_live_read_only(False, "GET", "/api/v5/asset/bills")
+
+
+def test_live_trade_opt_in_is_place_and_cancel_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert resolve_live_trade(None) is False
+    assert resolve_live_trade(False) is False
+    assert resolve_live_trade(True) is True
+    monkeypatch.setenv("OKX_LIVE_TRADE", "1")
+    assert resolve_live_trade(None) is True
+    assert resolve_live_trade(False) is False
+    monkeypatch.setenv("OKX_LIVE_TRADE", "0")
+    assert resolve_live_trade(None) is False
+
+    assert_live_read_only(False, "POST", "/api/v5/trade/order", live_trade=True)
+    assert_live_read_only(False, "POST", "/api/v5/trade/cancel-order", live_trade=True)
+    assert_live_read_only(False, "GET", "/api/v5/asset/balances", live_trade=True)
+    assert_live_read_only(False, "GET", "/api/v5/account/balance", live_trade=False)
+    with pytest.raises(LiveTradingDisabled, match="Live Trade"):
+        assert_live_read_only(False, "POST", "/api/v5/trade/order", live_trade=False)
+    with pytest.raises(LiveTradingDisabled, match="Live Trade"):
+        assert_live_read_only(False, "POST", "/api/v5/trade/amend-order", live_trade=True)
+    with pytest.raises(LiveTradingDisabled, match="Live Trade"):
+        assert_live_read_only(False, "GET", "/api/v5/trade/order", live_trade=True)
+    with pytest.raises(LiveTradingDisabled):
+        assert_live_read_only(False, "POST", "/api/v5/asset/balances", live_trade=True)
+
+    assert_live_smoke_place(
+        inst_id="BTC-USDT",
+        side="buy",
+        sz="0.001",
+        td_mode="cash",
+        ord_type="limit",
+        px="40000",
+    )
+    assert_live_smoke_place(
+        inst_id="BTC-USDT",
+        side="buy",
+        sz="0.0010",
+        td_mode="cash",
+        ord_type="limit",
+        px="10000",
+    )
+    assert_live_smoke_cancel("BTC-USDT")
+    for kwargs in (
+        {"inst_id": "BTC-USDT-SWAP", "td_mode": "cross", "ord_type": "market", "sz": "1", "px": "1", "side": "buy"},
+        {"inst_id": "BTC-USDT", "td_mode": "cash", "ord_type": "limit", "sz": "0.01", "px": "40000", "side": "buy"},
+        {"inst_id": "BTC-USDT", "td_mode": "cash", "ord_type": "limit", "sz": "0.001", "px": "40001", "side": "buy"},
+        {"inst_id": "BTC-USDT", "td_mode": "cash", "ord_type": "limit", "sz": "0.001", "px": "40000", "side": "sell"},
+    ):
+        with pytest.raises(LiveTradingDisabled, match="BTC-USDT"):
+            assert_live_smoke_place(**kwargs)
+    with pytest.raises(LiveTradingDisabled, match="BTC-USDT"):
+        assert_live_smoke_place(
+            inst_id="BTC-USDT",
+            side="buy",
+            sz="0.001",
+            td_mode="cash",
+            ord_type="limit",
+            px="40000",
+            reduce_only=True,
+        )
+    with pytest.raises(LiveTradingDisabled):
+        assert_live_smoke_cancel("BTC-USDT-SWAP")
+    with pytest.raises(LiveTradingDisabled):
+        assert_live_trade_payload(
+            "POST",
+            "/api/v5/trade/order",
+            {"instId": "BTC-USDT", "tdMode": "cash", "side": "buy", "ordType": "market", "sz": "0.001"},
+        )
+    with pytest.raises(LiveTradingDisabled):
+        assert_live_trade_payload("POST", "/api/v5/trade/amend-order", {"instId": "BTC-USDT"})
+    with pytest.raises(LiveTradingDisabled):
+        assert_live_trade_payload(
+            "POST",
+            "/api/v5/asset/withdrawal",
+            {"ccy": "USDT", "amt": "1"},
+        )
 
 
 def test_cli_requires_demo_env(monkeypatch: pytest.MonkeyPatch) -> None:

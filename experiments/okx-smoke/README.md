@@ -15,6 +15,10 @@ Client code stays in `tools/okx`. This directory is markdown only.
 
 Never commit secrets, API keys, passphrases, account identifiers, order ids, or full balance dumps. Demo paper balances may be described as present or empty. A live book may be described as empty or $0 equity. Do not paste equity totals beyond that, or raw balance JSON.
 
+## Live place-cancel (not yet run)
+
+The client can place and cancel one resting `BTC-USDT` cash limit (size `0.001`, px at most `40000`) on a live Trade key when `OKX_LIVE_TRADE=1` and `--allow-orders` are both set and `OKX_DEMO` is unset. `python3 -m tools.okx.private_cli --allow-orders smoke` cancels in the same process. Withdraw stays off. Log a run here only after it happens. Do not record secrets, order ids, or balances.
+
 ## Log
 
 - [2026-10-24 demo smoke](2026-10-24-demo-smoke.md) — Isaac, PR #22 branch, `OKX_DEMO=1`.

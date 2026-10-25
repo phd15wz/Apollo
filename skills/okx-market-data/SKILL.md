@@ -15,12 +15,13 @@ in the repository.
 - Isaac's maintenance reminders: upcoming OKX windows in UTC.
 
 Use this skill for public market data. Account balances, positions, funding
-balances, and demo orders are `PrivateClient` in `tools/okx/README.md`
-(stage 2). Live mode is read-only balance, positions, and
-`GET /api/v5/asset/balances` (`demo=False`, or CLI with `OKX_DEMO` unset).
-Writes stay on demo unless a go flag is set, and there are no withdrawal
-methods. Do not use it as a market-data source. Do not add a live order path
-or a withdrawal path.
+balances, and orders are `PrivateClient` in `tools/okx/README.md` (stage 2).
+Live mode reads balance, positions, and `GET /api/v5/asset/balances`
+(`demo=False`, or CLI with `OKX_DEMO` unset). Demo writes need a go flag.
+The only live write is the BTC-USDT place-then-cancel smoke, and only with
+`OKX_LIVE_TRADE=1` plus that go flag. There are no withdrawal methods. Do
+not use it as a market-data source. Do not widen the live smoke or add a
+withdrawal path.
 
 ## Safety stance
 
@@ -32,10 +33,14 @@ or a withdrawal path.
    need `OKX_ALLOW_ORDERS=1` or `allow_orders=True`, stay on demo
    (`x-simulated-trading: 1`), and refuse withdraw / transfer / deposit URLs.
    Live balance, positions, and funding balances omit that header.
-   `OKX_ALLOW_ORDERS` does not make a write live. The only asset route is
-   `GET /api/v5/asset/balances`.
-3. **Live Trade** is not enabled. `LIVE_TRADE_ENABLED` is a tripwire, not an
-   unlock. Live reads do not flip it.
+   `OKX_ALLOW_ORDERS` does not by itself make a write live. The only asset
+   route is `GET /api/v5/asset/balances`.
+3. **Live Trade smoke** is opt-in. `OKX_LIVE_TRADE=1` (or `live_trade=True`)
+   plus the order go flag allows one BTC-USDT cash limit buy, size `0.001`,
+   px at most `40000`, then cancel on that same client. Amend, other
+   instruments, other sizes, and asset mutations stay refused.
+   `LIVE_TRADE_ENABLED` remains a source tripwire, not the switch. Live
+   reads do not flip it. Do not widen this path.
 
 If a task needs an endpoint outside the public allowlist and outside the
 stage-2 allowlist (trade, account, and `GET /api/v5/asset/balances`), stop

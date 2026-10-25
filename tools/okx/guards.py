@@ -9,7 +9,9 @@ Enforced in this package
   variable unset, sends ``x-simulated-trading: 1``. Live mode is read-only
   balance, positions, and funding balances: ``demo=False``, or ``OKX_DEMO``
   unset on the CLI (explicit ``0`` / ``false`` / ``no`` / ``off`` too).
-  Place, amend, and cancel stay on demo. ``LIVE_TRADE_ENABLED`` is a
+  Amend stays on demo. Live place and cancel exist only for one resting
+  BTC-USDT smoke, and only with an explicit opt-in (``OKX_LIVE_TRADE=1`` or
+  ``live_trade=True``) plus the order go flag. ``LIVE_TRADE_ENABLED`` is a
   tripwire: setting it ``True`` does not enable live trading; the client
   refuses to start.
 * Allowlisted account, trade, and one funding read. ``GET /api/v5/asset/balances``
@@ -24,8 +26,9 @@ Enforced in this package
 
 Deferred (not enforced here)
 ----------------------------
-* Live Trade (place, amend, cancel on a live key). Read-only live balance,
-  positions, and funding balances are already allowed.
+* Live amend, and any live order that is not the BTC-USDT place-then-cancel
+  smoke. Read-only live balance, positions, and funding balances are already
+  allowed. The smoke itself is opt-in, not a general live Trade path.
 * Automatic margin from mark price, contract value, and leverage. Callers pass
   ``margin_usd``. Position ``margin`` is not converted or auto-fetched.
 * A persistent shared-cap ledger across processes. ``open_margins`` is an
@@ -45,14 +48,25 @@ from __future__ import annotations
 import math
 import os
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Mapping
+from typing import Any, Mapping
 
 from tools.okx.errors import LiveTradingDisabled, OrdersDisabled, RiskLimitError, UnsafeEndpointError
 
 # Tripwire. Flipping this to True does not place live orders; ``resolve_demo``
-# refuses to start so a one-line edit cannot unlock live Trade.
+# refuses to start so a one-line edit cannot unlock live Trade. The opt-in is
+# ``OKX_LIVE_TRADE=1`` (or ``live_trade=True``), not this constant.
 LIVE_TRADE_ENABLED = False
+
+# Live place is this resting spot order only, matching the 2026-10-24 demo
+# smoke (BTC-USDT cash limit buy, size 0.001, price far below the market).
+LIVE_SMOKE_INST_ID = "BTC-USDT"
+LIVE_SMOKE_SIDE = "buy"
+LIVE_SMOKE_SZ = "0.001"
+LIVE_SMOKE_TD_MODE = "cash"
+LIVE_SMOKE_ORD_TYPE = "limit"
+LIVE_SMOKE_PX_MAX = "40000"
 
 NAME_MARGIN_CAP_USD = 10.0
 GATE_SIZE_FRACTION = 0.5
@@ -63,8 +77,8 @@ _OFF = frozenset({"0", "false", "no", "off"})
 # Funding-account balance. The only ``/api/v5/asset`` route this package signs.
 FUNDING_BALANCE_PATH = "/api/v5/asset/balances"
 
-# Signed GETs that may run against a live Read key. Every other private call
-# stays on demo trading.
+# Signed GETs that may run against a live Read key. Funding stays in this set.
+# Live writes are not reads: see ``LIVE_TRADE_PATHS``.
 LIVE_READ_PATHS = frozenset(
     {
         "/api/v5/account/balance",
@@ -72,6 +86,17 @@ LIVE_READ_PATHS = frozenset(
         FUNDING_BALANCE_PATH,
     }
 )
+
+# Live POSTs a Trade key may sign, and only after the opt-in. Amend is absent.
+LIVE_TRADE_PATHS = frozenset(
+    {
+        ("POST", "/api/v5/trade/order"),
+        ("POST", "/api/v5/trade/cancel-order"),
+    }
+)
+
+_LIVE_PLACE_KEYS = frozenset({"instId", "tdMode", "side", "ordType", "sz", "px", "clOrdId", "posSide"})
+_LIVE_CANCEL_KEYS = frozenset({"instId", "ordId", "clOrdId"})
 
 _WITHDRAW_MARKERS = ("withdraw", "transfer", "deposit")
 _BLOCKED_PREFIXES = ("/api/v5/asset", "/api/v5/finance")
@@ -125,7 +150,8 @@ def _demo_env() -> str | None:
 def _refuse_live_trade_tripwire() -> None:
     if LIVE_TRADE_ENABLED:
         raise LiveTradingDisabled(
-            "LIVE_TRADE_ENABLED is set but this package has no live trading path. Refusing to start."
+            "LIVE_TRADE_ENABLED is a source tripwire, not the live-trade switch. "
+            "Refusing to start. Leave it False and set OKX_LIVE_TRADE=1 to opt in."
         )
 
 
@@ -134,7 +160,9 @@ def require_cli_demo() -> None:
     raw = os.environ.get("OKX_DEMO", "").strip().lower()
     if raw not in _ON:
         raise LiveTradingDisabled(
-            "CLI place, cancel, and order lookup require OKX_DEMO=1. Live Trade is not enabled."
+            "CLI place, cancel, and order lookup require OKX_DEMO=1. "
+            "The live BTC-USDT smoke needs OKX_LIVE_TRADE=1 and --allow-orders. "
+            "Live Trade is not enabled."
         )
     resolve_demo(True)
 
@@ -142,11 +170,13 @@ def require_cli_demo() -> None:
 def resolve_demo(demo: bool | None) -> bool:
     """Return whether signed calls use demo trading.
 
-    ``True`` sends ``x-simulated-trading: 1``. ``False`` is live read-only
-    (balance, positions, and funding balances). The library default
-    (``demo=None`` and ``OKX_DEMO`` unset) stays demo. Explicit off values
-    (``0``, ``false``, ``no``, ``off``) select live reads.
+    ``True`` sends ``x-simulated-trading: 1``. ``False`` is a live key
+    (balance, positions, and funding balances, plus the opt-in smoke).
+    The library default (``demo=None`` and ``OKX_DEMO`` unset) stays demo.
+    Explicit off values (``0``, ``false``, ``no``, ``off``) select live.
     ``LIVE_TRADE_ENABLED`` is not an unlock: if it is set, startup fails.
+    ``OKX_LIVE_TRADE`` does not change this function; it only opens the
+    smoke place and cancel paths.
     """
     _refuse_live_trade_tripwire()
     env = _demo_env()
@@ -170,16 +200,125 @@ def resolve_demo(demo: bool | None) -> bool:
     return True
 
 
-def assert_live_read_only(demo: bool, method: str, path: str) -> None:
-    """Live mode may sign balance, positions, and funding balances. Writes stay on demo."""
+def assert_live_read_only(demo: bool, method: str, path: str, *, live_trade: bool = False) -> None:
+    """Live reads are balance, positions, and funding.
+
+    Place and cancel are signed on a live key only when ``live_trade`` is
+    true. Amend and every other private call stay refused. Funding GET is
+    unchanged: it does not need ``live_trade``.
+    """
     if demo:
         return
-    if method.upper() == "GET" and path in LIVE_READ_PATHS:
+    method_u = method.upper()
+    path_only = path.split("?", 1)[0].split("#", 1)[0]
+    if method_u == "GET" and path_only in LIVE_READ_PATHS:
+        return
+    if live_trade and (method_u, path_only) in LIVE_TRADE_PATHS:
         return
     raise LiveTradingDisabled(
         "Live mode is read-only for balance, positions, and funding. "
-        "Place, amend, and cancel stay on demo (OKX_DEMO=1). Live Trade is not enabled."
+        "Place, amend, and cancel stay on demo (OKX_DEMO=1) unless "
+        "OKX_LIVE_TRADE=1 opens place and cancel for the BTC-USDT smoke. "
+        "Live Trade is not enabled."
     )
+
+
+def resolve_live_trade(live_trade: bool | None) -> bool:
+    """Return whether live place and cancel may be signed.
+
+    Default is off. ``live_trade=True`` or ``OKX_LIVE_TRADE=1`` opts in.
+    ``live_trade=False`` forces it off even when the env is set.
+    ``LIVE_TRADE_ENABLED`` is not this switch. Writes still need
+    ``allow_orders``, and ``OKX_READ_ONLY`` still wins over that go flag.
+    """
+    if live_trade is True:
+        return True
+    if live_trade is False:
+        return False
+    return env_flag("OKX_LIVE_TRADE")
+
+
+def _smoke_decimal(value: str, label: str) -> Decimal:
+    text = str(value).strip()
+    if not text or text.startswith("+") or "e" in text.lower():
+        raise LiveTradingDisabled(f"live smoke {label} must be a plain positive decimal")
+    try:
+        number = Decimal(text)
+    except InvalidOperation as exc:
+        raise LiveTradingDisabled(f"live smoke {label} must be a plain positive decimal") from exc
+    if not number.is_finite() or number <= 0:
+        raise LiveTradingDisabled(f"live smoke {label} must be a plain positive decimal")
+    return number
+
+
+def assert_live_smoke_place(
+    *,
+    inst_id: str,
+    side: str,
+    sz: str,
+    td_mode: str,
+    ord_type: str,
+    px: str,
+    pos_side: str = "",
+    reduce_only: bool = False,
+) -> None:
+    """Refuse any live place that is not the resting BTC-USDT min-size limit."""
+    if (
+        inst_id != LIVE_SMOKE_INST_ID
+        or side != LIVE_SMOKE_SIDE
+        or td_mode != LIVE_SMOKE_TD_MODE
+        or ord_type != LIVE_SMOKE_ORD_TYPE
+        or pos_side != ""
+        or reduce_only
+    ):
+        raise LiveTradingDisabled(
+            "Live place is only a BTC-USDT cash limit buy of size "
+            f"{LIVE_SMOKE_SZ} at px <= {LIVE_SMOKE_PX_MAX} "
+            "(far from market, same shape as the demo smoke). "
+            "Cancel it in the same client session."
+        )
+    size = _smoke_decimal(sz, "sz")
+    price = _smoke_decimal(px, "px")
+    if size != Decimal(LIVE_SMOKE_SZ) or price > Decimal(LIVE_SMOKE_PX_MAX):
+        raise LiveTradingDisabled(
+            "Live place is only a BTC-USDT cash limit buy of size "
+            f"{LIVE_SMOKE_SZ} at px <= {LIVE_SMOKE_PX_MAX} "
+            "(far from market, same shape as the demo smoke). "
+            "Cancel it in the same client session."
+        )
+
+
+def assert_live_smoke_cancel(inst_id: str) -> None:
+    if inst_id != LIVE_SMOKE_INST_ID:
+        raise LiveTradingDisabled("Live cancel is only for the BTC-USDT smoke order.")
+
+
+def assert_live_trade_payload(method: str, path: str, payload: Mapping[str, Any] | None) -> None:
+    """Refuse a live place or cancel body that is outside the smoke shape."""
+    method_u = method.upper()
+    body = dict(payload or {})
+    if (method_u, path) == ("POST", "/api/v5/trade/order"):
+        extra = set(body) - _LIVE_PLACE_KEYS
+        if extra or "px" not in body:
+            raise LiveTradingDisabled("Live place payload is outside the BTC-USDT smoke shape.")
+        assert_live_smoke_place(
+            inst_id=str(body.get("instId") or ""),
+            side=str(body.get("side") or ""),
+            sz=str(body.get("sz") or ""),
+            td_mode=str(body.get("tdMode") or ""),
+            ord_type=str(body.get("ordType") or ""),
+            px=str(body.get("px") or ""),
+            pos_side=str(body.get("posSide") or ""),
+            reduce_only=bool(body.get("reduceOnly")),
+        )
+        return
+    if (method_u, path) == ("POST", "/api/v5/trade/cancel-order"):
+        extra = set(body) - _LIVE_CANCEL_KEYS
+        if extra or not (body.get("ordId") or body.get("clOrdId")):
+            raise LiveTradingDisabled("Live cancel payload is outside the BTC-USDT smoke.")
+        assert_live_smoke_cancel(str(body.get("instId") or ""))
+        return
+    raise LiveTradingDisabled(f"Live Trade is not enabled for {method_u} {path}.")
 
 
 def resolve_allow_orders(*, allow_orders: bool | None, read_only: bool | None) -> bool:

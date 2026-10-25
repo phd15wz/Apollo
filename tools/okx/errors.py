@@ -93,7 +93,11 @@ class PrivateChannelError(UnsafeEndpointError):
 
 
 class LiveTradingDisabled(UnsafeEndpointError):
-    """Live Trade is not enabled. Live mode is balance, positions, and funding only."""
+    """Live Trade is closed, or this live call is outside the BTC-USDT smoke.
+
+    Live reads remain balance, positions, and funding balances. Live place
+    and cancel need ``OKX_LIVE_TRADE=1`` and still cannot withdraw.
+    """
 
 
 class OrdersDisabled(UnsafeEndpointError):

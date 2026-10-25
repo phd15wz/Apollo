@@ -3,9 +3,9 @@
 Stage 1 is a keyless Python client for OKX v5 **public** REST and WebSocket
 data. It cannot trade. Stage 2 (`PrivateClient`) signs account reads and
 demo orders. Live mode reads trading balance, positions, and funding
-balances only. Place, cancel, and amend stay on demo. It cannot withdraw,
-and it cannot send a live order. The path after this package is live Trade,
-as its own change. Withdrawal stays out.
+balances. One opt-in smoke may place and immediately cancel a resting
+BTC-USDT cash limit on a live Trade key. Amend stays on demo. It cannot
+withdraw. Withdrawal stays out.
 
 Docs: [OKX API v5](https://www.okx.com/docs-v5/en/). This package is written
 from those public endpoints. It does not vendor [OKX Agent Trade Kit](https://github.com/okx/agent-trade-kit).
@@ -266,7 +266,7 @@ sentinel lets the writer drain and close. Anything still unwritten
 becomes a recorded gap. Downstream Hawkes fits must treat `kind='gap'`
 as a hole in the tape, never as a quiet period.
 
-## Stage 2 — private client (demo writes, live reads)
+## Stage 2 — private client (demo writes, live reads, opt-in smoke)
 
 `PublicClient` is unchanged: keyless, GET-only, no `OK-ACCESS-*` headers.
 `PrivateClient` is a separate object. OKX demo trading uses the same REST
@@ -276,15 +276,23 @@ header `x-simulated-trading: 1`. There is no second REST hostname.
 Demo stays the library default: `PrivateClient()` with `OKX_DEMO` unset
 still sends the simulated-trading header. Live read-only is `demo=False`,
 or `OKX_DEMO` set to `0` / `false` / `no` / `off`. That mode signs **balance,
-positions, and funding balances only** and omits `x-simulated-trading`, so a
-live Read key works. Place, amend, cancel, and the other private GETs raise
-`LiveTradingDisabled` until a later live-Trade change. `OKX_ALLOW_ORDERS`
-does not turn those writes live. A value of `OKX_DEMO` other than on or off
-still raises.
+positions, and funding balances** and omits `x-simulated-trading`, so a
+live Read key works. Amend and the other private GETs still raise
+`LiveTradingDisabled` on a live key. `OKX_ALLOW_ORDERS` alone does not turn
+writes live. A value of `OKX_DEMO` other than on or off still raises.
+
+Live place and cancel are a separate opt-in, off by default. Set
+`OKX_LIVE_TRADE=1` (or pass `live_trade=True`) **and** the order go flag
+(`allow_orders=True`, `OKX_ALLOW_ORDERS=1`, or CLI `--allow-orders`).
+`OKX_READ_ONLY=1` still wins. The only live order is a BTC-USDT cash limit
+buy, size `0.001`, price at most `40000` (the 2026-10-24 demo smoke: a
+resting limit far from the market). `smoke_place_cancel` places that order
+and cancels it before returning. Anything else, including amend, swap, a
+larger size, or a higher price, stays `LiveTradingDisabled`.
 
 `LIVE_TRADE_ENABLED` in `guards.py` is a tripwire, not a switch. It is
-`False`. Setting it to `True` makes the client refuse to start. Live Trade
-needs a later change that removes the tripwire and adds a reviewed path.
+`False`. Setting it to `True` makes the client refuse to start, including
+when `OKX_LIVE_TRADE=1` is set. Do not flip the constant.
 
 ### Keys
 
@@ -332,6 +340,11 @@ ack = trading.place_order(
 )
 trading.cancel_order("SPCX-USDT-SWAP", ord_id=ack.ord_id)
 trading.amend_order("SPCX-USDT-SWAP", ord_id=ack.ord_id, new_px="101")
+
+# Live smoke: opt-in plus the go flag. Places, then cancels, same client.
+# Withdraw is not a method on this client.
+smoke = PrivateClient(demo=False, allow_orders=True, live_trade=True)
+placed, cancelled = smoke.smoke_place_cancel(px="40000", margin_usd=1)
 ```
 
 Allowlisted routes only:
@@ -354,11 +367,14 @@ Enforced now:
 1. **Read-only kill switch.** POSTs, including cancel, refuse unless
    `allow_orders=True` or `OKX_ALLOW_ORDERS=1`. `read_only=True`,
    `--read-only`, and `OKX_READ_ONLY=1` override the go flag.
-2. **Demo writes, live reads.** Demo requests send `x-simulated-trading: 1`.
-   Live mode omits that header on balance, positions, and funding balances
-   only. Live Trade is not implemented.
+2. **Demo writes, live reads, one live smoke.** Demo requests send
+   `x-simulated-trading: 1`. Live mode omits that header on balance,
+   positions, and funding balances. Live place and cancel also omit it, and
+   only when `OKX_LIVE_TRADE=1` or `live_trade=True` is set with the go
+   flag. The live order is BTC-USDT, cash, limit, buy, size `0.001`,
+   px `<= 40000`, then cancel on that same client. Amend stays on demo.
 3. **No withdraw / transfer / deposit** paths. Same exception type as the
-   public client's blocked routes.
+   public client's blocked routes. `GET /api/v5/asset/balances` is unchanged.
 4. **Soft cap.** Incremental `margin_usd` plus caller-supplied
    `open_margins` must stay within **$10** per name
    (`NAME_MARGIN_CAP_USD`). A `shared_cap: true` group in
@@ -371,7 +387,7 @@ Enforced now:
 
 Deferred (not done in this package):
 
-- Live Trade (place, amend, cancel on a live key).
+- Live amend, and any live order besides the BTC-USDT place-then-cancel smoke.
 - Mark × contract value × size / leverage margin math. Callers pass
   `margin_usd`. `open_margins_from_positions` only sums the `margin` field
   already on those objects; it does not convert currency and it is not
@@ -388,8 +404,12 @@ Deferred (not done in this package):
 ### CLI
 
 No key arguments. `balance`, `positions`, and `funding` hit the live account
-when `OKX_DEMO` is unset or off, without `--allow-orders`. Place, cancel, and
-order lookup still require `OKX_DEMO=1`.
+when `OKX_DEMO` is unset or off, without `--allow-orders`. Demo place, cancel,
+and order lookup still require `OKX_DEMO=1`. The live smoke requires
+`OKX_LIVE_TRADE=1`, `--allow-orders`, and `OKX_DEMO` unset or off. `smoke`
+cancels in the same process. A live `place` of the smoke shape cancels
+before the process exits. Live `cancel` is only BTC-USDT, for a retry.
+Order lookup and amend are not live.
 
 ```bash
 python3 -m tools.okx.private_cli balance
@@ -402,6 +422,8 @@ OKX_DEMO=1 python3 -m tools.okx.private_cli --allow-orders cancel \
 OKX_DEMO=1 python3 -m tools.okx.private_cli --allow-orders place \
   --inst SPCX-USDT-SWAP --side buy --sz 1 --td-mode cross \
   --ord-type limit --px 100 --margin-usd 4
+OKX_LIVE_TRADE=1 python3 -m tools.okx.private_cli --allow-orders smoke \
+  --px 40000 --margin-usd 1
 ```
 
 `--read-only` forces the kill switch even when `OKX_ALLOW_ORDERS=1`.
@@ -425,8 +447,9 @@ need API keys.
   Signing lives in `auth.py` and is used only by `PrivateClient`.
 - Private client: demo header on demo calls; live balance, positions, and
   funding balances omit it. Allowlisted trade and account routes, plus
-  `GET /api/v5/asset/balances`. No withdrawal endpoints. Live place, amend,
-  and cancel are refused.
+  `GET /api/v5/asset/balances`. No withdrawal endpoints. Live place and
+  cancel omit the demo header only for the BTC-USDT smoke under
+  `OKX_LIVE_TRADE=1` and the order go flag. Live amend stays refused.
 - Unit tests mock HTTP with recorded JSON under `tests/fixtures/` and use an
   in-memory fake WebSocket (no network). Live public tests stay behind
   `OKX_LIVE=1`. Demo private tests stay behind `OKX_DEMO=1` plus a key.

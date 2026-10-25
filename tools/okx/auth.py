@@ -14,6 +14,7 @@ import os
 from dataclasses import dataclass
 
 from tools.okx.errors import LiveTradingDisabled, MissingCredentials
+from tools.okx.guards import LIVE_TRADE_PATHS
 
 # Primary name, then accepted aliases. The first non-empty value wins.
 _KEY_VARS = ("OKX_API_KEY", "OKX_KEY")
@@ -130,17 +131,22 @@ def access_headers(
     request_path: str,
     body: str = "",
     demo: bool,
+    allow_live_write: bool = False,
 ) -> dict[str, str]:
     """Build OK-ACCESS-* headers.
 
-    Demo requests set ``x-simulated-trading: 1``. Live read-only requests omit
-    that header so a live Read key is not rejected as demo. Live writes are
-    not signed.
+    Demo requests set ``x-simulated-trading: 1``. Live reads omit that header.
+    A live write is signed only when ``allow_live_write`` is true and the path
+    is place or cancel. Amend, asset mutations, and every other POST stay
+    unsigned. The simulated-trading header stays off for those live writes.
     """
-    if not demo and method.upper() != "GET":
-        raise LiveTradingDisabled(
-            "refusing to sign a live write; Live Trade is not enabled"
-        )
+    method_u = method.upper()
+    path_only = request_path.split("?", 1)[0].split("#", 1)[0]
+    if not demo and method_u != "GET":
+        if not allow_live_write or (method_u, path_only) not in LIVE_TRADE_PATHS:
+            raise LiveTradingDisabled(
+                "refusing to sign a live write; Live Trade is not enabled"
+            )
     signature = sign(credentials.api_secret, timestamp, method, request_path, body)
     redact_secrets(credentials.api_key, credentials.api_secret, credentials.passphrase, signature)
     headers = {
