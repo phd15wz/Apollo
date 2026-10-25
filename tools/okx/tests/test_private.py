@@ -302,6 +302,126 @@ def test_live_smoke_place_cancel_needs_opt_in(monkeypatch: pytest.MonkeyPatch, c
         killed.smoke_place_cancel()
 
 
+def _swap_smoke_order(**overrides: object) -> dict[str, object]:
+    order: dict[str, object] = {
+        "inst_id": "BTC-USDT-SWAP",
+        "side": "buy",
+        "sz": "1",
+        "td_mode": "isolated",
+        "ord_type": "limit",
+        "px": "40000",
+        "margin_usd": 1,
+    }
+    order.update(overrides)
+    return order
+
+
+def test_live_swap_smoke_needs_opt_in_and_cash_still_passes(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    transport = FakeTransport()
+    ack = load_fixture("private_order_ack.json")
+    transport.add("/api/v5/trade/order", ack)
+    transport.add("/api/v5/trade/cancel-order", ack)
+    transport.add("/api/v5/asset/balances", load_fixture("private_funding_balance.json"))
+    blocked, _clock = _client(transport, demo=False, allow_orders=True)
+    with pytest.raises(LiveTradingDisabled, match="Live Trade"):
+        blocked.place_order(**_swap_smoke_order())
+    with pytest.raises(LiveTradingDisabled, match="Live Trade"):
+        blocked.smoke_swap_place_cancel()
+    assert transport.calls == []
+
+    client, _clock = _client(transport, demo=False, allow_orders=True, live_trade=True)
+    for bad in (
+        _swap_smoke_order(ord_type="market", px=None),
+        _swap_smoke_order(sz="2"),
+        _swap_smoke_order(px="40001"),
+        _swap_smoke_order(side="sell"),
+        _swap_smoke_order(td_mode="cross"),
+        _swap_smoke_order(td_mode="cash"),
+        _swap_smoke_order(inst_id="ETH-USDT-SWAP"),
+        _swap_smoke_order(pos_side="long"),
+        _swap_smoke_order(reduce_only=True),
+    ):
+        with pytest.raises(LiveTradingDisabled):
+            client.place_order(**bad)
+    with pytest.raises(LiveTradingDisabled, match="Live Trade"):
+        client.amend_order("BTC-USDT-SWAP", ord_id="312269865356374016", new_px="39000")
+    with pytest.raises(UnsafeEndpointError):
+        client._request("POST", "/api/v5/asset/withdrawal", payload={"ccy": "USDT", "amt": "1"})
+    with pytest.raises(UnsafeEndpointError):
+        client._request("POST", "/api/v5/asset/transfer", payload={"ccy": "USDT", "amt": "1"})
+    with pytest.raises(UnsafeEndpointError):
+        client._request("POST", "/api/v5/account/set-leverage", payload={"instId": "BTC-USDT-SWAP", "lever": "5"})
+    with pytest.raises(UnsafeEndpointError):
+        client._request(
+            "POST",
+            "/api/v5/account/set-position-mode",
+            payload={"posMode": "net_mode"},
+        )
+    assert transport.calls == []
+
+    funding = client.funding(ccy="USDT")
+    assert funding[0].ccy == "USDT"
+    assert transport.calls[0]["path"] == "/api/v5/asset/balances"
+
+    cash_placed, cash_cancelled = client.smoke_place_cancel()
+    assert cash_placed.ord_id == cash_cancelled.ord_id
+    assert transport.calls[1]["body"] == (
+        b'{"instId":"BTC-USDT","ordType":"limit","px":"40000","side":"buy","sz":"0.001","tdMode":"cash"}'
+    )
+    assert transport.calls[2]["path"] == "/api/v5/trade/cancel-order"
+    assert b'"instId":"BTC-USDT"' in transport.calls[2]["body"]
+
+    placed, cancelled = client.smoke_swap_place_cancel()
+    assert placed.ord_id == "312269865356374016"
+    assert cancelled.ord_id == placed.ord_id
+    assert "cancelling live order 312269865356374016" in capsys.readouterr().err
+    place_call = transport.calls[3]
+    cancel_call = transport.calls[4]
+    place_body = place_call["body"].decode()
+    assert place_body == (
+        '{"instId":"BTC-USDT-SWAP","ordType":"limit","px":"40000","side":"buy","sz":"1","tdMode":"isolated"}'
+    )
+    assert "x-simulated-trading" not in place_call["headers"]
+    assert place_call["headers"]["OK-ACCESS-SIGN"] == sign(
+        _SECRET, _TS, "POST", "/api/v5/trade/order", place_body
+    )
+    assert cancel_call["path"] == "/api/v5/trade/cancel-order"
+    assert b'"instId":"BTC-USDT-SWAP"' in cancel_call["body"]
+    assert "x-simulated-trading" not in cancel_call["headers"]
+
+    lower_px, lower_cancelled = client.smoke_swap_place_cancel(px="10000")
+    assert lower_px.ord_id == lower_cancelled.ord_id
+    assert transport.calls[5]["body"] == (
+        b'{"instId":"BTC-USDT-SWAP","ordType":"limit","px":"10000",'
+        b'"side":"buy","sz":"1","tdMode":"isolated"}'
+    )
+
+    monkeypatch.setenv("OKX_READ_ONLY", "1")
+    killed, _clock = _client(FakeTransport(), demo=False, allow_orders=True, live_trade=True)
+    with pytest.raises(OrdersDisabled):
+        killed.smoke_swap_place_cancel()
+
+
+def test_demo_swap_smoke_still_sends_the_simulated_header() -> None:
+    transport = FakeTransport()
+    ack = load_fixture("private_order_ack.json")
+    transport.add("/api/v5/trade/order", ack)
+    transport.add("/api/v5/trade/cancel-order", ack)
+    client, _clock = _client(transport, allow_orders=True)
+    assert client.demo is True
+    assert client.live_trade is False
+    placed, cancelled = client.smoke_swap_place_cancel()
+    assert placed.ord_id == cancelled.ord_id
+    assert transport.calls[0]["headers"]["x-simulated-trading"] == "1"
+    assert transport.calls[0]["body"] == (
+        b'{"instId":"BTC-USDT-SWAP","ordType":"limit","px":"40000","side":"buy","sz":"1","tdMode":"isolated"}'
+    )
+    assert transport.calls[1]["headers"]["x-simulated-trading"] == "1"
+    assert b'"instId":"BTC-USDT-SWAP"' in transport.calls[1]["body"]
+
+
 def test_demo_smoke_still_sends_the_simulated_header() -> None:
     transport = FakeTransport()
     ack = load_fixture("private_order_ack.json")

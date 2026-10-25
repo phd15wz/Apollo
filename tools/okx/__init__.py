@@ -2,8 +2,9 @@
 
 ``PublicClient`` is keyless public market data (stage 1). ``PrivateClient``
 is the stage-2 signed client: live read-only balance, positions, and funding
-balances, demo place, cancel, and amend, plus an opt-in live BTC-USDT
-place-then-cancel smoke (``OKX_LIVE_TRADE=1``). It cannot withdraw.
+balances, demo place, cancel, and amend, plus opt-in live place-then-cancel
+smokes for BTC-USDT cash and one BTC-USDT-SWAP limit (``OKX_LIVE_TRADE=1``).
+It cannot withdraw or set leverage.
 """
 
 from tools.okx.archive import (
