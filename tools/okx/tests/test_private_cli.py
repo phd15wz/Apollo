@@ -320,9 +320,127 @@ def test_cli_live_smoke_requires_opt_in_and_cancels(
     assert "BTC-USDT" in capsys.readouterr().err
     assert len(transport.calls) == before
 
-    code = main(["cancel", "--inst", "BTC-USDT-SWAP", "--ord-id", "312269865356374016"], client=live)
+    code = main(["cancel", "--inst", "ETH-USDT-SWAP", "--ord-id", "312269865356374016"], client=live)
     assert code == 2
     assert len(transport.calls) == before
+
+    code = main(["cancel", "--inst", "BTC-USDT-SWAP", "--ord-id", "312269865356374016"], client=live)
+    assert code == 0
+    assert len(transport.calls) == before + 1
+    assert transport.calls[-1]["path"] == "/api/v5/trade/cancel-order"
+    assert b'"instId":"BTC-USDT-SWAP"' in transport.calls[-1]["body"]
+
+
+def test_cli_live_swap_smoke_requires_opt_in_and_cancels(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code = main(["--allow-orders", "smoke-swap"])
+    assert code == 2
+    assert "OKX_DEMO" in capsys.readouterr().err
+
+    monkeypatch.setenv("OKX_LIVE_TRADE", "1")
+    code = main(["smoke-swap"])
+    assert code == 2
+    assert "--allow-orders" in capsys.readouterr().err
+
+    monkeypatch.setenv("OKX_DEMO", "1")
+    code = main(["--allow-orders", "smoke-swap"])
+    assert code == 2
+    assert "OKX_DEMO" in capsys.readouterr().err
+    monkeypatch.delenv("OKX_DEMO")
+
+    captured: dict[str, object] = {}
+
+    class _SwapClient:
+        def __init__(self, **kwargs: object) -> None:
+            captured.update(kwargs)
+            self.demo = kwargs.get("demo")
+
+        def smoke_swap_place_cancel(self, **kwargs: object) -> tuple[dict[str, str], dict[str, str]]:
+            captured["swap_kwargs"] = kwargs
+            return {"ord_id": "9"}, {"ord_id": "9"}
+
+    monkeypatch.setattr("tools.okx.private_cli.PrivateClient", _SwapClient)
+    code = main(["--allow-orders", "smoke-swap", "--px", "40000", "--margin-usd", "1"])
+    assert code == 0
+    assert captured["demo"] is False
+    assert captured["allow_orders"] is True
+    assert captured["live_trade"] is True
+    assert captured["swap_kwargs"] == {
+        "px": "40000",
+        "margin_usd": 1.0,
+        "cl_ord_id": "",
+    }
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["placed"]["ord_id"] == "9"
+    assert payload["cancelled"]["ord_id"] == "9"
+
+    transport = FakeTransport()
+    ack = load_fixture("private_order_ack.json")
+    transport.add("/api/v5/trade/order", ack)
+    transport.add("/api/v5/trade/cancel-order", ack)
+    live, _clock = _client(transport, demo=False, allow_orders=True, live_trade=True)
+    code = main(
+        [
+            "place",
+            "--inst",
+            "BTC-USDT-SWAP",
+            "--side",
+            "buy",
+            "--sz",
+            "1",
+            "--td-mode",
+            "cross",
+            "--ord-type",
+            "limit",
+            "--px",
+            "40000",
+            "--margin-usd",
+            "1",
+        ],
+        client=live,
+    )
+    assert code == 2
+    assert "isolated" in capsys.readouterr().err
+    assert transport.calls == []
+
+    code = main(
+        [
+            "place",
+            "--inst",
+            "BTC-USDT-SWAP",
+            "--side",
+            "buy",
+            "--sz",
+            "1",
+            "--td-mode",
+            "isolated",
+            "--ord-type",
+            "limit",
+            "--px",
+            "40000",
+            "--margin-usd",
+            "1",
+        ],
+        client=live,
+    )
+    assert code == 0
+    placed_io = capsys.readouterr()
+    nested = json.loads(placed_io.out)
+    assert nested["placed"]["ord_id"] == nested["cancelled"]["ord_id"]
+    assert transport.calls[0]["body"] == (
+        b'{"instId":"BTC-USDT-SWAP","ordType":"limit","px":"40000","side":"buy","sz":"1","tdMode":"isolated"}'
+    )
+    assert transport.calls[1]["path"] == "/api/v5/trade/cancel-order"
+    assert "x-simulated-trading" not in transport.calls[0]["headers"]
+    assert "cancelling live order" in placed_io.err
+
+    code = main(["--allow-orders", "smoke-swap", "--px", "25000"], client=live)
+    assert code == 0
+    assert transport.calls[2]["body"] == (
+        b'{"instId":"BTC-USDT-SWAP","ordType":"limit","px":"25000","side":"buy","sz":"1","tdMode":"isolated"}'
+    )
+    assert transport.calls[3]["path"] == "/api/v5/trade/cancel-order"
 
 
 def test_client_options_from_flags() -> None:

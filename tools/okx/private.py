@@ -3,10 +3,11 @@
 Public market data stays on ``PublicClient`` and never uses this module.
 Demo calls send ``x-simulated-trading: 1``. Live mode (``demo=False``) signs
 balance, positions, and funding balances and omits that header. Live place
-and cancel are the BTC-USDT smoke only, and only when ``OKX_LIVE_TRADE=1``
-(or ``live_trade=True``) is set with the order go flag. Amend stays on demo.
-Withdrawal, deposit, transfer, and every other asset route are refused.
-Writes need an explicit go flag; see ``tools.okx.guards``.
+and cancel are the BTC-USDT cash smoke and one BTC-USDT-SWAP smoke, and
+only when ``OKX_LIVE_TRADE=1`` (or ``live_trade=True``) is set with the
+order go flag. Amend stays on demo. This client does not set leverage or
+margin mode. Withdrawal, deposit, transfer, and every other asset route
+are refused. Writes need an explicit go flag; see ``tools.okx.guards``.
 """
 
 from __future__ import annotations
@@ -34,6 +35,12 @@ from tools.okx.guards import (
     LIVE_SMOKE_SIDE,
     LIVE_SMOKE_SZ,
     LIVE_SMOKE_TD_MODE,
+    LIVE_SWAP_SMOKE_INST_ID,
+    LIVE_SWAP_SMOKE_ORD_TYPE,
+    LIVE_SWAP_SMOKE_PX_MAX,
+    LIVE_SWAP_SMOKE_SIDE,
+    LIVE_SWAP_SMOKE_SZ,
+    LIVE_SWAP_SMOKE_TD_MODE,
     LIVE_TRADE_PATHS,
     PRIVATE_RATE_LIMITS,
     RiskGuards,
@@ -495,11 +502,12 @@ class PrivateClient:
         margin_usd: float = 1.0,
         cl_ord_id: str = "",
     ) -> tuple[OrderAck, OrderAck]:
-        """Place the resting BTC-USDT limit and cancel it on this client.
+        """Place the resting BTC-USDT cash limit and cancel it on this client.
 
-        Demo and the live opt-in both use this shape. The cancel runs before
-        the method returns. A live cancel prints the order id first so a
-        failed cancel can be retried without dumping the account.
+        Demo and the live opt-in both use this shape. The SWAP smoke is
+        ``smoke_swap_place_cancel``. The cancel runs before the method
+        returns. A live cancel prints the order id first so a failed cancel
+        can be retried without dumping the account.
         """
         placed = self.place_order(
             LIVE_SMOKE_INST_ID,
@@ -515,6 +523,41 @@ class PrivateClient:
             print(f"cancelling live order {placed.ord_id}", file=sys.stderr)
         cancelled = self.cancel_order(
             LIVE_SMOKE_INST_ID,
+            ord_id=placed.ord_id,
+            cl_ord_id=placed.cl_ord_id,
+        )
+        return placed, cancelled
+
+    def smoke_swap_place_cancel(
+        self,
+        *,
+        px: str = LIVE_SWAP_SMOKE_PX_MAX,
+        margin_usd: float = 1.0,
+        cl_ord_id: str = "",
+    ) -> tuple[OrderAck, OrderAck]:
+        """Place one BTC-USDT-SWAP resting limit and cancel it on this client.
+
+        The shape is one contract (``minSz`` and ``lotSz`` are both ``1``),
+        a limit buy, ``tdMode`` ``isolated`` (the strategy default; cross is
+        not this smoke), and ``px`` at most ``40000`` so the order rests
+        below the market. ``posSide`` is omitted. Leverage and margin mode
+        are not changed; they stay as set in the OKX UI. Demo ``place_order``
+        can still send ``cross``. The cancel runs before return.
+        """
+        placed = self.place_order(
+            LIVE_SWAP_SMOKE_INST_ID,
+            side=LIVE_SWAP_SMOKE_SIDE,
+            sz=LIVE_SWAP_SMOKE_SZ,
+            td_mode=LIVE_SWAP_SMOKE_TD_MODE,
+            ord_type=LIVE_SWAP_SMOKE_ORD_TYPE,
+            px=px,
+            margin_usd=margin_usd,
+            cl_ord_id=cl_ord_id,
+        )
+        if not self.demo:
+            print(f"cancelling live order {placed.ord_id}", file=sys.stderr)
+        cancelled = self.cancel_order(
+            LIVE_SWAP_SMOKE_INST_ID,
             ord_id=placed.ord_id,
             cl_ord_id=placed.cl_ord_id,
         )

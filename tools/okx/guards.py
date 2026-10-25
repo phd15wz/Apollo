@@ -9,11 +9,13 @@ Enforced in this package
   variable unset, sends ``x-simulated-trading: 1``. Live mode is read-only
   balance, positions, and funding balances: ``demo=False``, or ``OKX_DEMO``
   unset on the CLI (explicit ``0`` / ``false`` / ``no`` / ``off`` too).
-  Amend stays on demo. Live place and cancel exist only for one resting
-  BTC-USDT smoke, and only with an explicit opt-in (``OKX_LIVE_TRADE=1`` or
-  ``live_trade=True``) plus the order go flag. ``LIVE_TRADE_ENABLED`` is a
-  tripwire: setting it ``True`` does not enable live trading; the client
-  refuses to start.
+  Amend stays on demo. Live place and cancel exist only for two resting
+  smokes, and only with an explicit opt-in (``OKX_LIVE_TRADE=1`` or
+  ``live_trade=True``) plus the order go flag: BTC-USDT cash, and one
+  BTC-USDT-SWAP limit (``tdMode`` ``isolated`` only). ``LIVE_TRADE_ENABLED``
+  is a tripwire: setting it ``True`` does not enable live trading; the
+  client refuses to start. This package does not set leverage, margin
+  mode, or account config.
 * Allowlisted account, trade, and one funding read. ``GET /api/v5/asset/balances``
   is the only asset route. Withdraw, transfer, deposit, other ``/api/v5/asset``
   paths, and ``/api/v5/finance`` raise ``UnsafeEndpointError``.
@@ -26,9 +28,10 @@ Enforced in this package
 
 Deferred (not enforced here)
 ----------------------------
-* Live amend, and any live order that is not the BTC-USDT place-then-cancel
-  smoke. Read-only live balance, positions, and funding balances are already
-  allowed. The smoke itself is opt-in, not a general live Trade path.
+* Live amend, and any live order that is not the BTC-USDT or BTC-USDT-SWAP
+  place-then-cancel smoke. Read-only live balance, positions, and funding
+  balances are already allowed. The smokes are opt-in, not a general live
+  Trade path. Leverage and margin mode stay as set in the OKX UI.
 * Automatic margin from mark price, contract value, and leverage. Callers pass
   ``margin_usd``. Position ``margin`` is not converted or auto-fetched.
 * A persistent shared-cap ledger across processes. ``open_margins`` is an
@@ -59,14 +62,28 @@ from tools.okx.errors import LiveTradingDisabled, OrdersDisabled, RiskLimitError
 # ``OKX_LIVE_TRADE=1`` (or ``live_trade=True``), not this constant.
 LIVE_TRADE_ENABLED = False
 
-# Live place is this resting spot order only, matching the 2026-10-24 demo
-# smoke (BTC-USDT cash limit buy, size 0.001, price far below the market).
+# Live place is one of two resting limits, both buys far below the market
+# (px at most 40000), then cancel in the same process.
+# Cash matches the 2026-10-24 demo smoke.
 LIVE_SMOKE_INST_ID = "BTC-USDT"
 LIVE_SMOKE_SIDE = "buy"
 LIVE_SMOKE_SZ = "0.001"
 LIVE_SMOKE_TD_MODE = "cash"
 LIVE_SMOKE_ORD_TYPE = "limit"
 LIVE_SMOKE_PX_MAX = "40000"
+
+# SWAP size matches the demo place convention and the instrument fixture:
+# tools/okx/tests/fixtures/instruments.json has lotSz "1", minSz "1",
+# ctVal "0.01", tickSz "0.1" for BTC-USDT-SWAP. The strategy default and
+# the only live SWAP smoke tdMode is isolated. Demo place still accepts
+# cross; that is not this smoke. Leverage is not set here.
+LIVE_SWAP_SMOKE_INST_ID = "BTC-USDT-SWAP"
+LIVE_SWAP_SMOKE_SIDE = "buy"
+LIVE_SWAP_SMOKE_SZ = "1"
+LIVE_SWAP_SMOKE_TD_MODE = "isolated"
+LIVE_SWAP_SMOKE_ORD_TYPE = "limit"
+LIVE_SWAP_SMOKE_PX_MAX = "40000"
+_LIVE_CANCEL_INST_IDS = frozenset({LIVE_SMOKE_INST_ID, LIVE_SWAP_SMOKE_INST_ID})
 
 NAME_MARGIN_CAP_USD = 10.0
 GATE_SIZE_FRACTION = 0.5
@@ -161,7 +178,8 @@ def require_cli_demo() -> None:
     if raw not in _ON:
         raise LiveTradingDisabled(
             "CLI place, cancel, and order lookup require OKX_DEMO=1. "
-            "The live BTC-USDT smoke needs OKX_LIVE_TRADE=1 and --allow-orders. "
+            "The live smokes need OKX_LIVE_TRADE=1 and --allow-orders "
+            "(cash: smoke; SWAP: smoke-swap). "
             "Live Trade is not enabled."
         )
     resolve_demo(True)
@@ -218,7 +236,8 @@ def assert_live_read_only(demo: bool, method: str, path: str, *, live_trade: boo
     raise LiveTradingDisabled(
         "Live mode is read-only for balance, positions, and funding. "
         "Place, amend, and cancel stay on demo (OKX_DEMO=1) unless "
-        "OKX_LIVE_TRADE=1 opens place and cancel for the BTC-USDT smoke. "
+        "OKX_LIVE_TRADE=1 opens place and cancel for the BTC-USDT cash smoke "
+        "or the BTC-USDT-SWAP smoke. "
         "Live Trade is not enabled."
     )
 
@@ -251,6 +270,25 @@ def _smoke_decimal(value: str, label: str) -> Decimal:
     return number
 
 
+def _live_place_message() -> str:
+    return (
+        "Live place is a resting limit buy far from the market, cancelled in the same "
+        "client session. "
+        f"Cash: {LIVE_SMOKE_INST_ID} size {LIVE_SMOKE_SZ} tdMode {LIVE_SMOKE_TD_MODE} "
+        f"px <= {LIVE_SMOKE_PX_MAX}. "
+        f"SWAP: {LIVE_SWAP_SMOKE_INST_ID} size {LIVE_SWAP_SMOKE_SZ} "
+        f"tdMode {LIVE_SWAP_SMOKE_TD_MODE} px <= {LIVE_SWAP_SMOKE_PX_MAX}. "
+        "posSide stays empty. reduceOnly stays off."
+    )
+
+
+def _assert_smoke_size_px(sz: str, px: str, *, size_text: str, px_max: str) -> None:
+    size = _smoke_decimal(sz, "sz")
+    price = _smoke_decimal(px, "px")
+    if size != Decimal(size_text) or price > Decimal(px_max):
+        raise LiveTradingDisabled(_live_place_message())
+
+
 def assert_live_smoke_place(
     *,
     inst_id: str,
@@ -262,35 +300,35 @@ def assert_live_smoke_place(
     pos_side: str = "",
     reduce_only: bool = False,
 ) -> None:
-    """Refuse any live place that is not the resting BTC-USDT min-size limit."""
+    """Refuse any live place that is not the cash or SWAP resting limit."""
     if (
-        inst_id != LIVE_SMOKE_INST_ID
-        or side != LIVE_SMOKE_SIDE
-        or td_mode != LIVE_SMOKE_TD_MODE
-        or ord_type != LIVE_SMOKE_ORD_TYPE
-        or pos_side != ""
-        or reduce_only
+        inst_id == LIVE_SMOKE_INST_ID
+        and side == LIVE_SMOKE_SIDE
+        and td_mode == LIVE_SMOKE_TD_MODE
+        and ord_type == LIVE_SMOKE_ORD_TYPE
+        and pos_side == ""
+        and not reduce_only
     ):
-        raise LiveTradingDisabled(
-            "Live place is only a BTC-USDT cash limit buy of size "
-            f"{LIVE_SMOKE_SZ} at px <= {LIVE_SMOKE_PX_MAX} "
-            "(far from market, same shape as the demo smoke). "
-            "Cancel it in the same client session."
-        )
-    size = _smoke_decimal(sz, "sz")
-    price = _smoke_decimal(px, "px")
-    if size != Decimal(LIVE_SMOKE_SZ) or price > Decimal(LIVE_SMOKE_PX_MAX):
-        raise LiveTradingDisabled(
-            "Live place is only a BTC-USDT cash limit buy of size "
-            f"{LIVE_SMOKE_SZ} at px <= {LIVE_SMOKE_PX_MAX} "
-            "(far from market, same shape as the demo smoke). "
-            "Cancel it in the same client session."
-        )
+        _assert_smoke_size_px(sz, px, size_text=LIVE_SMOKE_SZ, px_max=LIVE_SMOKE_PX_MAX)
+        return
+    if (
+        inst_id == LIVE_SWAP_SMOKE_INST_ID
+        and side == LIVE_SWAP_SMOKE_SIDE
+        and td_mode == LIVE_SWAP_SMOKE_TD_MODE
+        and ord_type == LIVE_SWAP_SMOKE_ORD_TYPE
+        and pos_side == ""
+        and not reduce_only
+    ):
+        _assert_smoke_size_px(sz, px, size_text=LIVE_SWAP_SMOKE_SZ, px_max=LIVE_SWAP_SMOKE_PX_MAX)
+        return
+    raise LiveTradingDisabled(_live_place_message())
 
 
 def assert_live_smoke_cancel(inst_id: str) -> None:
-    if inst_id != LIVE_SMOKE_INST_ID:
-        raise LiveTradingDisabled("Live cancel is only for the BTC-USDT smoke order.")
+    if inst_id not in _LIVE_CANCEL_INST_IDS:
+        raise LiveTradingDisabled(
+            "Live cancel is only for the BTC-USDT cash smoke or the BTC-USDT-SWAP smoke."
+        )
 
 
 def assert_live_trade_payload(method: str, path: str, payload: Mapping[str, Any] | None) -> None:
@@ -300,7 +338,7 @@ def assert_live_trade_payload(method: str, path: str, payload: Mapping[str, Any]
     if (method_u, path) == ("POST", "/api/v5/trade/order"):
         extra = set(body) - _LIVE_PLACE_KEYS
         if extra or "px" not in body:
-            raise LiveTradingDisabled("Live place payload is outside the BTC-USDT smoke shape.")
+            raise LiveTradingDisabled("Live place payload is outside the cash or SWAP smoke shape.")
         assert_live_smoke_place(
             inst_id=str(body.get("instId") or ""),
             side=str(body.get("side") or ""),
@@ -315,7 +353,7 @@ def assert_live_trade_payload(method: str, path: str, payload: Mapping[str, Any]
     if (method_u, path) == ("POST", "/api/v5/trade/cancel-order"):
         extra = set(body) - _LIVE_CANCEL_KEYS
         if extra or not (body.get("ordId") or body.get("clOrdId")):
-            raise LiveTradingDisabled("Live cancel payload is outside the BTC-USDT smoke.")
+            raise LiveTradingDisabled("Live cancel payload is outside the cash or SWAP smoke.")
         assert_live_smoke_cancel(str(body.get("instId") or ""))
         return
     raise LiveTradingDisabled(f"Live Trade is not enabled for {method_u} {path}.")

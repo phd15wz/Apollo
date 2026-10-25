@@ -5,11 +5,14 @@ arguments and never calls a withdrawal route. ``balance``, ``positions``, and
 ``funding`` run live when ``OKX_DEMO`` is unset (no ``--allow-orders``).
 Demo place, cancel, and order lookup stay on ``OKX_DEMO=1``.
 
-The live place/cancel smoke also needs ``OKX_LIVE_TRADE=1`` and
+The live place/cancel smokes also need ``OKX_LIVE_TRADE=1`` and
 ``--allow-orders``, with ``OKX_DEMO`` unset or off. ``smoke`` places one
 resting BTC-USDT cash limit (size 0.001, px at most 40000) and cancels it
-in that same process. A live ``place`` of that shape cancels before exit.
-Amend and order lookup stay on demo. Withdraw stays off.
+in that same process. ``smoke-swap`` places one resting BTC-USDT-SWAP
+limit buy (size 1, tdMode isolated, px at most 40000)
+and cancels it in that same process. A live ``place`` of either shape
+cancels before exit. Amend and order lookup stay on demo. This CLI does
+not set leverage or margin mode. Withdraw stays off.
 
 ::
 
@@ -20,8 +23,9 @@ Amend and order lookup stay on demo. Withdraw stays off.
     OKX_DEMO=1 python -m tools.okx.private_cli order --inst BTC-USDT-SWAP --ord-id 123
     OKX_DEMO=1 python -m tools.okx.private_cli --allow-orders cancel --inst BTC-USDT-SWAP --ord-id 123
     OKX_DEMO=1 python -m tools.okx.private_cli --allow-orders place --inst BTC-USDT-SWAP \\
-        --side buy --sz 1 --td-mode cross --ord-type limit --px 60000 --margin-usd 5
+        --side buy --sz 1 --td-mode isolated --ord-type limit --px 60000 --margin-usd 5
     OKX_LIVE_TRADE=1 python -m tools.okx.private_cli --allow-orders smoke
+    OKX_LIVE_TRADE=1 python -m tools.okx.private_cli --allow-orders smoke-swap
 """
 
 from __future__ import annotations
@@ -46,16 +50,17 @@ from tools.okx.guards import env_flag, require_cli_demo, resolve_demo
 from tools.okx.private import OrderAck, PrivateClient
 
 _LIVE_READ_CMDS = frozenset({"balance", "positions", "funding"})
-_LIVE_ORDER_CMDS = frozenset({"place", "cancel", "smoke"})
+_LIVE_ORDER_CMDS = frozenset({"place", "cancel", "smoke", "smoke-swap"})
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "OKX private client. balance, positions, and funding can be live; "
-            "demo place and cancel need OKX_DEMO=1. The live BTC-USDT smoke needs "
-            "OKX_LIVE_TRADE=1 and --allow-orders. Read-only unless --allow-orders. "
-            "No withdrawals."
+            "demo place and cancel need OKX_DEMO=1. The live smokes need "
+            "OKX_LIVE_TRADE=1 and --allow-orders (smoke for BTC-USDT cash, "
+            "smoke-swap for BTC-USDT-SWAP). Read-only unless --allow-orders. "
+            "No withdrawals. No leverage or margin-mode changes."
         ),
     )
     mode = parser.add_mutually_exclusive_group()
@@ -69,7 +74,8 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "allow demo place, cancel, and amend (OKX_DEMO=1), or the live "
-            "BTC-USDT place/cancel smoke (OKX_LIVE_TRADE=1, OKX_DEMO unset)"
+            "BTC-USDT and BTC-USDT-SWAP place/cancel smokes "
+            "(OKX_LIVE_TRADE=1, OKX_DEMO unset)"
         ),
     )
     parser.add_argument(
@@ -101,7 +107,10 @@ def _parser() -> argparse.ArgumentParser:
     place.add_argument("--pos-side", default="")
     place.add_argument("--reduce-only", action="store_true")
 
-    cancel = sub.add_parser("cancel", help="cancel one order (demo, or the live BTC-USDT smoke)")
+    cancel = sub.add_parser(
+        "cancel",
+        help="cancel one order (demo, or a live BTC-USDT or BTC-USDT-SWAP smoke)",
+    )
     cancel.add_argument("--inst", required=True)
     cancel.add_argument("--ord-id", default="")
     cancel.add_argument("--cl-ord-id", default="")
@@ -118,6 +127,17 @@ def _parser() -> argparse.ArgumentParser:
     smoke.add_argument("--px", default="40000")
     smoke.add_argument("--margin-usd", type=float, default=1.0)
     smoke.add_argument("--cl-ord-id", default="")
+
+    swap = sub.add_parser(
+        "smoke-swap",
+        help=(
+            "place one BTC-USDT-SWAP min-size resting limit buy (tdMode isolated) "
+            "and cancel it in this process"
+        ),
+    )
+    swap.add_argument("--px", default="40000")
+    swap.add_argument("--margin-usd", type=float, default=1.0)
+    swap.add_argument("--cl-ord-id", default="")
     return parser
 
 
@@ -126,9 +146,9 @@ def cli_demo(command: str, *, allow_orders: bool = False) -> bool:
 
     Balance, positions, and funding are live when ``OKX_DEMO`` is unset or off.
     Demo place, cancel, and order lookup require ``OKX_DEMO=1``. Live place,
-    cancel, and ``smoke`` require ``OKX_LIVE_TRADE=1``, ``--allow-orders``,
-    and ``OKX_DEMO`` unset or off. ``--allow-orders`` alone does not make a
-    write live.
+    cancel, ``smoke``, and ``smoke-swap`` require ``OKX_LIVE_TRADE=1``,
+    ``--allow-orders``, and ``OKX_DEMO`` unset or off. ``--allow-orders``
+    alone does not make a write live.
     """
     if command in _LIVE_ORDER_CMDS and env_flag("OKX_LIVE_TRADE"):
         if not allow_orders:
@@ -210,6 +230,14 @@ def _run(args: argparse.Namespace, client: PrivateClient) -> None:
         return
     if args.cmd == "smoke":
         placed, cancelled = client.smoke_place_cancel(
+            px=args.px,
+            margin_usd=args.margin_usd,
+            cl_ord_id=args.cl_ord_id,
+        )
+        _emit({"placed": placed, "cancelled": cancelled})
+        return
+    if args.cmd == "smoke-swap":
+        placed, cancelled = client.smoke_swap_place_cancel(
             px=args.px,
             margin_usd=args.margin_usd,
             cl_ord_id=args.cl_ord_id,

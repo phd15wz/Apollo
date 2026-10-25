@@ -18,10 +18,11 @@ Use this skill for public market data. Account balances, positions, funding
 balances, and orders are `PrivateClient` in `tools/okx/README.md` (stage 2).
 Live mode reads balance, positions, and `GET /api/v5/asset/balances`
 (`demo=False`, or CLI with `OKX_DEMO` unset). Demo writes need a go flag.
-The only live write is the BTC-USDT place-then-cancel smoke, and only with
-`OKX_LIVE_TRADE=1` plus that go flag. There are no withdrawal methods. Do
-not use it as a market-data source. Do not widen the live smoke or add a
-withdrawal path.
+The only live writes are the BTC-USDT cash place-then-cancel smoke and one
+BTC-USDT-SWAP place-then-cancel smoke (`tdMode` `isolated`, the strategy
+default), and only with `OKX_LIVE_TRADE=1` plus that go flag. There are no
+withdrawal methods and no leverage changes. Do not use it as a market-data
+source. Do not widen the live smokes or add a withdrawal path.
 
 ## Safety stance
 
@@ -35,10 +36,12 @@ withdrawal path.
    Live balance, positions, and funding balances omit that header.
    `OKX_ALLOW_ORDERS` does not by itself make a write live. The only asset
    route is `GET /api/v5/asset/balances`.
-3. **Live Trade smoke** is opt-in. `OKX_LIVE_TRADE=1` (or `live_trade=True`)
-   plus the order go flag allows one BTC-USDT cash limit buy, size `0.001`,
-   px at most `40000`, then cancel on that same client. Amend, other
-   instruments, other sizes, and asset mutations stay refused.
+3. **Live Trade smokes** are opt-in. `OKX_LIVE_TRADE=1` (or `live_trade=True`)
+   plus the order go flag allows two resting limit buys, each cancelled on
+   that same client: BTC-USDT cash, size `0.001`, px at most `40000`; and
+   BTC-USDT-SWAP, size `1`, `tdMode` `isolated` only, px at most `40000`.
+   `cross` is not the live SWAP shape. Amend, other instruments, other
+   sizes, leverage changes, and asset mutations stay refused.
    `LIVE_TRADE_ENABLED` remains a source tripwire, not the switch. Live
    reads do not flip it. Do not widen this path.
 

@@ -93,10 +93,11 @@ class PrivateChannelError(UnsafeEndpointError):
 
 
 class LiveTradingDisabled(UnsafeEndpointError):
-    """Live Trade is closed, or this live call is outside the BTC-USDT smoke.
+    """Live Trade is closed, or this live call is outside the two smokes.
 
-    Live reads remain balance, positions, and funding balances. Live place
-    and cancel need ``OKX_LIVE_TRADE=1`` and still cannot withdraw.
+    The smokes are BTC-USDT cash and one BTC-USDT-SWAP limit. Live reads
+    remain balance, positions, and funding balances. Live place and cancel
+    need ``OKX_LIVE_TRADE=1`` and still cannot withdraw or change leverage.
     """
 
 
