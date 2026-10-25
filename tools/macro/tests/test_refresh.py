@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -10,8 +11,7 @@ import pytest
 
 from tools.macro.cache import CachedPrint, load_series, save_series
 from tools.macro.refresh import OutsidePullWindow, main, refresh_once
-from tools.macro.series import DXY_TICKER, FRED_SERIES
-from tools.macro.transforms import SpreadMismatch
+from tools.macro.series import DXY_TICKER, FRED_DEFAULT_OBSERVATION_START, FRED_SERIES
 
 NY = ZoneInfo("America/New_York")
 FAKE_KEY = "test-fred-key"
@@ -28,15 +28,17 @@ def _stamp(day: date, hour: int = 9, minute: int = 30) -> datetime:
     return datetime.combine(day, time(hour, minute), tzinfo=NY)
 
 
-def _install_fetchers(monkeypatch: pytest.MonkeyPatch, book: dict[str, list[CachedPrint]]) -> dict[str, datetime]:
-    seen: dict[str, datetime] = {}
+def _install_fetchers(
+    monkeypatch: pytest.MonkeyPatch, book: dict[str, list[CachedPrint]]
+) -> dict[str, dict[str, object]]:
+    seen: dict[str, dict[str, object]] = {}
 
     def fetch_fred(series_id: str, *, fetched_at: datetime, **kwargs: object) -> list[CachedPrint]:
-        seen[series_id] = fetched_at
+        seen[series_id] = {"fetched_at": fetched_at, **kwargs}
         return book[series_id]
 
     def fetch_dxy() -> list[CachedPrint]:
-        seen[DXY_TICKER] = NOW
+        seen[DXY_TICKER] = {"fetched_at": NOW}
         return book[DXY_TICKER]
 
     monkeypatch.setattr("tools.macro.refresh.fetch_observations", fetch_fred)
@@ -106,23 +108,110 @@ def test_replaced_level_keeps_the_original_available_at(tmp_path: Path) -> None:
     assert stored[0].available_at == original
 
 
-def test_spread_mismatch_aborts_without_writing(tmp_path: Path) -> None:
-    kept = _print("DGS10", date(2025, 11, 25), 4.25, _stamp(date(2025, 11, 26)))
-    save_series(tmp_path, "DGS10", [kept])
-    book = _consistent_book()
-    book["T10Y2Y"] = [
-        _print("T10Y2Y", row.obs_date, 0.5, row.available_at) for row in book["DGS10"]
-    ]
-    with pytest.raises(SpreadMismatch, match="refresh stopped"):
-        refresh_once(
-            now=NOW,
-            cache_dir=tmp_path,
-            fetch_fred=lambda series_id, **kwargs: book[series_id],
-            fetch_dxy=lambda: book[DXY_TICKER],
-        )
-    assert load_series(tmp_path, "DGS10")[0].level == 4.25
-    assert not (tmp_path / "series" / "DGS2.json").exists()
-    assert not (tmp_path / "series" / "T10Y2Y.json").exists()
+def test_single_bad_obs_date_is_skipped_logged_and_still_written(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """One date outside the 1 bp band is dropped. The refresh still writes the rest.
+
+    1990-11-21 is the known 2 bp repro symptom. The check is the same for every date.
+    """
+    caplog.set_level(logging.WARNING, logger="tools.macro.refresh")
+    cached_good = date(2024, 1, 2)
+    cached_stamp = _stamp(date(2024, 1, 3))
+    bad = date(1990, 11, 21)
+    bad_stamp = _stamp(date(1990, 11, 23))
+    save_series(
+        tmp_path,
+        "DGS10",
+        [
+            _print("DGS10", bad, 8.40, bad_stamp),
+            _print("DGS10", cached_good, 4.10, cached_stamp),
+        ],
+    )
+    save_series(
+        tmp_path,
+        "DGS2",
+        [
+            _print("DGS2", bad, 7.50, bad_stamp),
+            _print("DGS2", cached_good, 3.10, cached_stamp),
+        ],
+    )
+    save_series(
+        tmp_path,
+        "T10Y2Y",
+        [
+            _print("T10Y2Y", bad, 0.92, bad_stamp),
+            _print("T10Y2Y", cached_good, 1.00, cached_stamp),
+        ],
+    )
+    save_series(
+        tmp_path,
+        "DFII10",
+        [
+            _print("DFII10", bad, 2.00, bad_stamp),
+            _print("DFII10", cached_good, 1.80, cached_stamp),
+        ],
+    )
+
+    edge = date(2025, 11, 24)
+    kept = date(2025, 11, 25)
+    also_bad = date(2025, 11, 26)
+    days = [edge, kept, also_bad]
+    # edge is exactly 1 bp (kept). also_bad is 2 bp (skipped). bad is only in the cache.
+    fetched = {
+        "DGS10": [4.00, 4.25, 4.50],
+        "DGS2": [3.00, 3.25, 3.50],
+        "T10Y2Y": [1.00 + 0.01, 1.00, 1.02],
+        "DFII10": [1.50, 1.55, 1.60],
+    }
+    starts: list[date] = []
+
+    def fetch_fred(series_id: str, *, fetched_at: datetime, observation_start: date) -> list[CachedPrint]:
+        assert fetched_at == NOW
+        starts.append(observation_start)
+        return [
+            _print(series_id, day, level, _stamp(day))
+            for day, level in zip(days, fetched[series_id])
+        ]
+
+    def fetch_dxy() -> list[CachedPrint]:
+        return [_print(DXY_TICKER, kept, 104.2, _stamp(kept, 16, 0))]
+
+    summary = refresh_once(
+        now=NOW,
+        cache_dir=tmp_path,
+        observation_start=date(1992, 1, 1),
+        fetch_fred=fetch_fred,
+        fetch_dxy=fetch_dxy,
+    )
+    assert starts == [date(1992, 1, 1)] * len(FRED_SERIES)
+    assert [gap.obs_date for gap in summary.skipped] == [bad, also_bad]
+    assert summary.skipped[0].gap == pytest.approx(0.02)
+    assert summary.skipped[0].tolerance == 0.01
+
+    text = caplog.text
+    assert "1990-11-21: skipping obs_date" in text
+    assert "2025-11-26: skipping obs_date" in text
+    assert "series DGS10=8.400000 DGS2=7.500000 T10Y2Y=0.920000" in text
+    assert "observed T10Y2Y=0.920000" in text
+    assert "expected DGS10-DGS2=0.900000" in text
+    assert "tolerance=0.01 (1 bp)" in text
+    assert "refresh stopped" not in text
+
+    def dates_of(series_id: str) -> list[date]:
+        return [row.obs_date for row in load_series(tmp_path, series_id)]
+
+    assert dates_of("DGS10") == [cached_good, edge, kept]
+    assert dates_of("DGS2") == [cached_good, edge, kept]
+    assert dates_of("T10Y2Y") == [cached_good, edge, kept]
+    assert dates_of("DFII10") == [bad, cached_good, edge, kept, also_bad]
+    assert dates_of(DXY_TICKER) == [kept]
+    stored_good = next(row for row in load_series(tmp_path, "DGS10") if row.obs_date == cached_good)
+    assert stored_good.level == 4.10
+    assert stored_good.available_at == cached_stamp
+    assert (tmp_path / "series" / "DGS2.json").exists()
+    assert (tmp_path / "series" / "T10Y2Y.json").exists()
 
 
 def test_weekend_pull_does_not_fetch_unless_backfill(tmp_path: Path) -> None:
@@ -130,6 +219,7 @@ def test_weekend_pull_does_not_fetch_unless_backfill(tmp_path: Path) -> None:
 
     def fetch_fred(series_id: str, **kwargs: object) -> list[CachedPrint]:
         called.append(series_id)
+        assert kwargs["observation_start"] == FRED_DEFAULT_OBSERVATION_START
         return []
 
     saturday = datetime(2025, 11, 29, 18, 0, tzinfo=NY)
@@ -201,7 +291,7 @@ def test_live_gate_uses_only_dgs10_and_dfii10(tmp_path: Path) -> None:
     assert research.gate is False
 
 
-def test_cli_success_spread_failure_and_backfill(
+def test_cli_observation_start_reaches_fred_only(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -209,20 +299,87 @@ def test_cli_success_spread_failure_and_backfill(
     monkeypatch.setenv("FRED_API_KEY", FAKE_KEY)
     book = _consistent_book()
     seen = _install_fetchers(monkeypatch, book)
+    assert main(["--cache-dir", str(tmp_path / "default"), "--backfill"]) == 0
+    for series_id in FRED_SERIES:
+        assert seen[series_id]["observation_start"] == date(1992, 1, 1)
+    assert "observation_start" not in seen[DXY_TICKER]
+
+    captured: dict[str, dict[str, object]] = {}
+
+    def fetch_fred(series_id: str, *, fetched_at: datetime, observation_start: date) -> list[CachedPrint]:
+        captured[series_id] = {"fetched_at": fetched_at, "observation_start": observation_start}
+        return book[series_id]
+
+    def fetch_dxy() -> list[CachedPrint]:
+        captured[DXY_TICKER] = {}
+        return book[DXY_TICKER]
+
+    monkeypatch.setattr("tools.macro.refresh.fetch_observations", fetch_fred)
+    monkeypatch.setattr("tools.macro.refresh.fetch_dxy_history", fetch_dxy)
+    monkeypatch.setattr("tools.macro.refresh.is_fred_pull_time", lambda when, **kwargs: True)
+    assert (
+        main(
+            [
+                "--cache-dir",
+                str(tmp_path / "bounded"),
+                "--observation-start",
+                "1995-06-01",
+            ]
+        )
+        == 0
+    )
+    assert {series_id: captured[series_id]["observation_start"] for series_id in FRED_SERIES} == {
+        series_id: date(1995, 6, 1) for series_id in FRED_SERIES
+    }
+    assert captured[DXY_TICKER] == {}
+    with pytest.raises(SystemExit) as exc:
+        main(["--cache-dir", str(tmp_path / "bad-date"), "--observation-start", "21-11-1990"])
+    assert exc.value.code == 2
+    captured_io = capsys.readouterr()
+    assert FAKE_KEY not in captured_io.err
+    assert FAKE_KEY not in captured_io.out
+
+
+def test_cli_success_spread_failure_and_backfill(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setenv("FRED_API_KEY", FAKE_KEY)
+    book = _consistent_book()
+    seen = _install_fetchers(monkeypatch, book)
+    caplog.set_level(logging.WARNING, logger="tools.macro.refresh")
     assert main(["--cache-dir", str(tmp_path / "ok")]) == 0
     captured = capsys.readouterr()
     assert "gate=off" in captured.out
     assert FAKE_KEY not in captured.out
     assert FAKE_KEY not in captured.err
-    assert seen["DGS10"] == seen["DFII10"]
+    assert seen["DGS10"]["fetched_at"] == seen["DFII10"]["fetched_at"]
+    assert seen["DGS10"]["observation_start"] == FRED_DEFAULT_OBSERVATION_START
+    assert "observation_start" not in seen[DXY_TICKER]
 
     book["T10Y2Y"] = [_print("T10Y2Y", row.obs_date, 0.5, row.available_at) for row in book["DGS10"]]
     _install_fetchers(monkeypatch, book)
-    assert main(["--cache-dir", str(tmp_path / "bad")]) == 1
+    assert main(["--cache-dir", str(tmp_path / "bad")]) == 0
     captured = capsys.readouterr()
-    assert "refresh stopped" in captured.err
+    assert "gate=" in captured.out
+    assert "refresh stopped" not in captured.err
+    assert "refresh stopped" not in caplog.text
+    assert "skipping obs_date" in caplog.text
+    assert "tolerance=0.01" in caplog.text
+    assert "DGS10" in caplog.text and "DGS2" in caplog.text and "T10Y2Y" in caplog.text
     assert FAKE_KEY not in captured.err
-    assert not (tmp_path / "bad" / "series").exists()
+    assert FAKE_KEY not in caplog.text
+    assert load_series(tmp_path / "bad", "DGS10") == []
+    assert load_series(tmp_path / "bad", "DGS2") == []
+    assert load_series(tmp_path / "bad", "T10Y2Y") == []
+    assert [row.obs_date for row in load_series(tmp_path / "bad", "DFII10")] == [
+        date(2025, 11, 24),
+        date(2025, 11, 25),
+        date(2025, 11, 26),
+    ]
+    assert load_series(tmp_path / "bad", DXY_TICKER)
 
     def leak(series_id: str, **kwargs: object) -> list[CachedPrint]:
         raise RuntimeError(f"blew up with {FAKE_KEY}")
