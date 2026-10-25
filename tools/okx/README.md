@@ -1,9 +1,10 @@
-# OKX public market data (stage 1)
+# OKX market data and demo trading
 
-Keyless Python client for OKX v5 **public** REST data. It cannot trade, cannot
-withdraw, and has no API-key or signing path. Stage 2 (read-only keys from a
-secret store) and orders (demo mode, explicit owner approval) are out of
-scope.
+Stage 1 is a keyless Python client for OKX v5 **public** REST and WebSocket
+data. It cannot trade. Stage 2 (`PrivateClient`) is a **demo-only** signed
+client for balances, positions, place, cancel, and amend. It cannot withdraw,
+and it cannot send a live order. The path after this package is read-only
+live keys, then live Trade, each as its own change. Withdrawal stays out.
 
 Docs: [OKX API v5](https://www.okx.com/docs-v5/en/). This package is written
 from those public endpoints. It does not vendor [OKX Agent Trade Kit](https://github.com/okx/agent-trade-kit).
@@ -264,12 +265,147 @@ sentinel lets the writer drain and close. Anything still unwritten
 becomes a recorded gap. Downstream Hawkes fits must treat `kind='gap'`
 as a hole in the tape, never as a quiet period.
 
+## Stage 2 — demo private client
+
+`PublicClient` is unchanged: keyless, GET-only, no `OK-ACCESS-*` headers.
+`PrivateClient` is a separate object. OKX demo trading uses the same REST
+host as production (`DEMO_REST_BASE_URL` = `https://www.okx.com`) plus the
+header `x-simulated-trading: 1`. There is no second REST hostname. If `OKX_DEMO`
+is unset, the library still forces that demo header. The CLI refuses to
+start unless `OKX_DEMO=1`. `demo=False`, or any `OKX_DEMO` value other
+than on, raises `LiveTradingDisabled`.
+
+`LIVE_TRADE_ENABLED` in `guards.py` is a tripwire, not a switch. It is
+`False`. Setting it to `True` makes the client refuse to start. Live trading
+needs a later change that removes the tripwire and adds a reviewed path.
+
+### Keys
+
+Environment only. Never commit them, never pass them as CLI arguments, and
+never read them from the repo.
+
+| Variable | Aliases |
+| --- | --- |
+| `OKX_API_KEY` | `OKX_KEY` |
+| `OKX_API_SECRET` | `OKX_SECRET_KEY`, `OKX_SECRET` |
+| `OKX_API_PASSPHRASE` | `OKX_PASSPHRASE` |
+
+`OkxCredentials` redacts `repr` and cannot be pickled. HTTP debug loggers
+(`urllib3`, `requests`) get a filter that replaces those values. Values
+shorter than 4 characters are not scrubbed. Missing variables raise
+`MissingCredentials` with the names only.
+
+### Calls
+
+```python
+from tools.okx import PrivateClient
+
+client = PrivateClient()  # demo, read-only; keys from the environment
+balance = client.balance(ccy="USDT")
+positions = client.positions(inst_type="SWAP", inst_id="SPCX-USDT-SWAP")
+order = client.get_order("SPCX-USDT-SWAP", ord_id="123")
+pending = client.open_orders(inst_type="SWAP")
+history = client.order_history("SWAP", inst_id="SPCX-USDT-SWAP")
+
+# Writes need an explicit go flag. Still demo. Still no withdrawals.
+trading = PrivateClient(allow_orders=True)
+ack = trading.place_order(
+    "SPCX-USDT-SWAP",
+    side="buy",
+    sz="1",
+    td_mode="cross",
+    ord_type="limit",
+    px="100",
+    margin_usd=4,
+)
+trading.cancel_order("SPCX-USDT-SWAP", ord_id=ack.ord_id)
+trading.amend_order("SPCX-USDT-SWAP", ord_id=ack.ord_id, new_px="101")
+```
+
+Allowlisted routes only:
+
+| Method | Path |
+| --- | --- |
+| GET | `/api/v5/account/balance`, `/api/v5/account/positions` |
+| GET | `/api/v5/trade/order`, `/api/v5/trade/orders-pending`, `/api/v5/trade/orders-history`, `/api/v5/trade/orders-history-archive` |
+| POST | `/api/v5/trade/order`, `/api/v5/trade/cancel-order`, `/api/v5/trade/amend-order` |
+
+Anything else, including `/api/v5/asset`, `/api/v5/finance`, and any path
+containing withdraw, transfer, or deposit, raises `UnsafeEndpointError`.
+
+### Guards
+
+Enforced now:
+
+1. **Read-only kill switch.** POSTs, including cancel, refuse unless
+   `allow_orders=True` or `OKX_ALLOW_ORDERS=1`. `read_only=True`,
+   `--read-only`, and `OKX_READ_ONLY=1` override the go flag.
+2. **Demo forced.** Every signed request sends `x-simulated-trading: 1`.
+   Live Trade is not implemented.
+3. **No withdraw / transfer / deposit** paths. Same exception type as the
+   public client's blocked routes.
+4. **Soft cap.** Incremental `margin_usd` plus caller-supplied
+   `open_margins` must stay within **$10** per name
+   (`NAME_MARGIN_CAP_USD`). A `shared_cap: true` group in
+   `config/candidate_pool.yaml` (chips, memory, optical, and the other
+   shared groups) shares that $10 across members. `risk_gate=True`,
+   `--risk-gate`, or `OKX_RISK_GATE=1` halves the ceiling to **$5**.
+   A new risk order without `margin_usd` is refused. `reduce_only=True`
+   may omit it.
+5. **Missing go flag or `--read-only`** refuses private writes.
+
+Deferred (not done in this package):
+
+- Read-only **live** keys, then live Trade.
+- Mark × contract value × size / leverage margin math. Callers pass
+  `margin_usd`. `open_margins_from_positions` only sums the `margin` field
+  already on those objects; it does not convert currency and it is not
+  called automatically.
+- A shared-cap ledger across processes. `open_margins` is an in-memory stub.
+- Connecting `OKX_RISK_GATE` to the macro hard gate (`DGS10` / `DFII10`).
+  The flag is manual. While it is on, the ceiling is half size. This
+  package does not block every new long until that gate clears.
+- Pool membership as an order allowlist. Names outside the pool are
+  solo-capped at the same $10.
+- Repricing an order on a price-only amend. Changing `new_sz` re-checks
+  `margin_usd`. Batch, algo, and private WebSocket orders are absent.
+
+### CLI
+
+Demo only. No key arguments.
+
+```bash
+OKX_DEMO=1 python3 -m tools.okx.private_cli balance
+OKX_DEMO=1 python3 -m tools.okx.private_cli positions --inst SPCX-USDT-SWAP
+OKX_DEMO=1 python3 -m tools.okx.private_cli order --inst SPCX-USDT-SWAP --ord-id 123
+OKX_DEMO=1 python3 -m tools.okx.private_cli --allow-orders cancel \
+  --inst SPCX-USDT-SWAP --ord-id 123
+OKX_DEMO=1 python3 -m tools.okx.private_cli --allow-orders place \
+  --inst SPCX-USDT-SWAP --side buy --sz 1 --td-mode cross \
+  --ord-type limit --px 100 --margin-usd 4
+```
+
+`--read-only` forces the kill switch even when `OKX_ALLOW_ORDERS=1`.
+Default tests mock HTTP. A demo smoke test is skipped unless you opt in:
+
+```bash
+OKX_DEMO=1 python3 -m pytest tools/okx/tests -q -m okx_demo
+```
+
+That smoke test reads balance. It does not place or cancel. CI does not
+need API keys.
+
 ## Safety
 
-- Allowlisted GET paths only. Account, trade, asset, and withdrawal URLs raise
-  `UnsafeEndpointError`.
+- Public client: allowlisted GET paths only. Account, trade, asset, and
+  withdrawal URLs raise `UnsafeEndpointError`.
 - Allowlisted public WebSocket channels and hosts only. `login` and private
-  channels raise `PrivateChannelError`.
-- No `api_key` constructor argument, no `OK-ACCESS-*` headers, no HMAC.
+  channels raise `PrivateChannelError`. The public stream still has no
+  login path.
+- `PublicClient` takes no key argument and sends no `OK-ACCESS-*` headers.
+  Signing lives in `auth.py` and is used only by `PrivateClient`.
+- Private client: demo header on every signed call, allowlisted trade and
+  account routes, no withdrawal endpoints anywhere in the package.
 - Unit tests mock HTTP with recorded JSON under `tests/fixtures/` and use an
-  in-memory fake WebSocket (no network). Live tests stay behind `OKX_LIVE=1`.
+  in-memory fake WebSocket (no network). Live public tests stay behind
+  `OKX_LIVE=1`. Demo private tests stay behind `OKX_DEMO=1` plus a key.

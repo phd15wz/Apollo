@@ -1,0 +1,12 @@
+{
+  "code": "0",
+  "msg": "",
+  "data": [
+    {
+      "ordId": "",
+      "clOrdId": "demo1",
+      "sCode": "51008",
+      "sMsg": "Order failed. Insufficient balance."
+    }
+  ]
+}

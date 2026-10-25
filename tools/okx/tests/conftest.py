@@ -80,6 +80,7 @@ class FakeTransport:
         params: Mapping[str, Any] | None,
         headers: Mapping[str, str],
         timeout: float,
+        body: bytes | None = None,
     ) -> HttpResponse:
         parsed = urlparse(url)
         path = parsed.path
@@ -91,6 +92,7 @@ class FakeTransport:
                 "params": dict(params or {}),
                 "headers": dict(headers),
                 "timeout": timeout,
+                "body": body,
             }
         )
         key = _key(path, params)
@@ -151,8 +153,31 @@ def transport() -> FakeTransport:
     return FakeTransport()
 
 
+@pytest.fixture
+def clean_okx_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Drop private-client env so unit tests do not inherit a developer shell."""
+    for name in (
+        "OKX_DEMO",
+        "OKX_ALLOW_ORDERS",
+        "OKX_READ_ONLY",
+        "OKX_RISK_GATE",
+        "OKX_API_KEY",
+        "OKX_KEY",
+        "OKX_API_SECRET",
+        "OKX_SECRET",
+        "OKX_SECRET_KEY",
+        "OKX_API_PASSPHRASE",
+        "OKX_PASSPHRASE",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
 def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line(
         "markers",
         "okx_live: hits OKX over the network; skipped unless OKX_LIVE=1",
+    )
+    config.addinivalue_line(
+        "markers",
+        "okx_demo: hits OKX demo private REST; skipped unless OKX_DEMO=1 and OKX_API_KEY are set",
     )

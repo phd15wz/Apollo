@@ -1,9 +1,8 @@
-"""Stage-1 OKX public market-data client. Keyless. Cannot trade.
+"""OKX v5 clients.
 
-Use ``PublicClient`` for REST market data, ``OkxPublicStream`` for the
-public WebSocket, ``download_daily_trades`` for the official historical
-zip archive, and ``handle_ties`` before Hawkes fits. There is no signing
-path in this package.
+``PublicClient`` is keyless public market data (stage 1). ``PrivateClient``
+is the stage-2 demo trading client: account reads, place, cancel, and amend.
+It cannot withdraw, and it refuses live trading.
 """
 
 from tools.okx.archive import (
@@ -22,11 +21,15 @@ from tools.okx.client import PublicClient, RateLimiter
 from tools.okx.errors import (
     CacheBudgetExceeded,
     HistoryWindowTooOld,
+    LiveTradingDisabled,
     LowDiskError,
+    MissingCredentials,
     OkxError,
     OkxHttpError,
+    OrdersDisabled,
     PaginationBudgetExceeded,
     PrivateChannelError,
+    RiskLimitError,
     UnsafeArchiveError,
     UnsafeEndpointError,
 )
@@ -38,6 +41,15 @@ from tools.okx.hygiene import (
     stable_within_ms,
 )
 from tools.okx.market import candles_range, funding_rate_history_range, history_trades_range
+from tools.okx.private import (
+    DEMO_REST_BASE_URL,
+    AccountBalance,
+    CurrencyBalance,
+    OrderAck,
+    OrderRecord,
+    Position,
+    PrivateClient,
+)
 from tools.okx.record import StreamRecorder
 from tools.okx.stream import GapInfo, OkxPublicStream, StreamMessage, book_crc32, run_public_stream
 from tools.okx.status import announcement_types, announcements, upcoming_maintenance
@@ -64,14 +76,19 @@ __all__ = [
     "CANDLE_DTYPE",
     "DATA_DIR_ENV",
     "DEFAULT_BUDGET_BYTES",
+    "DEMO_REST_BASE_URL",
     "TRADE_DTYPE",
+    "AccountBalance",
     "Announcement",
     "ArchiveFile",
     "CacheBudgetExceeded",
+    "CurrencyBalance",
     "Candle",
     "GapInfo",
     "HistoryWindowTooOld",
+    "LiveTradingDisabled",
     "LowDiskError",
+    "MissingCredentials",
     "DownloadResult",
     "FundingRate",
     "IndexTicker",
@@ -82,10 +99,16 @@ __all__ = [
     "OkxHttpError",
     "OkxPublicStream",
     "OpenInterest",
+    "OrderAck",
     "OrderBook",
+    "OrderRecord",
+    "OrdersDisabled",
     "PaginationBudgetExceeded",
+    "Position",
     "PrivateChannelError",
+    "PrivateClient",
     "PublicClient",
+    "RiskLimitError",
     "RateLimiter",
     "StreamMessage",
     "StreamRecorder",

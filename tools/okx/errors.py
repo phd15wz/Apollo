@@ -1,4 +1,4 @@
-"""Errors for the keyless OKX public client."""
+"""Errors for the OKX public client and the demo private client."""
 
 from __future__ import annotations
 
@@ -90,6 +90,30 @@ class HistoryWindowTooOld(Exception):
 
 class PrivateChannelError(UnsafeEndpointError):
     """A login op or private WebSocket channel was requested."""
+
+
+class LiveTradingDisabled(UnsafeEndpointError):
+    """Live trading is not enabled. Signed requests stay on demo trading."""
+
+
+class OrdersDisabled(UnsafeEndpointError):
+    """A private write was refused because the client is read-only."""
+
+
+class MissingCredentials(Exception):
+    """Required OKX API environment variables are missing or empty.
+
+    The message names the variables. It does not include their values.
+    """
+
+    def __init__(self, missing: list[str]) -> None:
+        self.missing = list(missing)
+        names = ", ".join(self.missing)
+        super().__init__(f"missing OKX credentials in the environment: {names}")
+
+
+class RiskLimitError(Exception):
+    """An order would exceed a demo risk cap (per name, shared group, or gate)."""
 
 
 class LowDiskError(Exception):

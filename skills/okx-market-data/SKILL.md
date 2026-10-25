@@ -3,7 +3,8 @@
 Use `tools/okx/` for **keyless** OKX v5 market data, the public WebSocket,
 bulk trade history, and exchange maintenance windows. Python 3.11+,
 `requests` + `numpy`. The stream client needs optional `websockets`. Do not
-import OKX's Agent Trade Kit. Do not add API keys.
+import OKX's Agent Trade Kit. Do not put API keys on the public client or
+in the repository.
 
 ## When to use
 
@@ -13,21 +14,27 @@ import OKX's Agent Trade Kit. Do not add API keys.
   similar).
 - Isaac's maintenance reminders: upcoming OKX windows in UTC.
 
-Skip this skill for account balances, positions, orders, withdrawals, or
-anything that can trade.
+Use this skill for public market data. Account balances, positions, and
+demo orders are `PrivateClient` in `tools/okx/README.md` (stage 2). That
+client is demo-only, read-only unless a go flag is set, and has no
+withdrawal methods. Do not use it as a market-data source. Do not add a
+live order path or a withdrawal path.
 
 ## Safety stance
 
-1. **Stage 1 (this package):** public endpoints only. No keys, no signing, no
-   placeholders for keys, no order or withdrawal URLs.
-2. **Stage 2 (not implemented):** read-only keys, if ever added, come only
-   from a secret store the owner controls. Never from the repo, chat, or env
-   files committed to git.
-3. **Orders:** later, behind demo trading and the owner's explicit approval.
-   This library must not grow a live order path without that.
+1. **Stage 1 (public client):** public endpoints only. No keys, no signing,
+   no order or withdrawal URLs on `PublicClient` or the public WebSocket.
+2. **Stage 2 (demo private client):** keys come from the environment
+   (`OKX_API_KEY`, `OKX_API_SECRET`, `OKX_API_PASSPHRASE` or the aliases in
+   the README). Never from the repo, chat, or committed env files. Writes
+   need `OKX_ALLOW_ORDERS=1` or `allow_orders=True`, stay on demo
+   (`x-simulated-trading: 1`), and refuse withdraw / transfer / deposit URLs.
+3. **Live Trade** is not enabled. `LIVE_TRADE_ENABLED` is a tripwire, not an
+   unlock. Read-only live keys are a later change.
 
-If a task needs a private endpoint, stop and tell the owner. Do not work
-around the allowlist.
+If a task needs an endpoint outside the public allowlist and outside the
+stage-2 trade/account allowlist, stop and tell the owner. Do not work
+around either allowlist.
 
 ## How to call it
 
