@@ -133,7 +133,7 @@ def test_live_trade_opt_in_is_place_and_cancel_only(monkeypatch: pytest.MonkeyPa
     assert_live_smoke_place(
         inst_id="BTC-USDT-SWAP",
         side="buy",
-        sz="1",
+        sz="0.01",
         td_mode="isolated",
         ord_type="limit",
         px="40000",
@@ -141,20 +141,22 @@ def test_live_trade_opt_in_is_place_and_cancel_only(monkeypatch: pytest.MonkeyPa
     assert_live_smoke_place(
         inst_id="BTC-USDT-SWAP",
         side="buy",
-        sz="1.0",
+        sz="0.010",
         td_mode="isolated",
         ord_type="limit",
         px="10000",
     )
     assert_live_smoke_cancel("BTC-USDT-SWAP")
     for kwargs in (
-        {"inst_id": "BTC-USDT-SWAP", "td_mode": "cross", "ord_type": "limit", "sz": "1", "px": "40000", "side": "buy"},
-        {"inst_id": "BTC-USDT-SWAP", "td_mode": "cross", "ord_type": "market", "sz": "1", "px": "1", "side": "buy"},
-        {"inst_id": "BTC-USDT-SWAP", "td_mode": "cash", "ord_type": "limit", "sz": "1", "px": "40000", "side": "buy"},
+        {"inst_id": "BTC-USDT-SWAP", "td_mode": "cross", "ord_type": "limit", "sz": "0.01", "px": "40000", "side": "buy"},
+        {"inst_id": "BTC-USDT-SWAP", "td_mode": "cross", "ord_type": "market", "sz": "0.01", "px": "1", "side": "buy"},
+        {"inst_id": "BTC-USDT-SWAP", "td_mode": "cash", "ord_type": "limit", "sz": "0.01", "px": "40000", "side": "buy"},
+        {"inst_id": "BTC-USDT-SWAP", "td_mode": "isolated", "ord_type": "limit", "sz": "1", "px": "40000", "side": "buy"},
+        {"inst_id": "BTC-USDT-SWAP", "td_mode": "isolated", "ord_type": "limit", "sz": "1.0", "px": "40000", "side": "buy"},
         {"inst_id": "BTC-USDT-SWAP", "td_mode": "isolated", "ord_type": "limit", "sz": "2", "px": "40000", "side": "buy"},
-        {"inst_id": "BTC-USDT-SWAP", "td_mode": "isolated", "ord_type": "limit", "sz": "1", "px": "40001", "side": "buy"},
-        {"inst_id": "BTC-USDT-SWAP", "td_mode": "isolated", "ord_type": "limit", "sz": "1", "px": "40000", "side": "sell"},
-        {"inst_id": "ETH-USDT-SWAP", "td_mode": "isolated", "ord_type": "limit", "sz": "1", "px": "40000", "side": "buy"},
+        {"inst_id": "BTC-USDT-SWAP", "td_mode": "isolated", "ord_type": "limit", "sz": "0.01", "px": "40001", "side": "buy"},
+        {"inst_id": "BTC-USDT-SWAP", "td_mode": "isolated", "ord_type": "limit", "sz": "0.01", "px": "40000", "side": "sell"},
+        {"inst_id": "ETH-USDT-SWAP", "td_mode": "isolated", "ord_type": "limit", "sz": "0.01", "px": "40000", "side": "buy"},
         {"inst_id": "BTC-USDT", "td_mode": "cash", "ord_type": "limit", "sz": "0.01", "px": "40000", "side": "buy"},
         {"inst_id": "BTC-USDT", "td_mode": "cash", "ord_type": "limit", "sz": "0.001", "px": "40001", "side": "buy"},
         {"inst_id": "BTC-USDT", "td_mode": "cash", "ord_type": "limit", "sz": "0.001", "px": "40000", "side": "sell"},
@@ -175,7 +177,7 @@ def test_live_trade_opt_in_is_place_and_cancel_only(monkeypatch: pytest.MonkeyPa
         assert_live_smoke_place(
             inst_id="BTC-USDT-SWAP",
             side="buy",
-            sz="1",
+            sz="0.01",
             td_mode="isolated",
             ord_type="limit",
             px="40000",
@@ -197,10 +199,23 @@ def test_live_trade_opt_in_is_place_and_cancel_only(monkeypatch: pytest.MonkeyPa
             "tdMode": "isolated",
             "side": "buy",
             "ordType": "limit",
-            "sz": "1",
+            "sz": "0.01",
             "px": "40000",
         },
     )
+    with pytest.raises(LiveTradingDisabled, match="0.01"):
+        assert_live_trade_payload(
+            "POST",
+            "/api/v5/trade/order",
+            {
+                "instId": "BTC-USDT-SWAP",
+                "tdMode": "isolated",
+                "side": "buy",
+                "ordType": "limit",
+                "sz": "1",
+                "px": "40000",
+            },
+        )
     assert_live_trade_payload(
         "POST",
         "/api/v5/trade/cancel-order",

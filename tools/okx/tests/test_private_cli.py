@@ -388,7 +388,7 @@ def test_cli_live_swap_smoke_requires_opt_in_and_cancels(
             "--side",
             "buy",
             "--sz",
-            "1",
+            "0.01",
             "--td-mode",
             "cross",
             "--ord-type",
@@ -424,12 +424,36 @@ def test_cli_live_swap_smoke_requires_opt_in_and_cancels(
         ],
         client=live,
     )
+    assert code == 2
+    assert "0.01" in capsys.readouterr().err
+    assert transport.calls == []
+
+    code = main(
+        [
+            "place",
+            "--inst",
+            "BTC-USDT-SWAP",
+            "--side",
+            "buy",
+            "--sz",
+            "0.01",
+            "--td-mode",
+            "isolated",
+            "--ord-type",
+            "limit",
+            "--px",
+            "40000",
+            "--margin-usd",
+            "1",
+        ],
+        client=live,
+    )
     assert code == 0
     placed_io = capsys.readouterr()
     nested = json.loads(placed_io.out)
     assert nested["placed"]["ord_id"] == nested["cancelled"]["ord_id"]
     assert transport.calls[0]["body"] == (
-        b'{"instId":"BTC-USDT-SWAP","ordType":"limit","px":"40000","side":"buy","sz":"1","tdMode":"isolated"}'
+        b'{"instId":"BTC-USDT-SWAP","ordType":"limit","px":"40000","side":"buy","sz":"0.01","tdMode":"isolated"}'
     )
     assert transport.calls[1]["path"] == "/api/v5/trade/cancel-order"
     assert "x-simulated-trading" not in transport.calls[0]["headers"]
@@ -438,7 +462,7 @@ def test_cli_live_swap_smoke_requires_opt_in_and_cancels(
     code = main(["--allow-orders", "smoke-swap", "--px", "25000"], client=live)
     assert code == 0
     assert transport.calls[2]["body"] == (
-        b'{"instId":"BTC-USDT-SWAP","ordType":"limit","px":"25000","side":"buy","sz":"1","tdMode":"isolated"}'
+        b'{"instId":"BTC-USDT-SWAP","ordType":"limit","px":"25000","side":"buy","sz":"0.01","tdMode":"isolated"}'
     )
     assert transport.calls[3]["path"] == "/api/v5/trade/cancel-order"
 

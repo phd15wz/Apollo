@@ -72,14 +72,16 @@ LIVE_SMOKE_TD_MODE = "cash"
 LIVE_SMOKE_ORD_TYPE = "limit"
 LIVE_SMOKE_PX_MAX = "40000"
 
-# SWAP size matches the demo place convention and the instrument fixture:
-# tools/okx/tests/fixtures/instruments.json has lotSz "1", minSz "1",
-# ctVal "0.01", tickSz "0.1" for BTC-USDT-SWAP. The strategy default and
-# the only live SWAP smoke tdMode is isolated. Demo place still accepts
-# cross; that is not this smoke. Leverage is not set here.
+# SWAP size is the live OKX instrument (2026-10-25): minSz "0.01", lotSz
+# "0.01", ctVal "0.01" BTC. tools/okx/tests/fixtures/instruments.json matches
+# that row. Size "1" was an outdated fixture (one contract ≈ mark × 0.01
+# USDT, about $1k at 1×) and is refused. 0.01 contracts ≈ 0.0001 BTC.
+# The strategy default and the only live SWAP smoke tdMode is isolated.
+# Demo place still accepts cross; that is not this smoke. Leverage is not
+# set here.
 LIVE_SWAP_SMOKE_INST_ID = "BTC-USDT-SWAP"
 LIVE_SWAP_SMOKE_SIDE = "buy"
-LIVE_SWAP_SMOKE_SZ = "1"
+LIVE_SWAP_SMOKE_SZ = "0.01"
 LIVE_SWAP_SMOKE_TD_MODE = "isolated"
 LIVE_SWAP_SMOKE_ORD_TYPE = "limit"
 LIVE_SWAP_SMOKE_PX_MAX = "40000"

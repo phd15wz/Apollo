@@ -39,7 +39,7 @@ source. Do not widen the live smokes or add a withdrawal path.
 3. **Live Trade smokes** are opt-in. `OKX_LIVE_TRADE=1` (or `live_trade=True`)
    plus the order go flag allows two resting limit buys, each cancelled on
    that same client: BTC-USDT cash, size `0.001`, px at most `40000`; and
-   BTC-USDT-SWAP, size `1`, `tdMode` `isolated` only, px at most `40000`.
+   BTC-USDT-SWAP, size `0.01`, `tdMode` `isolated` only, px at most `40000`.
    `cross` is not the live SWAP shape. Amend, other instruments, other
    sizes, leverage changes, and asset mutations stay refused.
    `LIVE_TRADE_ENABLED` remains a source tripwire, not the switch. Live

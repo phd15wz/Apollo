@@ -537,12 +537,13 @@ class PrivateClient:
     ) -> tuple[OrderAck, OrderAck]:
         """Place one BTC-USDT-SWAP resting limit and cancel it on this client.
 
-        The shape is one contract (``minSz`` and ``lotSz`` are both ``1``),
-        a limit buy, ``tdMode`` ``isolated`` (the strategy default; cross is
-        not this smoke), and ``px`` at most ``40000`` so the order rests
-        below the market. ``posSide`` is omitted. Leverage and margin mode
-        are not changed; they stay as set in the OKX UI. Demo ``place_order``
-        can still send ``cross``. The cancel runs before return.
+        The shape is the live minimum (``minSz`` and ``lotSz`` are both
+        ``0.01`` contracts; ``ctVal`` is ``0.01`` BTC), a limit buy,
+        ``tdMode`` ``isolated`` (the strategy default; cross is not this
+        smoke), and ``px`` at most ``40000`` so the order rests below the
+        market. ``posSide`` is omitted. Leverage and margin mode are not
+        changed; they stay as set in the OKX UI. Demo ``place_order`` can
+        still send ``cross``. The cancel runs before return.
         """
         placed = self.place_order(
             LIVE_SWAP_SMOKE_INST_ID,

@@ -25,6 +25,9 @@ def test_instruments_ticker_book_trades() -> None:
     assert instruments[0].inst_id == "BTC-USDT-SWAP"
     assert instruments[0].inst_family == "BTC-USDT"
     assert instruments[0].state == "live"
+    assert instruments[0].min_sz == "0.01"
+    assert instruments[0].lot_sz == "0.01"
+    assert instruments[0].ct_val == "0.01"
 
     ticker = client.ticker("BTC-USDT-SWAP")
     assert ticker.bid_px == 8888.88
