@@ -2,16 +2,18 @@
 
 Public market data stays on ``PublicClient`` and never uses this module.
 Demo calls send ``x-simulated-trading: 1``. Live mode (``demo=False``) signs
-balance, positions, and funding balances only and omits that header. Place,
-amend, and cancel stay on demo. Withdrawal, deposit, transfer, and every
-other asset route are refused. Writes need an explicit go flag; see
-``tools.okx.guards``.
+balance, positions, and funding balances and omits that header. Live place
+and cancel are the BTC-USDT smoke only, and only when ``OKX_LIVE_TRADE=1``
+(or ``live_trade=True``) is set with the order go flag. Amend stays on demo.
+Withdrawal, deposit, transfer, and every other asset route are refused.
+Writes need an explicit go flag; see ``tools.okx.guards``.
 """
 
 from __future__ import annotations
 
 import json
 import random
+import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -26,12 +28,23 @@ from tools.okx.client import HttpResponse, RateLimiter, RequestsTransport
 from tools.okx.errors import OkxError, OkxHttpError, RiskLimitError
 from tools.okx.guards import (
     FUNDING_BALANCE_PATH,
+    LIVE_SMOKE_INST_ID,
+    LIVE_SMOKE_ORD_TYPE,
+    LIVE_SMOKE_PX_MAX,
+    LIVE_SMOKE_SIDE,
+    LIVE_SMOKE_SZ,
+    LIVE_SMOKE_TD_MODE,
+    LIVE_TRADE_PATHS,
     PRIVATE_RATE_LIMITS,
     RiskGuards,
     assert_live_read_only,
+    assert_live_smoke_cancel,
+    assert_live_smoke_place,
+    assert_live_trade_payload,
     assert_private_request,
     resolve_allow_orders,
     resolve_demo,
+    resolve_live_trade,
     resolve_risk_gate,
 )
 
@@ -305,7 +318,11 @@ def open_margins_from_positions(positions: list[Position]) -> dict[str, float]:
 
 
 class PrivateClient:
-    """Signed REST client. Demo unless ``demo=False``; orders stay demo-only."""
+    """Signed REST client. Demo unless ``demo=False``.
+
+    Live place and cancel need ``live_trade=True`` or ``OKX_LIVE_TRADE=1``
+    and still pass the order go flag. The library default leaves both off.
+    """
 
     def __init__(
         self,
@@ -315,6 +332,7 @@ class PrivateClient:
         allow_orders: bool | None = None,
         read_only: bool | None = None,
         risk_gate: bool | None = None,
+        live_trade: bool | None = None,
         site: str = "global",
         base_url: str | None = None,
         timeout: float = 10.0,
@@ -331,6 +349,7 @@ class PrivateClient:
         self.demo = resolve_demo(demo)
         self.allow_orders = resolve_allow_orders(allow_orders=allow_orders, read_only=read_only)
         self.risk_gate = resolve_risk_gate(risk_gate)
+        self.live_trade = resolve_live_trade(live_trade)
         if site not in endpoints.SITE_BASE_URLS and base_url is None:
             raise ValueError(f"unknown site {site!r}; expected one of {sorted(endpoints.SITE_BASE_URLS)}")
         self.site = site
@@ -365,7 +384,8 @@ class PrivateClient:
     def __repr__(self) -> str:
         return (
             f"PrivateClient(site={self.site!r}, demo={self.demo!r}, "
-            f"allow_orders={self.allow_orders!r}, risk_gate={self.risk_gate!r})"
+            f"allow_orders={self.allow_orders!r}, risk_gate={self.risk_gate!r}, "
+            f"live_trade={self.live_trade!r})"
         )
 
     def balance(self, ccy: str = "") -> AccountBalance:
@@ -391,7 +411,7 @@ class PrivateClient:
         return [Position.from_dict(row) for row in _data_list(payload)]
 
     def _refuse_live_write(self, path: str) -> None:
-        assert_live_read_only(self.demo, "POST", path)
+        assert_live_read_only(self.demo, "POST", path, live_trade=self.live_trade)
 
     def place_order(
         self,
@@ -423,6 +443,17 @@ class PrivateClient:
             px_n = _decimal("px", str(px))
         elif px not in (None, ""):
             px_n = _decimal("px", str(px))
+        if not self.demo:
+            assert_live_smoke_place(
+                inst_id=inst,
+                side=side_n,
+                sz=sz_n,
+                td_mode=td_mode_n,
+                ord_type=ord_type_n,
+                px=px_n,
+                pos_side=pos_side_n,
+                reduce_only=reduce_only,
+            )
         self._check_new_margin(inst, margin_usd, reduce_only=reduce_only, open_margins=open_margins)
         payload = _clean_payload(
             {
@@ -444,6 +475,8 @@ class PrivateClient:
         self._refuse_live_write("/api/v5/trade/cancel-order")
         self._guards.assert_orders_enabled()
         inst = endpoints.validate_inst_id(inst_id)
+        if not self.demo:
+            assert_live_smoke_cancel(inst)
         ord_n = _optional_id("ord_id", ord_id)
         cl_n = _cl_ord_id(cl_ord_id)
         if not ord_n and not cl_n:
@@ -454,6 +487,38 @@ class PrivateClient:
             payload=_clean_payload({"instId": inst, "ordId": ord_n, "clOrdId": cl_n}),
         )
         return _one_ack(body)
+
+    def smoke_place_cancel(
+        self,
+        *,
+        px: str = LIVE_SMOKE_PX_MAX,
+        margin_usd: float = 1.0,
+        cl_ord_id: str = "",
+    ) -> tuple[OrderAck, OrderAck]:
+        """Place the resting BTC-USDT limit and cancel it on this client.
+
+        Demo and the live opt-in both use this shape. The cancel runs before
+        the method returns. A live cancel prints the order id first so a
+        failed cancel can be retried without dumping the account.
+        """
+        placed = self.place_order(
+            LIVE_SMOKE_INST_ID,
+            side=LIVE_SMOKE_SIDE,
+            sz=LIVE_SMOKE_SZ,
+            td_mode=LIVE_SMOKE_TD_MODE,
+            ord_type=LIVE_SMOKE_ORD_TYPE,
+            px=px,
+            margin_usd=margin_usd,
+            cl_ord_id=cl_ord_id,
+        )
+        if not self.demo:
+            print(f"cancelling live order {placed.ord_id}", file=sys.stderr)
+        cancelled = self.cancel_order(
+            LIVE_SMOKE_INST_ID,
+            ord_id=placed.ord_id,
+            cl_ord_id=placed.cl_ord_id,
+        )
+        return placed, cancelled
 
     def amend_order(
         self,
@@ -580,8 +645,11 @@ class PrivateClient:
         payload: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         path_only = assert_private_request(method, path)
-        assert_live_read_only(self.demo, method, path_only)
-        if method.upper() == "POST":
+        assert_live_read_only(self.demo, method, path_only, live_trade=self.live_trade)
+        method_u = method.upper()
+        if not self.demo and (method_u, path_only) in LIVE_TRADE_PATHS:
+            assert_live_trade_payload(method_u, path_only, payload)
+        if method_u == "POST":
             self._guards.assert_orders_enabled()
         pairs = [(key, value) for key, value in (query or []) if value not in (None, "")]
         query_s = urlencode(pairs)
@@ -592,6 +660,7 @@ class PrivateClient:
             body_text = json.dumps(payload, separators=(",", ":"), sort_keys=True)
             body_bytes = body_text.encode("utf-8")
         timestamp = self._timestamp()
+        allow_live_write = (not self.demo) and self.live_trade and (method_u, path_only) in LIVE_TRADE_PATHS
         signed = access_headers(
             self._credentials,
             timestamp=timestamp,
@@ -599,12 +668,13 @@ class PrivateClient:
             request_path=request_path,
             body=body_text,
             demo=self.demo,
+            allow_live_write=allow_live_write,
         )
         if self.demo:
             if signed.get("x-simulated-trading") != "1":
                 raise OkxError("demo", "simulated trading header missing", None)
         elif "x-simulated-trading" in signed:
-            raise OkxError("live", "live read must not send the simulated trading header", None)
+            raise OkxError("live", "live request must not send the simulated trading header", None)
         headers = dict(self._headers)
         headers.update(signed)
         if body_bytes is not None:

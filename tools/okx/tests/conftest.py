@@ -159,6 +159,7 @@ def clean_okx_env(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in (
         "OKX_DEMO",
         "OKX_ALLOW_ORDERS",
+        "OKX_LIVE_TRADE",
         "OKX_READ_ONLY",
         "OKX_RISK_GATE",
         "OKX_API_KEY",

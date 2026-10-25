@@ -56,6 +56,47 @@ def test_access_headers_demo_and_live_read() -> None:
             body=_POST_BODY,
             demo=False,
         )
+    live_place = access_headers(
+        creds,
+        timestamp=_TS,
+        method="POST",
+        request_path="/api/v5/trade/order",
+        body=_POST_BODY,
+        demo=False,
+        allow_live_write=True,
+    )
+    assert live_place["OK-ACCESS-SIGN"] == _POST_SIGN
+    assert "x-simulated-trading" not in live_place
+    with pytest.raises(LiveTradingDisabled):
+        access_headers(
+            creds,
+            timestamp=_TS,
+            method="POST",
+            request_path="/api/v5/trade/amend-order",
+            body="{}",
+            demo=False,
+            allow_live_write=True,
+        )
+    with pytest.raises(LiveTradingDisabled):
+        access_headers(
+            creds,
+            timestamp=_TS,
+            method="POST",
+            request_path="/api/v5/asset/withdrawal",
+            body="{}",
+            demo=False,
+            allow_live_write=True,
+        )
+    with pytest.raises(LiveTradingDisabled):
+        access_headers(
+            creds,
+            timestamp=_TS,
+            method="POST",
+            request_path="/api/v5/asset/transfer",
+            body="{}",
+            demo=False,
+            allow_live_write=True,
+        )
 
 
 def test_credentials_repr_and_pickle_hide_secrets() -> None:
