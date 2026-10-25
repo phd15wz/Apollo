@@ -23,7 +23,7 @@ def test_sign_matches_known_vectors() -> None:
     assert post_sig == _POST_SIGN
 
 
-def test_access_headers_are_demo_only() -> None:
+def test_access_headers_demo_and_live_read() -> None:
     creds = OkxCredentials("test-key", "test-secret", "test-passphrase")
     headers = access_headers(
         creds,
@@ -38,12 +38,22 @@ def test_access_headers_are_demo_only() -> None:
     assert headers["OK-ACCESS-TIMESTAMP"] == _TS
     assert headers["OK-ACCESS-PASSPHRASE"] == "test-passphrase"
     assert headers["x-simulated-trading"] == "1"
+    live = access_headers(
+        creds,
+        timestamp=_TS,
+        method="GET",
+        request_path="/api/v5/account/balance?ccy=USDT",
+        demo=False,
+    )
+    assert live["OK-ACCESS-SIGN"] == _GET_SIGN
+    assert "x-simulated-trading" not in live
     with pytest.raises(LiveTradingDisabled):
         access_headers(
             creds,
             timestamp=_TS,
-            method="GET",
-            request_path="/api/v5/account/balance",
+            method="POST",
+            request_path="/api/v5/trade/order",
+            body=_POST_BODY,
             demo=False,
         )
 

@@ -131,20 +131,24 @@ def access_headers(
     body: str = "",
     demo: bool,
 ) -> dict[str, str]:
-    """Build OK-ACCESS-* headers. Demo requests always set the simulated-trading header.
+    """Build OK-ACCESS-* headers.
 
-    There is no live-trading branch. ``demo=False`` raises.
+    Demo requests set ``x-simulated-trading: 1``. Live read-only requests omit
+    that header so a live Read key is not rejected as demo. Live writes are
+    not signed.
     """
-    if not demo:
+    if not demo and method.upper() != "GET":
         raise LiveTradingDisabled(
-            "refusing to sign a live request; the demo trading header cannot be omitted"
+            "refusing to sign a live write; Live Trade is not enabled"
         )
     signature = sign(credentials.api_secret, timestamp, method, request_path, body)
     redact_secrets(credentials.api_key, credentials.api_secret, credentials.passphrase, signature)
-    return {
+    headers = {
         "OK-ACCESS-KEY": credentials.api_key,
         "OK-ACCESS-SIGN": signature,
         "OK-ACCESS-TIMESTAMP": timestamp,
         "OK-ACCESS-PASSPHRASE": credentials.passphrase,
-        "x-simulated-trading": "1",
     }
+    if demo:
+        headers["x-simulated-trading"] = "1"
+    return headers

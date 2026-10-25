@@ -265,18 +265,24 @@ sentinel lets the writer drain and close. Anything still unwritten
 becomes a recorded gap. Downstream Hawkes fits must treat `kind='gap'`
 as a hole in the tape, never as a quiet period.
 
-## Stage 2 — demo private client
+## Stage 2 — private client (demo writes, live reads)
 
 `PublicClient` is unchanged: keyless, GET-only, no `OK-ACCESS-*` headers.
 `PrivateClient` is a separate object. OKX demo trading uses the same REST
 host as production (`DEMO_REST_BASE_URL` = `https://www.okx.com`) plus the
-header `x-simulated-trading: 1`. There is no second REST hostname. If `OKX_DEMO`
-is unset, the library still forces that demo header. The CLI refuses to
-start unless `OKX_DEMO=1`. `demo=False`, or any `OKX_DEMO` value other
-than on, raises `LiveTradingDisabled`.
+header `x-simulated-trading: 1`. There is no second REST hostname.
+
+Demo stays the library default: `PrivateClient()` with `OKX_DEMO` unset
+still sends the simulated-trading header. Live read-only is `demo=False`,
+or `OKX_DEMO` set to `0` / `false` / `no` / `off`. That mode signs **balance
+and positions only** and omits `x-simulated-trading`, so a live Read key
+works. Place, amend, cancel, and the other private GETs raise
+`LiveTradingDisabled` until a later live-Trade change. `OKX_ALLOW_ORDERS`
+does not turn those writes live. A value of `OKX_DEMO` other than on or off
+still raises.
 
 `LIVE_TRADE_ENABLED` in `guards.py` is a tripwire, not a switch. It is
-`False`. Setting it to `True` makes the client refuse to start. Live trading
+`False`. Setting it to `True` makes the client refuse to start. Live Trade
 needs a later change that removes the tripwire and adds a reviewed path.
 
 ### Keys
@@ -303,6 +309,9 @@ from tools.okx import PrivateClient
 client = PrivateClient()  # demo, read-only; keys from the environment
 balance = client.balance(ccy="USDT")
 positions = client.positions(inst_type="SWAP", inst_id="SPCX-USDT-SWAP")
+
+live = PrivateClient(demo=False)  # live Read key; balance and positions only
+live.balance(ccy="USDT")
 order = client.get_order("SPCX-USDT-SWAP", ord_id="123")
 pending = client.open_orders(inst_type="SWAP")
 history = client.order_history("SWAP", inst_id="SPCX-USDT-SWAP")
@@ -340,8 +349,9 @@ Enforced now:
 1. **Read-only kill switch.** POSTs, including cancel, refuse unless
    `allow_orders=True` or `OKX_ALLOW_ORDERS=1`. `read_only=True`,
    `--read-only`, and `OKX_READ_ONLY=1` override the go flag.
-2. **Demo forced.** Every signed request sends `x-simulated-trading: 1`.
-   Live Trade is not implemented.
+2. **Demo writes, live reads.** Demo requests send `x-simulated-trading: 1`.
+   Live mode omits that header on balance and positions only. Live Trade
+   is not implemented.
 3. **No withdraw / transfer / deposit** paths. Same exception type as the
    public client's blocked routes.
 4. **Soft cap.** Incremental `margin_usd` plus caller-supplied
@@ -356,7 +366,7 @@ Enforced now:
 
 Deferred (not done in this package):
 
-- Read-only **live** keys, then live Trade.
+- Live Trade (place, amend, cancel on a live key).
 - Mark × contract value × size / leverage margin math. Callers pass
   `margin_usd`. `open_margins_from_positions` only sums the `margin` field
   already on those objects; it does not convert currency and it is not
@@ -372,11 +382,14 @@ Deferred (not done in this package):
 
 ### CLI
 
-Demo only. No key arguments.
+No key arguments. `balance` and `positions` hit the live account when
+`OKX_DEMO` is unset or off, without `--allow-orders`. Place, cancel, and
+order lookup still require `OKX_DEMO=1`.
 
 ```bash
+python3 -m tools.okx.private_cli balance
+python3 -m tools.okx.private_cli positions --inst SPCX-USDT-SWAP
 OKX_DEMO=1 python3 -m tools.okx.private_cli balance
-OKX_DEMO=1 python3 -m tools.okx.private_cli positions --inst SPCX-USDT-SWAP
 OKX_DEMO=1 python3 -m tools.okx.private_cli order --inst SPCX-USDT-SWAP --ord-id 123
 OKX_DEMO=1 python3 -m tools.okx.private_cli --allow-orders cancel \
   --inst SPCX-USDT-SWAP --ord-id 123
@@ -404,8 +417,9 @@ need API keys.
   login path.
 - `PublicClient` takes no key argument and sends no `OK-ACCESS-*` headers.
   Signing lives in `auth.py` and is used only by `PrivateClient`.
-- Private client: demo header on every signed call, allowlisted trade and
-  account routes, no withdrawal endpoints anywhere in the package.
+- Private client: demo header on demo calls; live balance and positions omit
+  it. Allowlisted trade and account routes. No withdrawal endpoints. Live
+  place, amend, and cancel are refused.
 - Unit tests mock HTTP with recorded JSON under `tests/fixtures/` and use an
   in-memory fake WebSocket (no network). Live public tests stay behind
   `OKX_LIVE=1`. Demo private tests stay behind `OKX_DEMO=1` plus a key.

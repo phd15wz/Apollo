@@ -4,7 +4,14 @@ import pytest
 
 from tools.okx.auth import OkxCredentials
 from tools.okx.client import PublicClient, RateLimiter
-from tools.okx.errors import OkxError, OkxHttpError, OrdersDisabled, RiskLimitError, UnsafeEndpointError
+from tools.okx.errors import (
+    LiveTradingDisabled,
+    OkxError,
+    OkxHttpError,
+    OrdersDisabled,
+    RiskLimitError,
+    UnsafeEndpointError,
+)
 from tools.okx.guards import PRIVATE_RATE_LIMITS
 from tools.okx.private import PrivateClient, open_margins_from_positions
 from tools.okx.tests.conftest import FakeClock, FakeTransport, load_fixture
@@ -116,12 +123,69 @@ def test_env_go_flag_and_read_only_kill_switch(monkeypatch: pytest.MonkeyPatch) 
     assert blocked.allow_orders is False
 
 
-def test_demo_false_and_live_env_refuse(monkeypatch: pytest.MonkeyPatch) -> None:
-    with pytest.raises(Exception, match="demo=False|Live Trade"):
-        _client(FakeTransport(), demo=False)
+def test_unknown_okx_demo_value_refuses(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OKX_DEMO", "live")
     with pytest.raises(Exception, match="OKX_DEMO"):
         _client(FakeTransport())
+
+
+def test_live_balance_and_positions_omit_simulated_header() -> None:
+    transport = FakeTransport()
+    transport.add("/api/v5/account/balance", load_fixture("private_balance.json"))
+    transport.add("/api/v5/account/positions", load_fixture("private_positions.json"))
+    client, _clock = _client(transport, demo=False)
+    assert client.demo is False
+    assert "demo=False" in repr(client)
+    balance = client.balance(ccy="USDT")
+    assert balance.total_eq_usd == 100.5
+    live_balance = transport.calls[0]
+    assert live_balance["method"] == "GET"
+    assert live_balance["headers"]["OK-ACCESS-SIGN"] == "Yt2R9ATAX6Jz6+ud53rCYenVK09+CEpafaWGadqhybE="
+    assert "x-simulated-trading" not in live_balance["headers"]
+    rows = client.positions(inst_type="SWAP", inst_id="BTC-USDT-SWAP")
+    assert rows[0].inst_id == "BTC-USDT-SWAP"
+    live_positions = transport.calls[1]
+    assert live_positions["method"] == "GET"
+    assert "x-simulated-trading" not in live_positions["headers"]
+    assert "OK-ACCESS-SIGN" in live_positions["headers"]
+
+
+def test_live_writes_and_other_reads_raise(monkeypatch: pytest.MonkeyPatch) -> None:
+    transport = FakeTransport()
+    client, _clock = _client(transport, demo=False, allow_orders=True)
+    assert client.allow_orders is True
+    order = dict(
+        inst_id="BTC-USDT-SWAP",
+        side="buy",
+        sz="1",
+        td_mode="cross",
+        ord_type="market",
+        margin_usd=1,
+    )
+    with pytest.raises(LiveTradingDisabled, match="Live Trade"):
+        client.place_order(**order)
+    with pytest.raises(LiveTradingDisabled, match="Live Trade"):
+        client.cancel_order("BTC-USDT-SWAP", ord_id="312269865356374016")
+    with pytest.raises(LiveTradingDisabled, match="Live Trade"):
+        client.amend_order("BTC-USDT-SWAP", ord_id="312269865356374016", new_px="60001", margin_usd=1)
+    with pytest.raises(LiveTradingDisabled, match="balance and positions"):
+        client.get_order("BTC-USDT-SWAP", ord_id="312269865356374016")
+    assert transport.calls == []
+
+    monkeypatch.setenv("OKX_ALLOW_ORDERS", "1")
+    monkeypatch.setenv("OKX_DEMO", "0")
+    flagged, _clock = _client(FakeTransport(), demo=False)
+    assert flagged.demo is False
+    assert flagged.allow_orders is True
+    with pytest.raises(LiveTradingDisabled):
+        flagged.place_order(**order)
+
+    locked, _clock = _client(FakeTransport(), demo=False, allow_orders=False)
+    assert locked.allow_orders is False
+    with pytest.raises(LiveTradingDisabled, match="Live Trade"):
+        locked.place_order(**order)
+    with pytest.raises(LiveTradingDisabled, match="Live Trade"):
+        locked.cancel_order("BTC-USDT-SWAP", ord_id="312269865356374016")
 
 
 def test_place_cancel_amend_and_status() -> None:

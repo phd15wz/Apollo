@@ -4,30 +4,88 @@ import json
 
 import pytest
 
-from tools.okx.private_cli import client_options, main
+from tools.okx.private_cli import cli_demo, client_options, main
 from tools.okx.tests.conftest import FakeTransport, load_fixture
 from tools.okx.tests.test_private import _client
 
 pytestmark = pytest.mark.usefixtures("clean_okx_env")
 
 
-def test_cli_requires_demo_and_hides_secrets(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+def test_cli_live_reads_and_demo_writes(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    assert cli_demo("balance") is False
+    assert cli_demo("positions") is False
     code = main(["balance"])
+    assert code == 2
+    assert "OKX_API_KEY" in capsys.readouterr().err
+
+    code = main(
+        [
+            "place",
+            "--inst",
+            "BTC-USDT-SWAP",
+            "--side",
+            "buy",
+            "--sz",
+            "1",
+            "--td-mode",
+            "cross",
+            "--ord-type",
+            "market",
+        ]
+    )
+    assert code == 2
+    assert "OKX_DEMO" in capsys.readouterr().err
+
+    code = main(["cancel", "--inst", "BTC-USDT-SWAP", "--ord-id", "1"])
     assert code == 2
     assert "OKX_DEMO" in capsys.readouterr().err
 
     monkeypatch.setenv("OKX_DEMO", "0")
-    code = main(["positions"])
+    assert cli_demo("positions") is False
+    code = main(["order", "--inst", "BTC-USDT-SWAP", "--ord-id", "1"])
     assert code == 2
-    assert "Live" in capsys.readouterr().err
+    assert "OKX_DEMO" in capsys.readouterr().err
 
     monkeypatch.setenv("OKX_DEMO", "1")
+    assert cli_demo("balance") is True
     monkeypatch.setenv("OKX_API_SECRET", "super-secret-value")
     code = main(["balance"])
     captured = capsys.readouterr()
     assert code == 2
     assert "super-secret-value" not in captured.err
     assert "super-secret-value" not in captured.out
+
+
+def test_cli_live_balance_skips_allow_orders(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    captured: dict[str, object] = {}
+
+    class _Live:
+        def __init__(self, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+        def balance(self, ccy: str = "") -> dict[str, str]:
+            return {"ccy": ccy}
+
+    monkeypatch.setattr("tools.okx.private_cli.PrivateClient", _Live)
+    code = main(["balance", "--ccy", "USDT"])
+    assert code == 0
+    assert captured["demo"] is False
+    assert captured["allow_orders"] is None
+    assert json.loads(capsys.readouterr().out)["ccy"] == "USDT"
+
+    monkeypatch.setenv("OKX_ALLOW_ORDERS", "1")
+    code = main(
+        [
+            "cancel",
+            "--inst",
+            "BTC-USDT-SWAP",
+            "--ord-id",
+            "1",
+        ]
+    )
+    assert code == 2
+    assert "OKX_DEMO" in capsys.readouterr().err
+    assert captured["demo"] is False
 
 
 def test_cli_balance_and_cancel(capsys: pytest.CaptureFixture[str]) -> None:

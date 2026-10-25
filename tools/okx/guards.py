@@ -5,11 +5,12 @@ Enforced in this package
 * Read-only by default. Private POSTs refuse unless ``allow_orders=True`` or
   ``OKX_ALLOW_ORDERS=1``. ``read_only=True``, ``--read-only``, and
   ``OKX_READ_ONLY=1`` win over that go flag (kill switch). Cancel is a write.
-* Demo only. ``demo=False`` and any ``OKX_DEMO`` value other than on raise
-  ``LiveTradingDisabled``. ``LIVE_TRADE_ENABLED`` is a tripwire: setting it
-  ``True`` does not enable live trading; the client refuses to start until a
-  later change removes the tripwire. Every signed request carries
-  ``x-simulated-trading: 1``.
+* Demo by default. ``OKX_DEMO`` on, or a library ``PrivateClient()`` with the
+  variable unset, sends ``x-simulated-trading: 1``. Live mode is read-only
+  balance and positions: ``demo=False``, or ``OKX_DEMO`` unset on the CLI
+  (explicit ``0`` / ``false`` / ``no`` / ``off`` too). Place, amend, and
+  cancel stay on demo. ``LIVE_TRADE_ENABLED`` is a tripwire: setting it
+  ``True`` does not enable live trading; the client refuses to start.
 * Allowlisted account and trade routes only. Asset, finance, withdrawal,
   deposit, and transfer paths raise ``UnsafeEndpointError``.
 * Soft cap: incremental ``margin_usd`` plus caller-supplied ``open_margins``
@@ -21,7 +22,8 @@ Enforced in this package
 
 Deferred (not enforced here)
 ----------------------------
-* Read-only live keys, then live Trade. Both need a later PR.
+* Live Trade (place, amend, cancel on a live key). Read-only live balance
+  and positions are already allowed.
 * Automatic margin from mark price, contract value, and leverage. Callers pass
   ``margin_usd``. Position ``margin`` is not converted or auto-fetched.
 * A persistent shared-cap ledger across processes. ``open_margins`` is an
@@ -47,13 +49,23 @@ from typing import Mapping
 from tools.okx.errors import LiveTradingDisabled, OrdersDisabled, RiskLimitError, UnsafeEndpointError
 
 # Tripwire. Flipping this to True does not place live orders; ``resolve_demo``
-# refuses to start so a one-line edit cannot turn demo off.
+# refuses to start so a one-line edit cannot unlock live Trade.
 LIVE_TRADE_ENABLED = False
 
 NAME_MARGIN_CAP_USD = 10.0
 GATE_SIZE_FRACTION = 0.5
 
 _ON = frozenset({"1", "true", "yes", "on"})
+_OFF = frozenset({"0", "false", "no", "off"})
+
+# Signed GETs that may run against a live Read key. Every other private call
+# stays on demo trading.
+LIVE_READ_PATHS = frozenset(
+    {
+        "/api/v5/account/balance",
+        "/api/v5/account/positions",
+    }
+)
 
 _WITHDRAW_MARKERS = ("withdraw", "transfer", "deposit")
 _BLOCKED_PREFIXES = ("/api/v5/asset", "/api/v5/finance")
@@ -90,34 +102,75 @@ def env_flag(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in _ON
 
 
-def require_cli_demo() -> None:
-    """CLI entry point: the operator must set ``OKX_DEMO`` on, then pass the tripwire."""
-    raw = os.environ.get("OKX_DEMO", "").strip().lower()
-    if raw not in _ON:
-        raise LiveTradingDisabled("CLI requires OKX_DEMO=1. Live trading is not enabled.")
-    resolve_demo(True)
-
-
-def resolve_demo(demo: bool | None) -> bool:
-    """Force demo mode. Live values and ``demo=False`` raise.
-
-    ``LIVE_TRADE_ENABLED`` is not an unlock. If it is ever set, startup fails
-    until a later change adds a reviewed live path and removes this tripwire.
-    """
+def _demo_env() -> str | None:
+    """Normalized ``OKX_DEMO``, or ``None`` when it is unset or blank."""
     raw = os.environ.get("OKX_DEMO")
-    if raw is not None and raw.strip() != "" and raw.strip().lower() not in _ON:
-        raise LiveTradingDisabled(
-            "OKX_DEMO must stay on. Live Trade is not enabled in this package."
-        )
-    if demo is False:
-        raise LiveTradingDisabled(
-            "demo=False is refused. Live Trade is not enabled; signed requests stay on demo."
-        )
+    if raw is None:
+        return None
+    text = raw.strip().lower()
+    if text == "":
+        return None
+    return text
+
+
+def _refuse_live_trade_tripwire() -> None:
     if LIVE_TRADE_ENABLED:
         raise LiveTradingDisabled(
             "LIVE_TRADE_ENABLED is set but this package has no live trading path. Refusing to start."
         )
+
+
+def require_cli_demo() -> None:
+    """CLI writes and non-balance reads: the operator must set ``OKX_DEMO`` on."""
+    raw = os.environ.get("OKX_DEMO", "").strip().lower()
+    if raw not in _ON:
+        raise LiveTradingDisabled(
+            "CLI place, cancel, and order lookup require OKX_DEMO=1. Live Trade is not enabled."
+        )
+    resolve_demo(True)
+
+
+def resolve_demo(demo: bool | None) -> bool:
+    """Return whether signed calls use demo trading.
+
+    ``True`` sends ``x-simulated-trading: 1``. ``False`` is live read-only
+    (balance and positions only). The library default (``demo=None`` and
+    ``OKX_DEMO`` unset) stays demo. Explicit off values (``0``, ``false``,
+    ``no``, ``off``) select live reads. ``LIVE_TRADE_ENABLED`` is not an
+    unlock: if it is set, startup fails.
+    """
+    _refuse_live_trade_tripwire()
+    env = _demo_env()
+    if env is not None and env not in _ON and env not in _OFF:
+        raise LiveTradingDisabled(
+            "OKX_DEMO must be on for demo trading, or unset (or 0) for live "
+            "read-only balance and positions. Live Trade is not enabled."
+        )
+    env_on = env in _ON
+    env_off = env in _OFF
+    if demo is True and env_off:
+        raise LiveTradingDisabled(
+            "OKX_DEMO is off, so demo=True is refused. Unset the conflict before starting."
+        )
+    if demo is False and env_on:
+        raise LiveTradingDisabled(
+            "demo=False conflicts with OKX_DEMO on. Unset OKX_DEMO for live reads."
+        )
+    if demo is False or env_off:
+        return False
     return True
+
+
+def assert_live_read_only(demo: bool, method: str, path: str) -> None:
+    """Live mode may sign balance and positions only. Writes stay on demo."""
+    if demo:
+        return
+    if method.upper() == "GET" and path in LIVE_READ_PATHS:
+        return
+    raise LiveTradingDisabled(
+        "Live mode is read-only for balance and positions. "
+        "Place, amend, and cancel stay on demo (OKX_DEMO=1). Live Trade is not enabled."
+    )
 
 
 def resolve_allow_orders(*, allow_orders: bool | None, read_only: bool | None) -> bool:

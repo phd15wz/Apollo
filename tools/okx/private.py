@@ -1,9 +1,10 @@
-"""Demo-only OKX v5 private REST client.
+"""OKX v5 private REST client.
 
 Public market data stays on ``PublicClient`` and never uses this module.
-Every signed call sends ``x-simulated-trading: 1``. Live trading is refused.
-Withdrawal, deposit, and transfer routes are refused. Writes need an explicit
-go flag; see ``tools.okx.guards``.
+Demo calls send ``x-simulated-trading: 1``. Live mode (``demo=False``) signs
+balance and positions only and omits that header. Place, amend, and cancel
+stay on demo. Withdrawal, deposit, and transfer routes are refused. Writes
+need an explicit go flag; see ``tools.okx.guards``.
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ from tools.okx.errors import OkxError, OkxHttpError, RiskLimitError
 from tools.okx.guards import (
     PRIVATE_RATE_LIMITS,
     RiskGuards,
+    assert_live_read_only,
     assert_private_request,
     resolve_allow_orders,
     resolve_demo,
@@ -269,7 +271,7 @@ def open_margins_from_positions(positions: list[Position]) -> dict[str, float]:
 
 
 class PrivateClient:
-    """Signed REST client for OKX demo trading. Read-only unless orders are enabled."""
+    """Signed REST client. Demo unless ``demo=False``; orders stay demo-only."""
 
     def __init__(
         self,
@@ -328,7 +330,7 @@ class PrivateClient:
 
     def __repr__(self) -> str:
         return (
-            f"PrivateClient(site={self.site!r}, demo=True, "
+            f"PrivateClient(site={self.site!r}, demo={self.demo!r}, "
             f"allow_orders={self.allow_orders!r}, risk_gate={self.risk_gate!r})"
         )
 
@@ -353,6 +355,9 @@ class PrivateClient:
         payload = self._request("GET", "/api/v5/account/positions", query=query)
         return [Position.from_dict(row) for row in _data_list(payload)]
 
+    def _refuse_live_write(self, path: str) -> None:
+        assert_live_read_only(self.demo, "POST", path)
+
     def place_order(
         self,
         inst_id: str,
@@ -368,6 +373,7 @@ class PrivateClient:
         reduce_only: bool = False,
         open_margins: Mapping[str, float] | None = None,
     ) -> OrderAck:
+        self._refuse_live_write("/api/v5/trade/order")
         inst = endpoints.validate_inst_id(inst_id)
         side_n = _choice("side", side, _SIDES)
         ord_type_n = _choice("ord_type", ord_type, _ORD_TYPES)
@@ -400,6 +406,7 @@ class PrivateClient:
         return _one_ack(body)
 
     def cancel_order(self, inst_id: str, *, ord_id: str = "", cl_ord_id: str = "") -> OrderAck:
+        self._refuse_live_write("/api/v5/trade/cancel-order")
         self._guards.assert_orders_enabled()
         inst = endpoints.validate_inst_id(inst_id)
         ord_n = _optional_id("ord_id", ord_id)
@@ -425,6 +432,7 @@ class PrivateClient:
         reduce_only: bool = False,
         open_margins: Mapping[str, float] | None = None,
     ) -> OrderAck:
+        self._refuse_live_write("/api/v5/trade/amend-order")
         self._guards.assert_orders_enabled()
         inst = endpoints.validate_inst_id(inst_id)
         ord_n = _optional_id("ord_id", ord_id)
@@ -537,6 +545,7 @@ class PrivateClient:
         payload: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         path_only = assert_private_request(method, path)
+        assert_live_read_only(self.demo, method, path_only)
         if method.upper() == "POST":
             self._guards.assert_orders_enabled()
         pairs = [(key, value) for key, value in (query or []) if value not in (None, "")]
@@ -554,10 +563,13 @@ class PrivateClient:
             method=method,
             request_path=request_path,
             body=body_text,
-            demo=True,
+            demo=self.demo,
         )
-        if signed.get("x-simulated-trading") != "1":
-            raise OkxError("demo", "simulated trading header missing", None)
+        if self.demo:
+            if signed.get("x-simulated-trading") != "1":
+                raise OkxError("demo", "simulated trading header missing", None)
+        elif "x-simulated-trading" in signed:
+            raise OkxError("live", "live read must not send the simulated trading header", None)
         headers = dict(self._headers)
         headers.update(signed)
         if body_bytes is not None:
