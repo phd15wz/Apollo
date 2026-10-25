@@ -11,6 +11,7 @@ from tools.okx.guards import (
     assert_order_margin,
     assert_private_request,
     load_cap_book,
+    assert_live_read_only,
     margin_ceiling,
     require_cli_demo,
     resolve_allow_orders,
@@ -47,16 +48,36 @@ def test_live_trade_constant_is_a_tripwire(monkeypatch: pytest.MonkeyPatch) -> N
     assert LIVE_TRADE_ENABLED is False
     assert resolve_demo(None) is True
     assert resolve_demo(True) is True
-    with pytest.raises(LiveTradingDisabled):
-        resolve_demo(False)
+    assert resolve_demo(False) is False
     monkeypatch.setenv("OKX_DEMO", "0")
+    assert resolve_demo(None) is False
+    assert resolve_demo(False) is False
     with pytest.raises(LiveTradingDisabled):
         resolve_demo(True)
     monkeypatch.setenv("OKX_DEMO", "1")
     assert resolve_demo(True) is True
+    assert resolve_demo(None) is True
+    with pytest.raises(LiveTradingDisabled):
+        resolve_demo(False)
     monkeypatch.setattr("tools.okx.guards.LIVE_TRADE_ENABLED", True)
     with pytest.raises(LiveTradingDisabled):
         resolve_demo(True)
+    with pytest.raises(LiveTradingDisabled):
+        resolve_demo(False)
+
+
+def test_live_reads_are_balance_and_positions_only() -> None:
+    assert_live_read_only(True, "POST", "/api/v5/trade/order")
+    assert_live_read_only(False, "GET", "/api/v5/account/balance")
+    assert_live_read_only(False, "GET", "/api/v5/account/positions")
+    with pytest.raises(LiveTradingDisabled):
+        assert_live_read_only(False, "POST", "/api/v5/trade/order")
+    with pytest.raises(LiveTradingDisabled):
+        assert_live_read_only(False, "POST", "/api/v5/trade/cancel-order")
+    with pytest.raises(LiveTradingDisabled):
+        assert_live_read_only(False, "POST", "/api/v5/trade/amend-order")
+    with pytest.raises(LiveTradingDisabled):
+        assert_live_read_only(False, "GET", "/api/v5/trade/order")
 
 
 def test_cli_requires_demo_env(monkeypatch: pytest.MonkeyPatch) -> None:

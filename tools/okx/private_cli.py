@@ -1,12 +1,15 @@
-"""Demo-only CLI for OKX account reads, place, and cancel.
+"""CLI for OKX account reads, place, and cancel.
 
 Keys are read from the environment by ``PrivateClient``. This CLI has no key
-arguments. It requires ``OKX_DEMO=1`` and never calls a withdrawal route.
+arguments and never calls a withdrawal route. ``balance`` and ``positions``
+run live when ``OKX_DEMO`` is unset (no ``--allow-orders``). Place, cancel,
+and order lookup stay on demo (``OKX_DEMO=1``).
 
 ::
 
+    python -m tools.okx.private_cli balance
+    python -m tools.okx.private_cli positions --inst BTC-USDT-SWAP
     OKX_DEMO=1 python -m tools.okx.private_cli balance
-    OKX_DEMO=1 python -m tools.okx.private_cli positions --inst BTC-USDT-SWAP
     OKX_DEMO=1 python -m tools.okx.private_cli order --inst BTC-USDT-SWAP --ord-id 123
     OKX_DEMO=1 python -m tools.okx.private_cli --allow-orders cancel --inst BTC-USDT-SWAP --ord-id 123
     OKX_DEMO=1 python -m tools.okx.private_cli --allow-orders place --inst BTC-USDT-SWAP \\
@@ -17,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from dataclasses import asdict, is_dataclass
 from typing import Any, Sequence
@@ -30,13 +34,18 @@ from tools.okx.errors import (
     RiskLimitError,
     UnsafeEndpointError,
 )
-from tools.okx.guards import require_cli_demo
+from tools.okx.guards import require_cli_demo, resolve_demo
 from tools.okx.private import PrivateClient
+
+_LIVE_READ_CMDS = frozenset({"balance", "positions"})
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="OKX demo private client. Read-only unless --allow-orders. No withdrawals.",
+        description=(
+            "OKX private client. balance and positions can be live; "
+            "place and cancel stay on demo. Read-only unless --allow-orders. No withdrawals."
+        ),
     )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument(
@@ -47,7 +56,7 @@ def _parser() -> argparse.ArgumentParser:
     mode.add_argument(
         "--allow-orders",
         action="store_true",
-        help="allow place, cancel, and amend on the demo account",
+        help="allow place, cancel, and amend on the demo account (OKX_DEMO=1)",
     )
     parser.add_argument(
         "--risk-gate",
@@ -56,10 +65,10 @@ def _parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    balance = sub.add_parser("balance", help="demo account balance")
+    balance = sub.add_parser("balance", help="account balance (live when OKX_DEMO is unset)")
     balance.add_argument("--ccy", default="")
 
-    positions = sub.add_parser("positions", help="demo positions")
+    positions = sub.add_parser("positions", help="positions (live when OKX_DEMO is unset)")
     positions.add_argument("--inst-type", default="")
     positions.add_argument("--inst", default="")
 
@@ -85,6 +94,21 @@ def _parser() -> argparse.ArgumentParser:
     order.add_argument("--ord-id", default="")
     order.add_argument("--cl-ord-id", default="")
     return parser
+
+
+def cli_demo(command: str) -> bool:
+    """Demo flag for a CLI command.
+
+    Balance and positions are live when ``OKX_DEMO`` is unset or off. Every
+    other command requires ``OKX_DEMO=1``. ``--allow-orders`` does not change this.
+    """
+    if command not in _LIVE_READ_CMDS:
+        require_cli_demo()
+        return True
+    raw = os.environ.get("OKX_DEMO")
+    if raw is None or raw.strip() == "":
+        return resolve_demo(False)
+    return resolve_demo(None)
 
 
 def client_options(args: argparse.Namespace) -> dict[str, Any]:
@@ -145,8 +169,7 @@ def main(argv: Sequence[str] | None = None, *, client: PrivateClient | None = No
     args = _parser().parse_args(list(argv) if argv is not None else None)
     try:
         if client is None:
-            require_cli_demo()
-            client = PrivateClient(**client_options(args))
+            client = PrivateClient(demo=cli_demo(args.cmd), **client_options(args))
         _run(args, client)
     except (
         LiveTradingDisabled,
