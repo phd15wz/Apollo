@@ -93,7 +93,7 @@ class PrivateChannelError(UnsafeEndpointError):
 
 
 class LiveTradingDisabled(UnsafeEndpointError):
-    """Live Trade is not enabled. Live mode is balance and positions only."""
+    """Live Trade is not enabled. Live mode is balance, positions, and funding only."""
 
 
 class OrdersDisabled(UnsafeEndpointError):

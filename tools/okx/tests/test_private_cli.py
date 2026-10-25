@@ -14,6 +14,7 @@ pytestmark = pytest.mark.usefixtures("clean_okx_env")
 def test_cli_live_reads_and_demo_writes(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     assert cli_demo("balance") is False
     assert cli_demo("positions") is False
+    assert cli_demo("funding") is False
     code = main(["balance"])
     assert code == 2
     assert "OKX_API_KEY" in capsys.readouterr().err
@@ -42,12 +43,14 @@ def test_cli_live_reads_and_demo_writes(monkeypatch: pytest.MonkeyPatch, capsys:
 
     monkeypatch.setenv("OKX_DEMO", "0")
     assert cli_demo("positions") is False
+    assert cli_demo("funding") is False
     code = main(["order", "--inst", "BTC-USDT-SWAP", "--ord-id", "1"])
     assert code == 2
     assert "OKX_DEMO" in capsys.readouterr().err
 
     monkeypatch.setenv("OKX_DEMO", "1")
     assert cli_demo("balance") is True
+    assert cli_demo("funding") is True
     monkeypatch.setenv("OKX_API_SECRET", "super-secret-value")
     code = main(["balance"])
     captured = capsys.readouterr()
@@ -72,6 +75,22 @@ def test_cli_live_balance_skips_allow_orders(monkeypatch: pytest.MonkeyPatch, ca
     assert captured["demo"] is False
     assert captured["allow_orders"] is None
     assert json.loads(capsys.readouterr().out)["ccy"] == "USDT"
+
+    captured.clear()
+
+    class _Funding:
+        def __init__(self, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+        def funding(self, ccy: str = "") -> list[dict[str, str]]:
+            return [{"ccy": ccy, "bal": "1"}]
+
+    monkeypatch.setattr("tools.okx.private_cli.PrivateClient", _Funding)
+    code = main(["funding", "--ccy", "USDT"])
+    assert code == 0
+    assert captured["demo"] is False
+    assert captured["allow_orders"] is None
+    assert json.loads(capsys.readouterr().out) == [{"bal": "1", "ccy": "USDT"}]
 
     monkeypatch.setenv("OKX_ALLOW_ORDERS", "1")
     code = main(
@@ -117,6 +136,15 @@ def test_cli_balance_and_cancel(capsys: pytest.CaptureFixture[str]) -> None:
     ack = json.loads(capsys.readouterr().out)
     assert ack["ord_id"] == "312269865356374016"
     assert transport.calls[-1]["path"] == "/api/v5/trade/cancel-order"
+
+    transport.add("/api/v5/asset/balances", load_fixture("private_funding_balance.json"))
+    code = main(["funding", "--ccy", "USDT"], client=reader)
+    assert code == 0
+    funding = json.loads(capsys.readouterr().out)
+    assert funding[0]["ccy"] == "USDT"
+    assert funding[0]["avail_bal"] == 20.0
+    assert transport.calls[-1]["path"] == "/api/v5/asset/balances"
+    assert "x-simulated-trading" in transport.calls[-1]["headers"]
 
 
 def test_cli_place_reports_margin_and_order_status(capsys: pytest.CaptureFixture[str]) -> None:

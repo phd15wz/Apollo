@@ -1,10 +1,11 @@
 # OKX market data and demo trading
 
 Stage 1 is a keyless Python client for OKX v5 **public** REST and WebSocket
-data. It cannot trade. Stage 2 (`PrivateClient`) is a **demo-only** signed
-client for balances, positions, place, cancel, and amend. It cannot withdraw,
-and it cannot send a live order. The path after this package is read-only
-live keys, then live Trade, each as its own change. Withdrawal stays out.
+data. It cannot trade. Stage 2 (`PrivateClient`) signs account reads and
+demo orders. Live mode reads trading balance, positions, and funding
+balances only. Place, cancel, and amend stay on demo. It cannot withdraw,
+and it cannot send a live order. The path after this package is live Trade,
+as its own change. Withdrawal stays out.
 
 Docs: [OKX API v5](https://www.okx.com/docs-v5/en/). This package is written
 from those public endpoints. It does not vendor [OKX Agent Trade Kit](https://github.com/okx/agent-trade-kit).
@@ -274,9 +275,9 @@ header `x-simulated-trading: 1`. There is no second REST hostname.
 
 Demo stays the library default: `PrivateClient()` with `OKX_DEMO` unset
 still sends the simulated-trading header. Live read-only is `demo=False`,
-or `OKX_DEMO` set to `0` / `false` / `no` / `off`. That mode signs **balance
-and positions only** and omits `x-simulated-trading`, so a live Read key
-works. Place, amend, cancel, and the other private GETs raise
+or `OKX_DEMO` set to `0` / `false` / `no` / `off`. That mode signs **balance,
+positions, and funding balances only** and omits `x-simulated-trading`, so a
+live Read key works. Place, amend, cancel, and the other private GETs raise
 `LiveTradingDisabled` until a later live-Trade change. `OKX_ALLOW_ORDERS`
 does not turn those writes live. A value of `OKX_DEMO` other than on or off
 still raises.
@@ -309,9 +310,11 @@ from tools.okx import PrivateClient
 client = PrivateClient()  # demo, read-only; keys from the environment
 balance = client.balance(ccy="USDT")
 positions = client.positions(inst_type="SWAP", inst_id="SPCX-USDT-SWAP")
+funding = client.funding(ccy="USDT")
 
-live = PrivateClient(demo=False)  # live Read key; balance and positions only
+live = PrivateClient(demo=False)  # live Read key; balance, positions, funding
 live.balance(ccy="USDT")
+live.funding()
 order = client.get_order("SPCX-USDT-SWAP", ord_id="123")
 pending = client.open_orders(inst_type="SWAP")
 history = client.order_history("SWAP", inst_id="SPCX-USDT-SWAP")
@@ -336,11 +339,13 @@ Allowlisted routes only:
 | Method | Path |
 | --- | --- |
 | GET | `/api/v5/account/balance`, `/api/v5/account/positions` |
+| GET | `/api/v5/asset/balances` (funding account; optional `ccy`) |
 | GET | `/api/v5/trade/order`, `/api/v5/trade/orders-pending`, `/api/v5/trade/orders-history`, `/api/v5/trade/orders-history-archive` |
 | POST | `/api/v5/trade/order`, `/api/v5/trade/cancel-order`, `/api/v5/trade/amend-order` |
 
-Anything else, including `/api/v5/asset`, `/api/v5/finance`, and any path
-containing withdraw, transfer, or deposit, raises `UnsafeEndpointError`.
+Anything else, including other `/api/v5/asset` routes, `/api/v5/finance`, and
+any path containing withdraw, transfer, or deposit, raises `UnsafeEndpointError`.
+`GET /api/v5/asset/balances` is the only asset exception.
 
 ### Guards
 
@@ -350,8 +355,8 @@ Enforced now:
    `allow_orders=True` or `OKX_ALLOW_ORDERS=1`. `read_only=True`,
    `--read-only`, and `OKX_READ_ONLY=1` override the go flag.
 2. **Demo writes, live reads.** Demo requests send `x-simulated-trading: 1`.
-   Live mode omits that header on balance and positions only. Live Trade
-   is not implemented.
+   Live mode omits that header on balance, positions, and funding balances
+   only. Live Trade is not implemented.
 3. **No withdraw / transfer / deposit** paths. Same exception type as the
    public client's blocked routes.
 4. **Soft cap.** Incremental `margin_usd` plus caller-supplied
@@ -382,13 +387,14 @@ Deferred (not done in this package):
 
 ### CLI
 
-No key arguments. `balance` and `positions` hit the live account when
-`OKX_DEMO` is unset or off, without `--allow-orders`. Place, cancel, and
+No key arguments. `balance`, `positions`, and `funding` hit the live account
+when `OKX_DEMO` is unset or off, without `--allow-orders`. Place, cancel, and
 order lookup still require `OKX_DEMO=1`.
 
 ```bash
 python3 -m tools.okx.private_cli balance
 python3 -m tools.okx.private_cli positions --inst SPCX-USDT-SWAP
+python3 -m tools.okx.private_cli funding --ccy USDT
 OKX_DEMO=1 python3 -m tools.okx.private_cli balance
 OKX_DEMO=1 python3 -m tools.okx.private_cli order --inst SPCX-USDT-SWAP --ord-id 123
 OKX_DEMO=1 python3 -m tools.okx.private_cli --allow-orders cancel \
@@ -417,9 +423,10 @@ need API keys.
   login path.
 - `PublicClient` takes no key argument and sends no `OK-ACCESS-*` headers.
   Signing lives in `auth.py` and is used only by `PrivateClient`.
-- Private client: demo header on demo calls; live balance and positions omit
-  it. Allowlisted trade and account routes. No withdrawal endpoints. Live
-  place, amend, and cancel are refused.
+- Private client: demo header on demo calls; live balance, positions, and
+  funding balances omit it. Allowlisted trade and account routes, plus
+  `GET /api/v5/asset/balances`. No withdrawal endpoints. Live place, amend,
+  and cancel are refused.
 - Unit tests mock HTTP with recorded JSON under `tests/fixtures/` and use an
   in-memory fake WebSocket (no network). Live public tests stay behind
   `OKX_LIVE=1`. Demo private tests stay behind `OKX_DEMO=1` plus a key.

@@ -7,12 +7,14 @@ Enforced in this package
   ``OKX_READ_ONLY=1`` win over that go flag (kill switch). Cancel is a write.
 * Demo by default. ``OKX_DEMO`` on, or a library ``PrivateClient()`` with the
   variable unset, sends ``x-simulated-trading: 1``. Live mode is read-only
-  balance and positions: ``demo=False``, or ``OKX_DEMO`` unset on the CLI
-  (explicit ``0`` / ``false`` / ``no`` / ``off`` too). Place, amend, and
-  cancel stay on demo. ``LIVE_TRADE_ENABLED`` is a tripwire: setting it
-  ``True`` does not enable live trading; the client refuses to start.
-* Allowlisted account and trade routes only. Asset, finance, withdrawal,
-  deposit, and transfer paths raise ``UnsafeEndpointError``.
+  balance, positions, and funding balances: ``demo=False``, or ``OKX_DEMO``
+  unset on the CLI (explicit ``0`` / ``false`` / ``no`` / ``off`` too).
+  Place, amend, and cancel stay on demo. ``LIVE_TRADE_ENABLED`` is a
+  tripwire: setting it ``True`` does not enable live trading; the client
+  refuses to start.
+* Allowlisted account, trade, and one funding read. ``GET /api/v5/asset/balances``
+  is the only asset route. Withdraw, transfer, deposit, other ``/api/v5/asset``
+  paths, and ``/api/v5/finance`` raise ``UnsafeEndpointError``.
 * Soft cap: incremental ``margin_usd`` plus caller-supplied ``open_margins``
   must stay within ``NAME_MARGIN_CAP_USD`` (10) per instrument. Instruments in
   a ``shared_cap`` group from ``config/candidate_pool.yaml`` share that same
@@ -22,8 +24,8 @@ Enforced in this package
 
 Deferred (not enforced here)
 ----------------------------
-* Live Trade (place, amend, cancel on a live key). Read-only live balance
-  and positions are already allowed.
+* Live Trade (place, amend, cancel on a live key). Read-only live balance,
+  positions, and funding balances are already allowed.
 * Automatic margin from mark price, contract value, and leverage. Callers pass
   ``margin_usd``. Position ``margin`` is not converted or auto-fetched.
 * A persistent shared-cap ledger across processes. ``open_margins`` is an
@@ -58,23 +60,28 @@ GATE_SIZE_FRACTION = 0.5
 _ON = frozenset({"1", "true", "yes", "on"})
 _OFF = frozenset({"0", "false", "no", "off"})
 
+# Funding-account balance. The only ``/api/v5/asset`` route this package signs.
+FUNDING_BALANCE_PATH = "/api/v5/asset/balances"
+
 # Signed GETs that may run against a live Read key. Every other private call
 # stays on demo trading.
 LIVE_READ_PATHS = frozenset(
     {
         "/api/v5/account/balance",
         "/api/v5/account/positions",
+        FUNDING_BALANCE_PATH,
     }
 )
 
 _WITHDRAW_MARKERS = ("withdraw", "transfer", "deposit")
 _BLOCKED_PREFIXES = ("/api/v5/asset", "/api/v5/finance")
 
-# Exact method + path. No batch, algo, asset, or account-config routes.
+# Exact method + path. No batch, algo, account-config, or asset mutation routes.
 ALLOWED_PRIVATE: frozenset[tuple[str, str]] = frozenset(
     {
         ("GET", "/api/v5/account/balance"),
         ("GET", "/api/v5/account/positions"),
+        ("GET", FUNDING_BALANCE_PATH),
         ("GET", "/api/v5/trade/order"),
         ("GET", "/api/v5/trade/orders-pending"),
         ("GET", "/api/v5/trade/orders-history"),
@@ -89,6 +96,8 @@ ALLOWED_PRIVATE: frozenset[tuple[str, str]] = frozenset(
 PRIVATE_RATE_LIMITS: dict[str, tuple[int, float]] = {
     "/api/v5/account/balance": (10, 2.0),
     "/api/v5/account/positions": (10, 2.0),
+    # OKX: 6 requests per second, user id, Read.
+    FUNDING_BALANCE_PATH: (6, 1.0),
     "/api/v5/trade/order": (60, 2.0),
     "/api/v5/trade/orders-pending": (60, 2.0),
     "/api/v5/trade/orders-history": (40, 2.0),
@@ -121,7 +130,7 @@ def _refuse_live_trade_tripwire() -> None:
 
 
 def require_cli_demo() -> None:
-    """CLI writes and non-balance reads: the operator must set ``OKX_DEMO`` on."""
+    """CLI writes and non-live reads: the operator must set ``OKX_DEMO`` on."""
     raw = os.environ.get("OKX_DEMO", "").strip().lower()
     if raw not in _ON:
         raise LiveTradingDisabled(
@@ -134,17 +143,17 @@ def resolve_demo(demo: bool | None) -> bool:
     """Return whether signed calls use demo trading.
 
     ``True`` sends ``x-simulated-trading: 1``. ``False`` is live read-only
-    (balance and positions only). The library default (``demo=None`` and
-    ``OKX_DEMO`` unset) stays demo. Explicit off values (``0``, ``false``,
-    ``no``, ``off``) select live reads. ``LIVE_TRADE_ENABLED`` is not an
-    unlock: if it is set, startup fails.
+    (balance, positions, and funding balances). The library default
+    (``demo=None`` and ``OKX_DEMO`` unset) stays demo. Explicit off values
+    (``0``, ``false``, ``no``, ``off``) select live reads.
+    ``LIVE_TRADE_ENABLED`` is not an unlock: if it is set, startup fails.
     """
     _refuse_live_trade_tripwire()
     env = _demo_env()
     if env is not None and env not in _ON and env not in _OFF:
         raise LiveTradingDisabled(
             "OKX_DEMO must be on for demo trading, or unset (or 0) for live "
-            "read-only balance and positions. Live Trade is not enabled."
+            "read-only balance, positions, and funding. Live Trade is not enabled."
         )
     env_on = env in _ON
     env_off = env in _OFF
@@ -162,13 +171,13 @@ def resolve_demo(demo: bool | None) -> bool:
 
 
 def assert_live_read_only(demo: bool, method: str, path: str) -> None:
-    """Live mode may sign balance and positions only. Writes stay on demo."""
+    """Live mode may sign balance, positions, and funding balances. Writes stay on demo."""
     if demo:
         return
     if method.upper() == "GET" and path in LIVE_READ_PATHS:
         return
     raise LiveTradingDisabled(
-        "Live mode is read-only for balance and positions. "
+        "Live mode is read-only for balance, positions, and funding. "
         "Place, amend, and cancel stay on demo (OKX_DEMO=1). Live Trade is not enabled."
     )
 
@@ -197,20 +206,21 @@ def margin_ceiling(*, gate_on: bool) -> float:
 
 
 def assert_private_request(method: str, path: str) -> str:
-    """Return the normalized path, or raise if it is not an allowlisted trade/account call."""
+    """Return the normalized path, or raise if it is not an allowlisted private call."""
     path_only = path.split("?", 1)[0].split("#", 1)[0]
     if not path_only.startswith("/"):
         path_only = "/" + path_only
     lowered = path_only.lower()
     if not lowered.startswith("/api/v5/"):
         raise UnsafeEndpointError(f"refusing non-v5 path {path_only}")
+    method_u = method.upper()
+    funding_read = method_u == "GET" and path_only == FUNDING_BALANCE_PATH
     for marker in _WITHDRAW_MARKERS:
         if marker in lowered:
             raise UnsafeEndpointError(f"refusing withdrawal or transfer path {path_only}")
     for prefix in _BLOCKED_PREFIXES:
-        if lowered.startswith(prefix):
+        if lowered.startswith(prefix) and not funding_read:
             raise UnsafeEndpointError(f"refusing non-trade path {path_only}")
-    method_u = method.upper()
     if method_u not in {"GET", "POST"}:
         raise UnsafeEndpointError(f"refusing method {method_u} for {path_only}")
     if (method_u, path_only) not in ALLOWED_PRIVATE:

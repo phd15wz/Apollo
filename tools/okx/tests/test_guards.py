@@ -66,10 +66,11 @@ def test_live_trade_constant_is_a_tripwire(monkeypatch: pytest.MonkeyPatch) -> N
         resolve_demo(False)
 
 
-def test_live_reads_are_balance_and_positions_only() -> None:
+def test_live_reads_are_balance_positions_and_funding() -> None:
     assert_live_read_only(True, "POST", "/api/v5/trade/order")
     assert_live_read_only(False, "GET", "/api/v5/account/balance")
     assert_live_read_only(False, "GET", "/api/v5/account/positions")
+    assert_live_read_only(False, "GET", "/api/v5/asset/balances")
     with pytest.raises(LiveTradingDisabled):
         assert_live_read_only(False, "POST", "/api/v5/trade/order")
     with pytest.raises(LiveTradingDisabled):
@@ -78,6 +79,10 @@ def test_live_reads_are_balance_and_positions_only() -> None:
         assert_live_read_only(False, "POST", "/api/v5/trade/amend-order")
     with pytest.raises(LiveTradingDisabled):
         assert_live_read_only(False, "GET", "/api/v5/trade/order")
+    with pytest.raises(LiveTradingDisabled):
+        assert_live_read_only(False, "POST", "/api/v5/asset/balances")
+    with pytest.raises(LiveTradingDisabled):
+        assert_live_read_only(False, "GET", "/api/v5/asset/bills")
 
 
 def test_cli_requires_demo_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -107,19 +112,25 @@ def test_risk_gate_halves_the_ceiling(monkeypatch: pytest.MonkeyPatch) -> None:
     assert resolve_risk_gate(False) is False
 
 
-def test_allowlist_is_trade_and_account_only() -> None:
+def test_allowlist_is_trade_account_and_funding_balance() -> None:
     assert ("GET", "/api/v5/account/balance") in ALLOWED_PRIVATE
+    assert ("GET", "/api/v5/asset/balances") in ALLOWED_PRIVATE
+    assert ("POST", "/api/v5/asset/balances") not in ALLOWED_PRIVATE
     assert ("POST", "/api/v5/trade/cancel-order") in ALLOWED_PRIVATE
     assert ("POST", "/api/v5/trade/order") in ALLOWED_PRIVATE
+    assert assert_private_request("GET", "/api/v5/asset/balances") == "/api/v5/asset/balances"
+    assert assert_private_request("GET", "/api/v5/asset/balances?ccy=USDT") == "/api/v5/asset/balances"
     for method, path in ALLOWED_PRIVATE:
         assert method in {"GET", "POST"}
-        assert path.startswith("/api/v5/account") or path.startswith("/api/v5/trade")
         lowered = path.lower()
         assert "withdraw" not in lowered
         assert "transfer" not in lowered
         assert "deposit" not in lowered
-        assert not lowered.startswith("/api/v5/asset")
         assert not lowered.startswith("/api/v5/finance")
+        if lowered.startswith("/api/v5/asset"):
+            assert (method, path) == ("GET", "/api/v5/asset/balances")
+        else:
+            assert path.startswith("/api/v5/account") or path.startswith("/api/v5/trade")
 
 
 @pytest.mark.parametrize(
@@ -128,6 +139,10 @@ def test_allowlist_is_trade_and_account_only() -> None:
         ("POST", "/api/v5/asset/withdrawal"),
         ("POST", "/api/v5/asset/transfer"),
         ("GET", "/api/v5/asset/deposit-address"),
+        ("POST", "/api/v5/asset/balances"),
+        ("GET", "/api/v5/asset/bills"),
+        ("GET", "/api/v5/asset/asset-valuation"),
+        ("GET", "/api/v5/asset/balances/"),
         ("GET", "/api/v5/account/max-withdrawal"),
         ("POST", "/api/v5/finance/savings/purchase"),
         ("GET", "/api/v5/asset/currencies"),

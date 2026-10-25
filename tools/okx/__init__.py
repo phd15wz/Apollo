@@ -1,8 +1,9 @@
 """OKX v5 clients.
 
 ``PublicClient`` is keyless public market data (stage 1). ``PrivateClient``
-is the stage-2 signed client: live read-only balance and positions, plus
-demo place, cancel, and amend. It cannot withdraw, and it refuses live Trade.
+is the stage-2 signed client: live read-only balance, positions, and funding
+balances, plus demo place, cancel, and amend. It cannot withdraw, and it
+refuses live Trade.
 """
 
 from tools.okx.archive import (
@@ -45,6 +46,7 @@ from tools.okx.private import (
     DEMO_REST_BASE_URL,
     AccountBalance,
     CurrencyBalance,
+    FundingBalance,
     OrderAck,
     OrderRecord,
     Position,
@@ -90,6 +92,7 @@ __all__ = [
     "LowDiskError",
     "MissingCredentials",
     "DownloadResult",
+    "FundingBalance",
     "FundingRate",
     "IndexTicker",
     "Instrument",
