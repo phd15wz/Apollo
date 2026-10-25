@@ -97,6 +97,39 @@ def test_access_headers_demo_and_live_read() -> None:
             demo=False,
             allow_live_write=True,
         )
+    leverage_body = '{"instId":"BTC-USDT-SWAP","lever":"1","mgnMode":"isolated"}'
+    live_leverage = access_headers(
+        creds,
+        timestamp=_TS,
+        method="POST",
+        request_path="/api/v5/account/set-leverage",
+        body=leverage_body,
+        demo=False,
+        allow_live_write=True,
+    )
+    assert "x-simulated-trading" not in live_leverage
+    assert live_leverage["OK-ACCESS-SIGN"] == sign(
+        "test-secret", _TS, "POST", "/api/v5/account/set-leverage", leverage_body
+    )
+    with pytest.raises(LiveTradingDisabled):
+        access_headers(
+            creds,
+            timestamp=_TS,
+            method="POST",
+            request_path="/api/v5/account/set-leverage",
+            body=leverage_body,
+            demo=False,
+        )
+    with pytest.raises(LiveTradingDisabled):
+        access_headers(
+            creds,
+            timestamp=_TS,
+            method="POST",
+            request_path="/api/v5/account/set-position-mode",
+            body="{}",
+            demo=False,
+            allow_live_write=True,
+        )
 
 
 def test_credentials_repr_and_pickle_hide_secrets() -> None:

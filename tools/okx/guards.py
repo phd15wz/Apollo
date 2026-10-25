@@ -14,8 +14,11 @@ Enforced in this package
   ``live_trade=True``) plus the order go flag: BTC-USDT cash, and one
   BTC-USDT-SWAP limit (``tdMode`` ``isolated`` only). ``LIVE_TRADE_ENABLED``
   is a tripwire: setting it ``True`` does not enable live trading; the
-  client refuses to start. This package does not set leverage, margin
-  mode, or account config.
+  client refuses to start. The only account write is
+  ``POST /api/v5/account/set-leverage``: ``mgnMode`` ``isolated``, a
+  USDT-SWAP ``instId``, and ``lever`` from 1 to 5, under that same opt-in.
+  set-position-mode, set-account-level, and every other account mutation
+  stay off.
 * Allowlisted account, trade, and one funding read. ``GET /api/v5/asset/balances``
   is the only asset route. Withdraw, transfer, deposit, other ``/api/v5/asset``
   paths, and ``/api/v5/finance`` raise ``UnsafeEndpointError``.
@@ -31,7 +34,8 @@ Deferred (not enforced here)
 * Live amend, and any live order that is not the BTC-USDT or BTC-USDT-SWAP
   place-then-cancel smoke. Read-only live balance, positions, and funding
   balances are already allowed. The smokes are opt-in, not a general live
-  Trade path. Leverage and margin mode stay as set in the OKX UI.
+  Trade path. Cross margin, leverage above 5, and margin-mode changes stay
+  refused.
 * Automatic margin from mark price, contract value, and leverage. Callers pass
   ``margin_usd``. Position ``margin`` is not converted or auto-fetched.
 * A persistent shared-cap ledger across processes. ``open_margins`` is an
@@ -55,6 +59,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Mapping
 
+from tools.okx.endpoints import validate_inst_id
 from tools.okx.errors import LiveTradingDisabled, OrdersDisabled, RiskLimitError, UnsafeEndpointError
 
 # Tripwire. Flipping this to True does not place live orders; ``resolve_demo``
@@ -77,8 +82,8 @@ LIVE_SMOKE_PX_MAX = "40000"
 # that row. Size "1" was an outdated fixture (one contract ≈ mark × 0.01
 # USDT, about $1k at 1×) and is refused. 0.01 contracts ≈ 0.0001 BTC.
 # The strategy default and the only live SWAP smoke tdMode is isolated.
-# Demo place still accepts cross; that is not this smoke. Leverage is not
-# set here.
+# Demo place still accepts cross; that is not this smoke. Leverage is a
+# separate account call, isolated and at most 5: see ``SET_LEVERAGE_PATH``.
 LIVE_SWAP_SMOKE_INST_ID = "BTC-USDT-SWAP"
 LIVE_SWAP_SMOKE_SIDE = "buy"
 LIVE_SWAP_SMOKE_SZ = "0.01"
@@ -107,12 +112,19 @@ LIVE_READ_PATHS = frozenset(
 )
 
 # Live POSTs a Trade key may sign, and only after the opt-in. Amend is absent.
+# set-leverage is the only account POST. Place and cancel stay the two smokes.
+SET_LEVERAGE_PATH = "/api/v5/account/set-leverage"
+# Book max. OKX accepts higher leverage; this package does not.
+MAX_SET_LEVERAGE = 5
 LIVE_TRADE_PATHS = frozenset(
     {
         ("POST", "/api/v5/trade/order"),
         ("POST", "/api/v5/trade/cancel-order"),
+        ("POST", SET_LEVERAGE_PATH),
     }
 )
+_SET_LEVERAGE_KEYS = frozenset({"instId", "lever", "mgnMode", "posSide"})
+_SET_LEVERAGE_POS_SIDES = frozenset({"long", "short"})
 
 _LIVE_PLACE_KEYS = frozenset({"instId", "tdMode", "side", "ordType", "sz", "px", "clOrdId", "posSide"})
 _LIVE_CANCEL_KEYS = frozenset({"instId", "ordId", "clOrdId"})
@@ -120,7 +132,8 @@ _LIVE_CANCEL_KEYS = frozenset({"instId", "ordId", "clOrdId"})
 _WITHDRAW_MARKERS = ("withdraw", "transfer", "deposit")
 _BLOCKED_PREFIXES = ("/api/v5/asset", "/api/v5/finance")
 
-# Exact method + path. No batch, algo, account-config, or asset mutation routes.
+# Exact method + path. No batch, algo, or asset mutation routes.
+# The only account POST is set-leverage.
 ALLOWED_PRIVATE: frozenset[tuple[str, str]] = frozenset(
     {
         ("GET", "/api/v5/account/balance"),
@@ -133,6 +146,7 @@ ALLOWED_PRIVATE: frozenset[tuple[str, str]] = frozenset(
         ("POST", "/api/v5/trade/order"),
         ("POST", "/api/v5/trade/cancel-order"),
         ("POST", "/api/v5/trade/amend-order"),
+        ("POST", SET_LEVERAGE_PATH),
     }
 )
 
@@ -148,6 +162,8 @@ PRIVATE_RATE_LIMITS: dict[str, tuple[int, float]] = {
     "/api/v5/trade/orders-history-archive": (20, 2.0),
     "/api/v5/trade/cancel-order": (60, 2.0),
     "/api/v5/trade/amend-order": (60, 2.0),
+    # OKX v5 set-leverage: 20 requests / 2 seconds, user id + instrument id.
+    SET_LEVERAGE_PATH: (20, 2.0),
 }
 
 
@@ -179,9 +195,9 @@ def require_cli_demo() -> None:
     raw = os.environ.get("OKX_DEMO", "").strip().lower()
     if raw not in _ON:
         raise LiveTradingDisabled(
-            "CLI place, cancel, and order lookup require OKX_DEMO=1. "
-            "The live smokes need OKX_LIVE_TRADE=1 and --allow-orders "
-            "(cash: smoke; SWAP: smoke-swap). "
+            "CLI place, cancel, order lookup, and set-leverage require OKX_DEMO=1. "
+            "The live smokes and live set-leverage need OKX_LIVE_TRADE=1 and "
+            "--allow-orders (cash: smoke; SWAP: smoke-swap). "
             "Live Trade is not enabled."
         )
     resolve_demo(True)
@@ -196,7 +212,7 @@ def resolve_demo(demo: bool | None) -> bool:
     Explicit off values (``0``, ``false``, ``no``, ``off``) select live.
     ``LIVE_TRADE_ENABLED`` is not an unlock: if it is set, startup fails.
     ``OKX_LIVE_TRADE`` does not change this function; it only opens the
-    smoke place and cancel paths.
+    smoke place and cancel paths and isolated set-leverage.
     """
     _refuse_live_trade_tripwire()
     env = _demo_env()
@@ -223,9 +239,9 @@ def resolve_demo(demo: bool | None) -> bool:
 def assert_live_read_only(demo: bool, method: str, path: str, *, live_trade: bool = False) -> None:
     """Live reads are balance, positions, and funding.
 
-    Place and cancel are signed on a live key only when ``live_trade`` is
-    true. Amend and every other private call stay refused. Funding GET is
-    unchanged: it does not need ``live_trade``.
+    Place, cancel, and set-leverage are signed on a live key only when
+    ``live_trade`` is true. Amend and every other private call stay refused.
+    Funding GET is unchanged: it does not need ``live_trade``.
     """
     if demo:
         return
@@ -239,13 +255,13 @@ def assert_live_read_only(demo: bool, method: str, path: str, *, live_trade: boo
         "Live mode is read-only for balance, positions, and funding. "
         "Place, amend, and cancel stay on demo (OKX_DEMO=1) unless "
         "OKX_LIVE_TRADE=1 opens place and cancel for the BTC-USDT cash smoke "
-        "or the BTC-USDT-SWAP smoke. "
+        "or the BTC-USDT-SWAP smoke, and isolated set-leverage at lever 1-5. "
         "Live Trade is not enabled."
     )
 
 
 def resolve_live_trade(live_trade: bool | None) -> bool:
-    """Return whether live place and cancel may be signed.
+    """Return whether live place, cancel, and set-leverage may be signed.
 
     Default is off. ``live_trade=True`` or ``OKX_LIVE_TRADE=1`` opts in.
     ``live_trade=False`` forces it off even when the env is set.
@@ -333,10 +349,68 @@ def assert_live_smoke_cancel(inst_id: str) -> None:
         )
 
 
+def _set_leverage_text(value: object) -> str:
+    """Canonical lever string in ``1`` .. ``MAX_SET_LEVERAGE``.
+
+    Accepts a positive integer or a digit string. Floats, booleans, signs,
+    decimals, and leading zeros are refused.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        raise ValueError(f"lever must be a positive integer from 1 to {MAX_SET_LEVERAGE}")
+    if isinstance(value, int):
+        number = value
+    else:
+        text = value.strip()
+        if not text.isdigit() or (len(text) > 1 and text.startswith("0")):
+            raise ValueError(f"lever must be a positive integer from 1 to {MAX_SET_LEVERAGE}")
+        number = int(text)
+    if number < 1 or number > MAX_SET_LEVERAGE:
+        raise ValueError(f"lever must be a positive integer from 1 to {MAX_SET_LEVERAGE}")
+    return str(number)
+
+
+def assert_set_leverage_payload(payload: Mapping[str, Any] | None) -> dict[str, str]:
+    """Return the isolated set-leverage body, or raise ``ValueError``.
+
+    OKX v5 isolated SWAP (buy/sell mode) is ``instId``, ``lever``, and
+    ``mgnMode``. ``posSide`` is added only for isolated long/short mode
+    (``long`` or ``short``). ``ccy`` is not accepted: OKX uses it for cross
+    margin, and ``mgnMode`` can only be ``cross`` when ``ccy`` is passed.
+    """
+    raw = dict(payload or {})
+    if raw.get("posSide") in (None, ""):
+        raw.pop("posSide", None)
+    extra = set(raw) - _SET_LEVERAGE_KEYS
+    missing = [key for key in ("instId", "lever", "mgnMode") if key not in raw or raw[key] in (None, "")]
+    if extra or missing:
+        raise ValueError(
+            "set-leverage accepts only instId, lever, mgnMode=isolated, and optional posSide"
+        )
+    if raw["mgnMode"] != "isolated":
+        raise ValueError("mgnMode must be isolated")
+    inst_id = validate_inst_id(str(raw["instId"]))
+    if not inst_id.endswith("-USDT-SWAP"):
+        raise ValueError(f"instId must be a USDT-SWAP id, got {inst_id!r}")
+    body = {
+        "instId": inst_id,
+        "lever": _set_leverage_text(raw["lever"]),
+        "mgnMode": "isolated",
+    }
+    if "posSide" in raw:
+        side = str(raw["posSide"])
+        if side not in _SET_LEVERAGE_POS_SIDES:
+            raise ValueError("posSide must be long or short")
+        body["posSide"] = side
+    return body
+
+
 def assert_live_trade_payload(method: str, path: str, payload: Mapping[str, Any] | None) -> None:
-    """Refuse a live place or cancel body that is outside the smoke shape."""
+    """Refuse a live place, cancel, or set-leverage body outside its lock."""
     method_u = method.upper()
     body = dict(payload or {})
+    if (method_u, path) == ("POST", SET_LEVERAGE_PATH):
+        assert_set_leverage_payload(body)
+        return
     if (method_u, path) == ("POST", "/api/v5/trade/order"):
         extra = set(body) - _LIVE_PLACE_KEYS
         if extra or "px" not in body:

@@ -19,6 +19,8 @@ Never commit secrets, API keys, passphrases, account identifiers, order ids, or 
 
 The client can place and cancel two resting limits on a live Trade key when `OKX_LIVE_TRADE=1` and `--allow-orders` are both set and `OKX_DEMO` is unset. Cash: `BTC-USDT`, size `0.001`, px at most `40000`, via `smoke`. SWAP: `BTC-USDT-SWAP`, size `0.01`, `tdMode` `isolated` only (strategy default), px at most `40000`, via `smoke-swap`. Both cancel in the same process. `cross` is not the live SWAP shape. Withdraw stays off. Log a run here only after it happens. Do not record secrets, order ids, or balances.
 
+`set-leverage` can set isolated leverage from 1 to 5 on a USDT-SWAP under those same two flags. Demo uses `OKX_DEMO=1` and `--allow-orders`. `cross` stays refused. Log a run here only after it happens.
+
 ## Log
 
 - [2026-10-24 demo smoke](2026-10-24-demo-smoke.md) — Isaac, PR #22 branch, `OKX_DEMO=1`.

@@ -137,8 +137,9 @@ def access_headers(
 
     Demo requests set ``x-simulated-trading: 1``. Live reads omit that header.
     A live write is signed only when ``allow_live_write`` is true and the path
-    is place or cancel. Amend, asset mutations, and every other POST stay
-    unsigned. The simulated-trading header stays off for those live writes.
+    is place, cancel, or set-leverage. Amend, asset mutations, and every other
+    POST stay unsigned. The simulated-trading header stays off for those live
+    writes.
     """
     method_u = method.upper()
     path_only = request_path.split("?", 1)[0].split("#", 1)[0]
