@@ -5,14 +5,17 @@ arguments and never calls a withdrawal route. ``balance``, ``positions``, and
 ``funding`` run live when ``OKX_DEMO`` is unset (no ``--allow-orders``).
 Demo place, cancel, and order lookup stay on ``OKX_DEMO=1``.
 
-The live place/cancel smokes also need ``OKX_LIVE_TRADE=1`` and
-``--allow-orders``, with ``OKX_DEMO`` unset or off. ``smoke`` places one
-resting BTC-USDT cash limit (size 0.001, px at most 40000) and cancels it
-in that same process. ``smoke-swap`` places one resting BTC-USDT-SWAP
-limit buy (size 0.01, tdMode isolated, px at most 40000)
-and cancels it in that same process. A live ``place`` of either shape
-cancels before exit. ``set-leverage`` sets isolated leverage from 1 to 5
-on a USDT-SWAP: demo with ``OKX_DEMO=1`` and ``--allow-orders``, live with
+The live place/cancel smokes and the mild-3.1 equity SWAP stub also need
+``OKX_LIVE_TRADE=1`` and ``--allow-orders``, with ``OKX_DEMO`` unset or off.
+``smoke`` places one resting BTC-USDT cash limit (size 0.001, px at most
+40000) and cancels it in that same process. ``smoke-swap`` places one
+resting BTC-USDT-SWAP limit buy (size 0.01, tdMode isolated, px at most
+40000) and cancels it in that same process. A live ``place`` of either
+smoke shape cancels before exit. A live ``place`` on the mild-3.1 stub
+(MU, SKHY, LITE, TSM, QQQ USDT-SWAP; isolated; sz at most the stub lot)
+rests. ``cancel`` can pull that order. ``set-leverage`` sets isolated
+leverage from 1 to 5 on a USDT-SWAP, and 1 to 2 on those five names:
+demo with ``OKX_DEMO=1`` and ``--allow-orders``, live with
 ``OKX_LIVE_TRADE=1``, ``--allow-orders``, and ``OKX_DEMO`` unset. Amend and
 order lookup stay on demo. Position mode stays unchanged. Withdraw stays off.
 
@@ -30,6 +33,9 @@ order lookup stay on demo. Position mode stays unchanged. Withdraw stays off.
     OKX_LIVE_TRADE=1 python -m tools.okx.private_cli --allow-orders smoke-swap
     OKX_LIVE_TRADE=1 python -m tools.okx.private_cli --allow-orders set-leverage \\
         --inst BTC-USDT-SWAP --lever 1
+    OKX_LIVE_TRADE=1 python -m tools.okx.private_cli --allow-orders place \\
+        --inst MU-USDT-SWAP --side buy --sz 0.01 --td-mode isolated \\
+        --ord-type limit --px 967 --margin-usd 5
 """
 
 from __future__ import annotations
@@ -50,7 +56,7 @@ from tools.okx.errors import (
     RiskLimitError,
     UnsafeEndpointError,
 )
-from tools.okx.guards import env_flag, require_cli_demo, resolve_demo
+from tools.okx.guards import MILD31_STUB, env_flag, require_cli_demo, resolve_demo
 from tools.okx.private import OrderAck, PrivateClient
 
 _LIVE_READ_CMDS = frozenset({"balance", "positions", "funding"})
@@ -61,10 +67,13 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "OKX private client. balance, positions, and funding can be live; "
-            "demo place and cancel need OKX_DEMO=1. The live smokes and live "
-            "set-leverage need OKX_LIVE_TRADE=1 and --allow-orders "
-            "(smoke for BTC-USDT cash, smoke-swap for BTC-USDT-SWAP). "
-            "set-leverage is isolated, lever 1-5, USDT-SWAP only. "
+            "demo place and cancel need OKX_DEMO=1. The live smokes, the "
+            "mild-3.1 equity SWAP stub, and live set-leverage need "
+            "OKX_LIVE_TRADE=1 and --allow-orders "
+            "(smoke for BTC-USDT cash, smoke-swap for BTC-USDT-SWAP, "
+            "place/cancel for MU, SKHY, LITE, TSM, QQQ USDT-SWAP). "
+            "set-leverage is isolated, lever 1-5, USDT-SWAP only "
+            "(1-2 on those five names). "
             "Read-only unless --allow-orders. No withdrawals."
         ),
     )
@@ -79,8 +88,9 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "allow demo place, cancel, amend, and set-leverage (OKX_DEMO=1), "
-            "or the live BTC-USDT and BTC-USDT-SWAP place/cancel smokes and "
-            "isolated set-leverage (OKX_LIVE_TRADE=1, OKX_DEMO unset)"
+            "or the live BTC smokes, the mild-3.1 equity SWAP stub "
+            "(MU, SKHY, LITE, TSM, QQQ), and isolated set-leverage "
+            "(OKX_LIVE_TRADE=1, OKX_DEMO unset)"
         ),
     )
     parser.add_argument(
@@ -100,7 +110,13 @@ def _parser() -> argparse.ArgumentParser:
     funding = sub.add_parser("funding", help="funding balances (live when OKX_DEMO is unset)")
     funding.add_argument("--ccy", default="")
 
-    place = sub.add_parser("place", help="place one order (demo, or the live smoke which then cancels)")
+    place = sub.add_parser(
+        "place",
+        help=(
+            "place one order (demo; a live BTC smoke, which then cancels; "
+            "or a resting mild-3.1 equity SWAP stub)"
+        ),
+    )
     place.add_argument("--inst", required=True)
     place.add_argument("--side", required=True)
     place.add_argument("--sz", required=True)
@@ -114,7 +130,9 @@ def _parser() -> argparse.ArgumentParser:
 
     cancel = sub.add_parser(
         "cancel",
-        help="cancel one order (demo, or a live BTC-USDT or BTC-USDT-SWAP smoke)",
+        help=(
+            "cancel one order (demo, a live BTC smoke, or a mild-3.1 equity SWAP stub)"
+        ),
     )
     cancel.add_argument("--inst", required=True)
     cancel.add_argument("--ord-id", default="")
@@ -146,7 +164,10 @@ def _parser() -> argparse.ArgumentParser:
 
     leverage = sub.add_parser(
         "set-leverage",
-        help="set isolated leverage 1-5 on a USDT-SWAP (demo or the live opt-in)",
+        help=(
+            "set isolated leverage 1-5 on a USDT-SWAP "
+            "(1-2 on MU, SKHY, LITE, TSM, QQQ; demo or the live opt-in)"
+        ),
     )
     leverage.add_argument("--inst", required=True)
     leverage.add_argument("--lever", required=True)
@@ -170,7 +191,8 @@ def cli_demo(command: str, *, allow_orders: bool = False) -> bool:
     Demo place, cancel, order lookup, and set-leverage require ``OKX_DEMO=1``.
     Live place, cancel, ``smoke``, ``smoke-swap``, and ``set-leverage`` require
     ``OKX_LIVE_TRADE=1``, ``--allow-orders``, and ``OKX_DEMO`` unset or off.
-    ``--allow-orders`` alone does not make a write live.
+    ``--allow-orders`` alone does not make a write live. The mild-3.1 stub
+    uses that same pair of flags.
     """
     if command in _LIVE_ORDER_CMDS and env_flag("OKX_LIVE_TRADE"):
         if not allow_orders:
@@ -245,7 +267,7 @@ def _run(args: argparse.Namespace, client: PrivateClient) -> None:
             pos_side=args.pos_side,
             reduce_only=args.reduce_only,
         )
-        if client.demo:
+        if client.demo or args.inst in MILD31_STUB:
             _emit(placed)
             return
         _emit({"placed": placed, "cancelled": _cancel_live_place(client, args.inst, placed)})

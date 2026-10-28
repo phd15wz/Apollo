@@ -9,16 +9,18 @@ Enforced in this package
   variable unset, sends ``x-simulated-trading: 1``. Live mode is read-only
   balance, positions, and funding balances: ``demo=False``, or ``OKX_DEMO``
   unset on the CLI (explicit ``0`` / ``false`` / ``no`` / ``off`` too).
-  Amend stays on demo. Live place and cancel exist only for two resting
-  smokes, and only with an explicit opt-in (``OKX_LIVE_TRADE=1`` or
-  ``live_trade=True``) plus the order go flag: BTC-USDT cash, and one
-  BTC-USDT-SWAP limit (``tdMode`` ``isolated`` only). ``LIVE_TRADE_ENABLED``
-  is a tripwire: setting it ``True`` does not enable live trading; the
-  client refuses to start. The only account write is
+  Amend stays on demo. Live place and cancel exist only with an explicit
+  opt-in (``OKX_LIVE_TRADE=1`` or ``live_trade=True``) plus the order go
+  flag. That opens two resting smokes — BTC-USDT cash, and one
+  BTC-USDT-SWAP limit (``tdMode`` ``isolated`` only) — and the locked
+  mild-3.1 equity SWAP stub (MU, SKHY, LITE, TSM, QQQ ``USDT-SWAP``):
+  ``tdMode`` ``isolated``, the stub side, and ``sz`` at most the stub lot.
+  ``LIVE_TRADE_ENABLED`` is a tripwire: setting it ``True`` does not enable
+  live trading; the client refuses to start. The only account write is
   ``POST /api/v5/account/set-leverage``: ``mgnMode`` ``isolated``, a
-  USDT-SWAP ``instId``, and ``lever`` from 1 to 5, under that same opt-in.
-  set-position-mode, set-account-level, and every other account mutation
-  stay off.
+  USDT-SWAP ``instId``, and ``lever`` from 1 to 5 (1 to 2 on the five
+  mild-3.1 names), under that same opt-in. set-position-mode,
+  set-account-level, and every other account mutation stay off.
 * Allowlisted account, trade, and one funding read. ``GET /api/v5/asset/balances``
   is the only asset route. Withdraw, transfer, deposit, other ``/api/v5/asset``
   paths, and ``/api/v5/finance`` raise ``UnsafeEndpointError``.
@@ -31,11 +33,11 @@ Enforced in this package
 
 Deferred (not enforced here)
 ----------------------------
-* Live amend, and any live order that is not the BTC-USDT or BTC-USDT-SWAP
-  place-then-cancel smoke. Read-only live balance, positions, and funding
-  balances are already allowed. The smokes are opt-in, not a general live
-  Trade path. Cross margin, leverage above 5, and margin-mode changes stay
-  refused.
+* Live amend, and any live order that is not a BTC smoke or the mild-3.1
+  equity SWAP stub. Read-only live balance, positions, and funding balances
+  are already allowed. The smokes and the stub are opt-in, not a general
+  live Trade path. Cross margin, leverage above 5 (above 2 on the stub
+  names), and margin-mode changes stay refused.
 * Automatic margin from mark price, contract value, and leverage. Callers pass
   ``margin_usd``. Position ``margin`` is not converted or auto-fetched.
 * A persistent shared-cap ledger across processes. ``open_margins`` is an
@@ -92,6 +94,33 @@ LIVE_SWAP_SMOKE_ORD_TYPE = "limit"
 LIVE_SWAP_SMOKE_PX_MAX = "40000"
 _LIVE_CANCEL_INST_IDS = frozenset({LIVE_SMOKE_INST_ID, LIVE_SWAP_SMOKE_INST_ID})
 
+# Locked mild-3.1 equity SWAP stub (2026-10-28). Live place and cancel only.
+# Not a one-click book. Dual opt-in stays required. Isolated margin, the
+# stub side, and sz at most the lot. set-leverage on these names is 1-2.
+# Other account mutations, funding transfers, and withdraw stay off.
+MILD31_TD_MODE = "isolated"
+MILD31_MAX_LEVER = 2
+MILD31_LOT_STEP = Decimal("0.01")
+MILD31_ORD_TYPES = frozenset({"limit", "ioc"})
+
+
+@dataclass(frozen=True, slots=True)
+class Mild31Lot:
+    inst_id: str
+    side: str
+    max_sz: str
+
+
+MILD31_LOTS: tuple[Mild31Lot, ...] = (
+    Mild31Lot("MU-USDT-SWAP", "buy", "0.01"),
+    Mild31Lot("SKHY-USDT-SWAP", "buy", "0.03"),
+    Mild31Lot("LITE-USDT-SWAP", "buy", "0.01"),
+    Mild31Lot("TSM-USDT-SWAP", "buy", "0.02"),
+    Mild31Lot("QQQ-USDT-SWAP", "sell", "0.01"),
+)
+MILD31_STUB: dict[str, Mild31Lot] = {lot.inst_id: lot for lot in MILD31_LOTS}
+_MILD31_POS_SIDE = {"buy": "long", "sell": "short"}
+
 NAME_MARGIN_CAP_USD = 10.0
 GATE_SIZE_FRACTION = 0.5
 
@@ -112,7 +141,8 @@ LIVE_READ_PATHS = frozenset(
 )
 
 # Live POSTs a Trade key may sign, and only after the opt-in. Amend is absent.
-# set-leverage is the only account POST. Place and cancel stay the two smokes.
+# set-leverage is the only account POST. Place and cancel stay the two smokes
+# plus the mild-3.1 equity SWAP stub.
 SET_LEVERAGE_PATH = "/api/v5/account/set-leverage"
 # Book max. OKX accepts higher leverage; this package does not.
 MAX_SET_LEVERAGE = 5
@@ -196,8 +226,10 @@ def require_cli_demo() -> None:
     if raw not in _ON:
         raise LiveTradingDisabled(
             "CLI place, cancel, order lookup, and set-leverage require OKX_DEMO=1. "
-            "The live smokes and live set-leverage need OKX_LIVE_TRADE=1 and "
-            "--allow-orders (cash: smoke; SWAP: smoke-swap). "
+            "The live smokes, the mild-3.1 equity SWAP stub, and live "
+            "set-leverage need OKX_LIVE_TRADE=1 and --allow-orders "
+            "(cash: smoke; SWAP: smoke-swap; stub: place/cancel on "
+            "MU, SKHY, LITE, TSM, QQQ USDT-SWAP). "
             "Live Trade is not enabled."
         )
     resolve_demo(True)
@@ -207,12 +239,13 @@ def resolve_demo(demo: bool | None) -> bool:
     """Return whether signed calls use demo trading.
 
     ``True`` sends ``x-simulated-trading: 1``. ``False`` is a live key
-    (balance, positions, and funding balances, plus the opt-in smoke).
-    The library default (``demo=None`` and ``OKX_DEMO`` unset) stays demo.
-    Explicit off values (``0``, ``false``, ``no``, ``off``) select live.
-    ``LIVE_TRADE_ENABLED`` is not an unlock: if it is set, startup fails.
-    ``OKX_LIVE_TRADE`` does not change this function; it only opens the
-    smoke place and cancel paths and isolated set-leverage.
+    (balance, positions, and funding balances, plus the opt-in smokes and
+    the mild-3.1 stub). The library default (``demo=None`` and ``OKX_DEMO``
+    unset) stays demo. Explicit off values (``0``, ``false``, ``no``,
+    ``off``) select live. ``LIVE_TRADE_ENABLED`` is not an unlock: if it
+    is set, startup fails. ``OKX_LIVE_TRADE`` does not change this function;
+    it only opens the smoke and mild-3.1 place and cancel paths and
+    isolated set-leverage.
     """
     _refuse_live_trade_tripwire()
     env = _demo_env()
@@ -254,8 +287,10 @@ def assert_live_read_only(demo: bool, method: str, path: str, *, live_trade: boo
     raise LiveTradingDisabled(
         "Live mode is read-only for balance, positions, and funding. "
         "Place, amend, and cancel stay on demo (OKX_DEMO=1) unless "
-        "OKX_LIVE_TRADE=1 opens place and cancel for the BTC-USDT cash smoke "
-        "or the BTC-USDT-SWAP smoke, and isolated set-leverage at lever 1-5. "
+        "OKX_LIVE_TRADE=1 opens place and cancel for the BTC-USDT cash smoke, "
+        "the BTC-USDT-SWAP smoke, or the mild-3.1 equity SWAP stub "
+        "(MU, SKHY, LITE, TSM, QQQ; isolated; sz at most the stub lot), "
+        "and isolated set-leverage at lever 1-5 (1-2 on those five names). "
         "Live Trade is not enabled."
     )
 
@@ -342,30 +377,114 @@ def assert_live_smoke_place(
     raise LiveTradingDisabled(_live_place_message())
 
 
-def assert_live_smoke_cancel(inst_id: str) -> None:
-    if inst_id not in _LIVE_CANCEL_INST_IDS:
-        raise LiveTradingDisabled(
-            "Live cancel is only for the BTC-USDT cash smoke or the BTC-USDT-SWAP smoke."
+def _mild31_place_message() -> str:
+    caps = ", ".join(f"{lot.inst_id} {lot.side} sz<={lot.max_sz}" for lot in MILD31_LOTS)
+    return (
+        "Live mild-3.1 place is an isolated equity SWAP (limit or ioc), "
+        "the locked side, reduceOnly off, and sz at most the stub lot "
+        f"(step {MILD31_LOT_STEP}). "
+        f"Caps: {caps}. "
+        f"set-leverage on these names is isolated and at most {MILD31_MAX_LEVER}. "
+        "Other instruments stay on the BTC smokes."
+    )
+
+
+def assert_mild31_place(
+    *,
+    inst_id: str,
+    side: str,
+    sz: str,
+    td_mode: str,
+    ord_type: str,
+    px: str,
+    pos_side: str = "",
+    reduce_only: bool = False,
+) -> None:
+    """Refuse a live place outside the locked mild-3.1 equity SWAP stub."""
+    lot = MILD31_STUB.get(inst_id)
+    expected_pos = _MILD31_POS_SIDE.get(side, "")
+    if (
+        lot is None
+        or side != lot.side
+        or td_mode != MILD31_TD_MODE
+        or ord_type not in MILD31_ORD_TYPES
+        or reduce_only
+        or pos_side not in ("", expected_pos)
+    ):
+        raise LiveTradingDisabled(_mild31_place_message())
+    size = _smoke_decimal(sz, "sz")
+    _smoke_decimal(px, "px")
+    cap = Decimal(lot.max_sz)
+    if size > cap or (size % MILD31_LOT_STEP) != 0:
+        raise LiveTradingDisabled(_mild31_place_message())
+
+
+def assert_live_place(
+    *,
+    inst_id: str,
+    side: str,
+    sz: str,
+    td_mode: str,
+    ord_type: str,
+    px: str,
+    pos_side: str = "",
+    reduce_only: bool = False,
+) -> None:
+    """Refuse a live place outside the BTC smokes or the mild-3.1 stub."""
+    if inst_id in (LIVE_SMOKE_INST_ID, LIVE_SWAP_SMOKE_INST_ID):
+        assert_live_smoke_place(
+            inst_id=inst_id,
+            side=side,
+            sz=sz,
+            td_mode=td_mode,
+            ord_type=ord_type,
+            px=px,
+            pos_side=pos_side,
+            reduce_only=reduce_only,
         )
+        return
+    if inst_id in MILD31_STUB:
+        assert_mild31_place(
+            inst_id=inst_id,
+            side=side,
+            sz=sz,
+            td_mode=td_mode,
+            ord_type=ord_type,
+            px=px,
+            pos_side=pos_side,
+            reduce_only=reduce_only,
+        )
+        return
+    raise LiveTradingDisabled(_live_place_message() + " " + _mild31_place_message())
 
 
-def _set_leverage_text(value: object) -> str:
-    """Canonical lever string in ``1`` .. ``MAX_SET_LEVERAGE``.
+def assert_live_smoke_cancel(inst_id: str) -> None:
+    if inst_id in _LIVE_CANCEL_INST_IDS or inst_id in MILD31_STUB:
+        return
+    raise LiveTradingDisabled(
+        "Live cancel is only for the BTC-USDT cash smoke, the BTC-USDT-SWAP smoke, "
+        "or the mild-3.1 equity SWAP stub (MU, SKHY, LITE, TSM, QQQ USDT-SWAP)."
+    )
+
+
+def _set_leverage_text(value: object, *, max_lever: int = MAX_SET_LEVERAGE) -> str:
+    """Canonical lever string in ``1`` .. ``max_lever``.
 
     Accepts a positive integer or a digit string. Floats, booleans, signs,
-    decimals, and leading zeros are refused.
+    decimals, and leading zeros are refused. The book max is
+    ``MAX_SET_LEVERAGE``. Mild-3.1 names pass ``MILD31_MAX_LEVER``.
     """
     if isinstance(value, bool) or not isinstance(value, (int, str)):
-        raise ValueError(f"lever must be a positive integer from 1 to {MAX_SET_LEVERAGE}")
+        raise ValueError(f"lever must be a positive integer from 1 to {max_lever}")
     if isinstance(value, int):
         number = value
     else:
         text = value.strip()
         if not text.isdigit() or (len(text) > 1 and text.startswith("0")):
-            raise ValueError(f"lever must be a positive integer from 1 to {MAX_SET_LEVERAGE}")
+            raise ValueError(f"lever must be a positive integer from 1 to {max_lever}")
         number = int(text)
-    if number < 1 or number > MAX_SET_LEVERAGE:
-        raise ValueError(f"lever must be a positive integer from 1 to {MAX_SET_LEVERAGE}")
+    if number < 1 or number > max_lever:
+        raise ValueError(f"lever must be a positive integer from 1 to {max_lever}")
     return str(number)
 
 
@@ -391,9 +510,10 @@ def assert_set_leverage_payload(payload: Mapping[str, Any] | None) -> dict[str, 
     inst_id = validate_inst_id(str(raw["instId"]))
     if not inst_id.endswith("-USDT-SWAP"):
         raise ValueError(f"instId must be a USDT-SWAP id, got {inst_id!r}")
+    max_lever = MILD31_MAX_LEVER if inst_id in MILD31_STUB else MAX_SET_LEVERAGE
     body = {
         "instId": inst_id,
-        "lever": _set_leverage_text(raw["lever"]),
+        "lever": _set_leverage_text(raw["lever"], max_lever=max_lever),
         "mgnMode": "isolated",
     }
     if "posSide" in raw:
@@ -414,8 +534,10 @@ def assert_live_trade_payload(method: str, path: str, payload: Mapping[str, Any]
     if (method_u, path) == ("POST", "/api/v5/trade/order"):
         extra = set(body) - _LIVE_PLACE_KEYS
         if extra or "px" not in body:
-            raise LiveTradingDisabled("Live place payload is outside the cash or SWAP smoke shape.")
-        assert_live_smoke_place(
+            raise LiveTradingDisabled(
+                "Live place payload is outside the cash smoke, SWAP smoke, or mild-3.1 stub."
+            )
+        assert_live_place(
             inst_id=str(body.get("instId") or ""),
             side=str(body.get("side") or ""),
             sz=str(body.get("sz") or ""),
@@ -429,7 +551,9 @@ def assert_live_trade_payload(method: str, path: str, payload: Mapping[str, Any]
     if (method_u, path) == ("POST", "/api/v5/trade/cancel-order"):
         extra = set(body) - _LIVE_CANCEL_KEYS
         if extra or not (body.get("ordId") or body.get("clOrdId")):
-            raise LiveTradingDisabled("Live cancel payload is outside the cash or SWAP smoke.")
+            raise LiveTradingDisabled(
+                "Live cancel payload is outside the cash smoke, SWAP smoke, or mild-3.1 stub."
+            )
         assert_live_smoke_cancel(str(body.get("instId") or ""))
         return
     raise LiveTradingDisabled(f"Live Trade is not enabled for {method_u} {path}.")

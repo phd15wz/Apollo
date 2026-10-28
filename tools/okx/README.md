@@ -5,8 +5,12 @@ data. It cannot trade. Stage 2 (`PrivateClient`) signs account reads and
 demo orders. Live mode reads trading balance, positions, and funding
 balances. Opt-in smokes may place and immediately cancel one resting
 BTC-USDT cash limit, or one resting BTC-USDT-SWAP limit with `tdMode`
-`isolated`, on a live Trade key. Amend stays on demo. It cannot withdraw
-or set leverage. Withdrawal stays out.
+`isolated`, on a live Trade key. The same dual opt-in (`OKX_LIVE_TRADE=1`
+and the order go flag) also allows the locked mild-3.1 equity SWAP stub:
+`MU-USDT-SWAP`, `SKHY-USDT-SWAP`, `LITE-USDT-SWAP`, `TSM-USDT-SWAP`, and
+`QQQ-USDT-SWAP`, isolated only, size at most the stub lot, leverage at
+most 2× on those names. Stub orders rest; they are not auto-cancelled.
+Amend stays on demo. Withdrawal stays out.
 
 Docs: [OKX API v5](https://www.okx.com/docs-v5/en/). This package is written
 from those public endpoints. It does not vendor [OKX Agent Trade Kit](https://github.com/okx/agent-trade-kit).
@@ -285,7 +289,7 @@ writes live. A value of `OKX_DEMO` other than on or off still raises.
 Live place and cancel are a separate opt-in, off by default. Set
 `OKX_LIVE_TRADE=1` (or pass `live_trade=True`) **and** the order go flag
 (`allow_orders=True`, `OKX_ALLOW_ORDERS=1`, or CLI `--allow-orders`).
-`OKX_READ_ONLY=1` still wins. Two live orders are allowed, both resting
+`OKX_READ_ONLY=1` still wins. Two live smokes are allowed, both resting
 limit buys at px at most `40000`, then cancel on that same client:
 
 - BTC-USDT cash, size `0.001` (the 2026-10-24 demo smoke). `smoke_place_cancel`.
@@ -293,16 +297,35 @@ limit buys at px at most `40000`, then cancel on that same client:
   `0.01` BTC), `tdMode` `isolated` only. That is the strategy default.
   `smoke_swap_place_cancel`.
 
-`cross` is still a demo `place_order` mode. It is not the live SWAP smoke.
-Anything else, including amend, another instrument, a larger size, a higher
-price, or a live SWAP with `tdMode` `cross`, stays `LiveTradingDisabled`.
+The same two flags also open the locked mild-3.1 equity SWAP stub. There
+is no one-click book. `place_order` / CLI `place` may rest one order, and
+`cancel_order` / CLI `cancel` may pull it. `tdMode` is `isolated` only.
+`ordType` is `limit` or `ioc`. `reduceOnly` stays off. `posSide` is empty
+or the matching isolated side (`long` on a buy, `short` on a sell). Size
+is a multiple of `0.01` and at most the stub lot:
+
+| `instId` | Side | Max `sz` |
+| --- | --- | ---: |
+| `MU-USDT-SWAP` | buy | 0.01 |
+| `SKHY-USDT-SWAP` | buy | 0.03 |
+| `LITE-USDT-SWAP` | buy | 0.01 |
+| `TSM-USDT-SWAP` | buy | 0.02 |
+| `QQQ-USDT-SWAP` | sell | 0.01 |
+
+A live CLI `place` of a smoke still cancels before exit. A live CLI
+`place` of one of these five rests.
+
+`cross` is still a demo `place_order` mode. It is not a live SWAP shape.
+Anything else, including amend, another instrument, a larger size, the
+wrong side, or a live SWAP with `tdMode` `cross`, stays `LiveTradingDisabled`.
 
 `set_leverage` is the only account write. It uses the same dual opt-in on a
 live key, and the demo go flag when `OKX_DEMO=1`. The body is `mgnMode`
-`isolated`, a `*-USDT-SWAP` `instId`, and `lever` from 1 to 5. `cross`,
-leverage above 5, `ccy`, set-position-mode, and set-account-level stay
-refused. Optional `posSide` is `long` or `short` only, for OKX isolated
-long/short mode; net mode omits it.
+`isolated`, a `*-USDT-SWAP` `instId`, and `lever` from 1 to 5. The five
+mild-3.1 names stop at 2. `cross`, leverage above that cap, `ccy`,
+set-position-mode, and set-account-level stay refused. Optional `posSide`
+is `long` or `short` only, for OKX isolated long/short mode; net mode
+omits it.
 
 `LIVE_TRADE_ENABLED` in `guards.py` is a tripwire, not a switch. It is
 `False`. Setting it to `True` makes the client refuse to start, including
@@ -361,6 +384,18 @@ smoke = PrivateClient(demo=False, allow_orders=True, live_trade=True)
 placed, cancelled = smoke.smoke_place_cancel(px="40000", margin_usd=1)
 swap_placed, swap_cancelled = smoke.smoke_swap_place_cancel(px="40000", margin_usd=1)
 smoke.set_leverage("BTC-USDT-SWAP", "1")  # isolated, lever 1-5; no ccy
+# Mild-3.1 stub: rests (no auto-cancel). Isolated, sz at the lot cap, lever <= 2.
+stub = smoke.place_order(
+    "MU-USDT-SWAP",
+    side="buy",
+    sz="0.01",
+    td_mode="isolated",
+    ord_type="limit",
+    px="967",
+    margin_usd=5,
+)
+smoke.set_leverage("MU-USDT-SWAP", "2")
+smoke.cancel_order("MU-USDT-SWAP", ord_id=stub.ord_id)
 ```
 
 Allowlisted routes only:
@@ -371,7 +406,7 @@ Allowlisted routes only:
 | GET | `/api/v5/asset/balances` (funding account; optional `ccy`) |
 | GET | `/api/v5/trade/order`, `/api/v5/trade/orders-pending`, `/api/v5/trade/orders-history`, `/api/v5/trade/orders-history-archive` |
 | POST | `/api/v5/trade/order`, `/api/v5/trade/cancel-order`, `/api/v5/trade/amend-order` |
-| POST | `/api/v5/account/set-leverage` (isolated, USDT-SWAP, lever 1-5 only) |
+| POST | `/api/v5/account/set-leverage` (isolated, USDT-SWAP, lever 1-5; 1-2 on the mild-3.1 names) |
 
 Anything else, including other `/api/v5/asset` routes, `/api/v5/finance`, and
 any path containing withdraw, transfer, or deposit, raises `UnsafeEndpointError`.
@@ -384,16 +419,20 @@ Enforced now:
 1. **Read-only kill switch.** POSTs, including cancel, refuse unless
    `allow_orders=True` or `OKX_ALLOW_ORDERS=1`. `read_only=True`,
    `--read-only`, and `OKX_READ_ONLY=1` override the go flag.
-2. **Demo writes, live reads, two live smokes.** Demo requests send
-   `x-simulated-trading: 1`. Live mode omits that header on balance,
-   positions, and funding balances. Live place and cancel also omit it, and
-   only when `OKX_LIVE_TRADE=1` or `live_trade=True` is set with the go
-   flag. The live orders are a BTC-USDT cash limit buy, size `0.001`,
-   px `<= 40000`, and a BTC-USDT-SWAP limit buy, size `0.01`, `tdMode`
-   `isolated`, px `<= 40000`. Each is cancelled on that same client.
+2. **Demo writes, live reads, two live smokes, one equity stub.** Demo
+   requests send `x-simulated-trading: 1`. Live mode omits that header on
+   balance, positions, and funding balances. Live place and cancel also
+   omit it, and only when `OKX_LIVE_TRADE=1` or `live_trade=True` is set
+   with the go flag. The smoke orders are a BTC-USDT cash limit buy, size
+   `0.001`, px `<= 40000`, and a BTC-USDT-SWAP limit buy, size `0.01`,
+   `tdMode` `isolated`, px `<= 40000`. Each smoke is cancelled on that
+   same client. The mild-3.1 stub is MU, SKHY, LITE, and TSM buys plus a
+   QQQ sell, `tdMode` `isolated`, `limit` or `ioc`, size at most
+   0.01 / 0.03 / 0.01 / 0.02 / 0.01. Those orders rest until `cancel`.
    Amend stays on demo. A live SWAP with `tdMode` `cross` is refused.
-   Demo `place` still accepts `cross`. Isolated set-leverage (lever 1-5,
-   USDT-SWAP) uses the same live opt-in, or demo plus the go flag.
+   Demo `place` still accepts `cross`. Isolated set-leverage (lever 1-5
+   on a USDT-SWAP, 1-2 on the five stub names) uses the same live opt-in,
+   or demo plus the go flag.
 3. **No withdraw / transfer / deposit** paths. Same exception type as the
    public client's blocked routes. `GET /api/v5/asset/balances` is unchanged.
 4. **Soft cap.** Incremental `margin_usd` plus caller-supplied
@@ -408,10 +447,10 @@ Enforced now:
 
 Deferred (not done in this package):
 
-- Live amend, and any live order besides the BTC-USDT and BTC-USDT-SWAP
-  (`tdMode` `isolated`) place-then-cancel smokes. No set-position-mode,
-  set-account-level, or other account-config routes. set-leverage stays
-  isolated and at most 5.
+- Live amend, and any live order besides the BTC smokes and the mild-3.1
+  equity SWAP stub. No set-position-mode, set-account-level, or other
+  account-config routes. set-leverage stays isolated and at most 5
+  (at most 2 on the stub names).
 - Mark × contract value × size / leverage margin math. Callers pass
   `margin_usd`. `open_margins_from_positions` only sums the `margin` field
   already on those objects; it does not convert currency and it is not
@@ -429,16 +468,18 @@ Deferred (not done in this package):
 
 No key arguments. `balance`, `positions`, and `funding` hit the live account
 when `OKX_DEMO` is unset or off, without `--allow-orders`. Demo place, cancel,
-and order lookup still require `OKX_DEMO=1`. The live smokes require
-`OKX_LIVE_TRADE=1`, `--allow-orders`, and `OKX_DEMO` unset or off. `smoke`
-is the cash order. `smoke-swap` is the BTC-USDT-SWAP order at `tdMode`
-`isolated` (no other mode). Both cancel in the same process. A live `place`
-of either smoke shape cancels before the process exits. Live `cancel` is
-only those two instruments, for a retry. Order lookup and amend are not live.
-`set-leverage` is isolated, lever 1-5, on a USDT-SWAP. Demo needs
-`OKX_DEMO=1` and `--allow-orders`. Live needs `OKX_LIVE_TRADE=1`,
-`--allow-orders`, and `OKX_DEMO` unset or off. `--mgn-mode` accepts only
-`isolated`.
+and order lookup still require `OKX_DEMO=1`. The live smokes and the
+mild-3.1 stub require `OKX_LIVE_TRADE=1`, `--allow-orders`, and `OKX_DEMO`
+unset or off. `smoke` is the cash order. `smoke-swap` is the BTC-USDT-SWAP
+order at `tdMode` `isolated` (no other mode). Both cancel in the same
+process. A live `place` of either smoke shape cancels before the process
+exits. A live `place` on MU, SKHY, LITE, TSM, or QQQ USDT-SWAP rests when
+it matches the stub (isolated, locked side, sz at most the lot). Live
+`cancel` is those instruments plus the two smokes. Order lookup and amend
+are not live. `set-leverage` is isolated, lever 1-5, on a USDT-SWAP, and
+lever 1-2 on the five stub names. Demo needs `OKX_DEMO=1` and
+`--allow-orders`. Live needs `OKX_LIVE_TRADE=1`, `--allow-orders`, and
+`OKX_DEMO` unset or off. `--mgn-mode` accepts only `isolated`.
 
 ```bash
 python3 -m tools.okx.private_cli balance
@@ -457,6 +498,9 @@ OKX_LIVE_TRADE=1 python3 -m tools.okx.private_cli --allow-orders smoke-swap \
   --px 40000 --margin-usd 1
 OKX_LIVE_TRADE=1 python3 -m tools.okx.private_cli --allow-orders set-leverage \
   --inst BTC-USDT-SWAP --lever 1
+OKX_LIVE_TRADE=1 python3 -m tools.okx.private_cli --allow-orders place \
+  --inst QQQ-USDT-SWAP --side sell --sz 0.01 --td-mode isolated \
+  --ord-type limit --px 721 --margin-usd 4
 OKX_DEMO=1 python3 -m tools.okx.private_cli --allow-orders set-leverage \
   --inst BTC-USDT-SWAP --lever 1 --mgn-mode isolated
 ```
@@ -483,11 +527,11 @@ need API keys.
 - Private client: demo header on demo calls; live balance, positions, and
   funding balances omit it. Allowlisted trade and account routes, plus
   `GET /api/v5/asset/balances`. No withdrawal endpoints. Live place and
-  cancel omit the demo header only for the BTC-USDT cash smoke and the
-  BTC-USDT-SWAP `isolated` smoke under `OKX_LIVE_TRADE=1` and the order go
-  flag. Live amend stays refused. Live SWAP `cross` stays refused.
-  Live set-leverage is isolated, lever 1-5, on a USDT-SWAP, under that
-  same opt-in.
+  cancel omit the demo header only for the BTC-USDT cash smoke, the
+  BTC-USDT-SWAP `isolated` smoke, and the mild-3.1 equity SWAP stub
+  under `OKX_LIVE_TRADE=1` and the order go flag. Live amend stays refused.
+  Live SWAP `cross` stays refused. Live set-leverage is isolated, lever
+  1-5 on a USDT-SWAP (1-2 on the stub names), under that same opt-in.
 - Unit tests mock HTTP with recorded JSON under `tests/fixtures/` and use an
   in-memory fake WebSocket (no network). Live public tests stay behind
   `OKX_LIVE=1`. Demo private tests stay behind `OKX_DEMO=1` plus a key.
