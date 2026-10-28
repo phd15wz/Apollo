@@ -93,12 +93,14 @@ class PrivateChannelError(UnsafeEndpointError):
 
 
 class LiveTradingDisabled(UnsafeEndpointError):
-    """Live Trade is closed, or this live call is outside the two smokes.
+    """Live Trade is closed, or this live call is outside the allowlist.
 
-    The smokes are BTC-USDT cash and one BTC-USDT-SWAP limit. Live reads
-    remain balance, positions, and funding balances. Live place, cancel, and
-    isolated set-leverage (lever 1-5) need ``OKX_LIVE_TRADE=1`` and still
-    cannot withdraw or change position mode.
+    The allowlist is the BTC-USDT cash smoke, one BTC-USDT-SWAP limit, and
+    the mild-3.1 equity SWAP stub (MU, SKHY, LITE, TSM, QQQ; isolated;
+    sz at most the stub lot). Live reads remain balance, positions, and
+    funding balances. Live place, cancel, and isolated set-leverage
+    (lever 1-5, or 1-2 on the stub names) need ``OKX_LIVE_TRADE=1`` and
+    the order go flag, and still cannot withdraw or change position mode.
     """
 
 

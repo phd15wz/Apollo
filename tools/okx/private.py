@@ -3,12 +3,14 @@
 Public market data stays on ``PublicClient`` and never uses this module.
 Demo calls send ``x-simulated-trading: 1``. Live mode (``demo=False``) signs
 balance, positions, and funding balances and omits that header. Live place
-and cancel are the BTC-USDT cash smoke and one BTC-USDT-SWAP smoke, and
-only when ``OKX_LIVE_TRADE=1`` (or ``live_trade=True``) is set with the
-order go flag. Amend stays on demo. The only account write is isolated
-set-leverage (USDT-SWAP, lever 1-5) under that same opt-in on live, or
-the demo go flag. Withdrawal, deposit, transfer, and every other asset
-route are refused. Writes need an explicit go flag; see ``tools.okx.guards``.
+and cancel are the BTC-USDT cash smoke, one BTC-USDT-SWAP smoke, and the
+locked mild-3.1 equity SWAP stub (MU, SKHY, LITE, TSM, QQQ; isolated;
+sz at most the stub lot), and only when ``OKX_LIVE_TRADE=1`` (or
+``live_trade=True``) is set with the order go flag. Amend stays on demo.
+The only account write is isolated set-leverage (USDT-SWAP, lever 1-5,
+or 1-2 on the five stub names) under that same opt-in on live, or the
+demo go flag. Withdrawal, deposit, transfer, and every other asset route
+are refused. Writes need an explicit go flag; see ``tools.okx.guards``.
 """
 
 from __future__ import annotations
@@ -46,9 +48,9 @@ from tools.okx.guards import (
     PRIVATE_RATE_LIMITS,
     SET_LEVERAGE_PATH,
     RiskGuards,
+    assert_live_place,
     assert_live_read_only,
     assert_live_smoke_cancel,
-    assert_live_smoke_place,
     assert_live_trade_payload,
     assert_private_request,
     assert_set_leverage_payload,
@@ -448,12 +450,14 @@ class PrivateClient:
         mgn_mode: str = "isolated",
         pos_side: str = "",
     ) -> LeverageResult:
-        """Set isolated leverage from 1 to 5 on a USDT-SWAP.
+        """Set isolated leverage on a USDT-SWAP.
 
         Demo needs the order go flag. Live needs that flag and
         ``live_trade`` / ``OKX_LIVE_TRADE=1``. ``mgn_mode`` must be
-        ``isolated``. ``pos_side`` is omitted unless it is ``long`` or
-        ``short`` (OKX isolated long/short mode). ``ccy`` is not sent.
+        ``isolated``. Lever is 1 to 5, except the mild-3.1 names
+        (MU, SKHY, LITE, TSM, QQQ USDT-SWAP), which stop at 2.
+        ``pos_side`` is omitted unless it is ``long`` or ``short``
+        (OKX isolated long/short mode). ``ccy`` is not sent.
         """
         self._refuse_live_write(SET_LEVERAGE_PATH)
         self._guards.assert_orders_enabled()
@@ -497,7 +501,7 @@ class PrivateClient:
         elif px not in (None, ""):
             px_n = _decimal("px", str(px))
         if not self.demo:
-            assert_live_smoke_place(
+            assert_live_place(
                 inst_id=inst,
                 side=side_n,
                 sz=sz_n,

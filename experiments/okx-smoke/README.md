@@ -19,7 +19,9 @@ Never commit secrets, API keys, passphrases, account identifiers, order ids, or 
 
 The client can place and cancel two resting limits on a live Trade key when `OKX_LIVE_TRADE=1` and `--allow-orders` are both set and `OKX_DEMO` is unset. Cash: `BTC-USDT`, size `0.001`, px at most `40000`, via `smoke`. SWAP: `BTC-USDT-SWAP`, size `0.01`, `tdMode` `isolated` only (strategy default), px at most `40000`, via `smoke-swap`. Both cancel in the same process. `cross` is not the live SWAP shape. Withdraw stays off. Log a run here only after it happens. Do not record secrets, order ids, or balances.
 
-`set-leverage` can set isolated leverage from 1 to 5 on a USDT-SWAP under those same two flags. Demo uses `OKX_DEMO=1` and `--allow-orders`. `cross` stays refused. Log a run here only after it happens.
+`set-leverage` can set isolated leverage from 1 to 5 on a USDT-SWAP under those same two flags. Demo uses `OKX_DEMO=1` and `--allow-orders`. `cross` stays refused. The five mild-3.1 names (MU, SKHY, LITE, TSM, QQQ USDT-SWAP) are capped at lever 2. Log a run here only after it happens.
+
+The locked mild-3.1 stub can place and cancel under the same two flags: isolated only, MU/LITE buy sz ≤ 0.01, SKHY buy sz ≤ 0.03, TSM buy sz ≤ 0.02, QQQ sell sz ≤ 0.01. Those orders rest. This directory does not place them. Log a run here only after it happens.
 
 ## Log
 

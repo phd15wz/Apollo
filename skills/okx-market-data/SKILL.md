@@ -20,10 +20,13 @@ Live mode reads balance, positions, and `GET /api/v5/asset/balances`
 (`demo=False`, or CLI with `OKX_DEMO` unset). Demo writes need a go flag.
 The live writes are the BTC-USDT cash place-then-cancel smoke, one
 BTC-USDT-SWAP place-then-cancel smoke (`tdMode` `isolated`, the strategy
-default), and isolated set-leverage on a USDT-SWAP at lever 1-5. Each needs
-`OKX_LIVE_TRADE=1` plus that go flag. There are no withdrawal methods.
-Do not use it as a market-data source. Do not widen the live smokes, raise
-the leverage cap, or add a withdrawal path.
+default), the locked mild-3.1 equity SWAP stub (MU, SKHY, LITE, TSM, QQQ;
+isolated; sz at most 0.01 / 0.03 / 0.01 / 0.02 / 0.01; QQQ is sell), and
+isolated set-leverage on a USDT-SWAP at lever 1-5 (1-2 on those five
+names). Each needs `OKX_LIVE_TRADE=1` plus that go flag. There are no
+withdrawal methods. Do not use it as a market-data source. Do not add
+instruments, raise the stub size or leverage caps, or add a withdrawal
+path.
 
 ## Safety stance
 
@@ -37,19 +40,23 @@ the leverage cap, or add a withdrawal path.
    Live balance, positions, and funding balances omit that header.
    `OKX_ALLOW_ORDERS` does not by itself make a write live. The only asset
    route is `GET /api/v5/asset/balances`.
-3. **Live Trade smokes** are opt-in. `OKX_LIVE_TRADE=1` (or `live_trade=True`)
-   plus the order go flag allows two resting limit buys, each cancelled on
-   that same client: BTC-USDT cash, size `0.001`, px at most `40000`; and
-   BTC-USDT-SWAP, size `0.01`, `tdMode` `isolated` only, px at most `40000`.
-   `cross` is not the live SWAP shape. Amend, other instruments, other
-   sizes, and asset mutations stay refused.
-   `LIVE_TRADE_ENABLED` remains a source tripwire, not the switch. Live
-   reads do not flip it. Do not widen this path.
+3. **Live Trade smokes and the mild-3.1 stub** are opt-in.
+   `OKX_LIVE_TRADE=1` (or `live_trade=True`) plus the order go flag allows
+   two resting limit buys, each cancelled on that same client: BTC-USDT
+   cash, size `0.001`, px at most `40000`; and BTC-USDT-SWAP, size `0.01`,
+   `tdMode` `isolated` only, px at most `40000`. The same flags allow one
+   resting mild-3.1 order on MU, SKHY, LITE, TSM (buy) or QQQ (sell),
+   `tdMode` `isolated`, `limit` or `ioc`, sz at most 0.01 / 0.03 / 0.01 /
+   0.02 / 0.01. That order is not auto-cancelled. `cross` is not a live
+   SWAP shape. Amend, other instruments, larger sizes, the wrong side,
+   and asset mutations stay refused. `LIVE_TRADE_ENABLED` remains a source
+   tripwire, not the switch. Live reads do not flip it. Do not add names.
 4. **set-leverage** is the only account write. `POST /api/v5/account/set-leverage`
-   with `mgnMode=isolated`, a `*-USDT-SWAP` `instId`, and `lever` from 1 to 5.
-   Live uses the same dual opt-in as the smokes. Demo uses `OKX_DEMO=1` plus
-   the go flag. `cross`, lever above 5, `ccy`, set-position-mode, and
-   set-account-level stay refused. Do not widen this call.
+   with `mgnMode=isolated`, a `*-USDT-SWAP` `instId`, and `lever` from 1 to 5
+   (1 to 2 on the five mild-3.1 names). Live uses the same dual opt-in as
+   the smokes. Demo uses `OKX_DEMO=1` plus the go flag. `cross`, lever
+   above the cap, `ccy`, set-position-mode, and set-account-level stay
+   refused. Do not widen this call.
 
 If a task needs an endpoint outside the public allowlist and outside the
 stage-2 allowlist (trade routes, balance/positions/funding reads, and
