@@ -21,12 +21,13 @@ Live mode reads balance, positions, and `GET /api/v5/asset/balances`
 The live writes are the BTC-USDT cash place-then-cancel smoke, one
 BTC-USDT-SWAP place-then-cancel smoke (`tdMode` `isolated`, the strategy
 default), the locked mild-3.1 equity SWAP stub (MU, SKHY, LITE, TSM, QQQ;
-isolated; sz at most 0.01 / 0.03 / 0.01 / 0.02 / 0.01; QQQ is sell), and
+isolated; sz at most 0.01 / 0.03 / 0.01 / 0.02 / 0.01; QQQ is sell), one
+LITE reduce-only sell (sz at most 0.01) as a future close shape, and
 isolated set-leverage on a USDT-SWAP at lever 1-5 (1-2 on those five
-names). Each needs `OKX_LIVE_TRADE=1` plus that go flag. There are no
-withdrawal methods. Do not use it as a market-data source. Do not add
-instruments, raise the stub size or leverage caps, or add a withdrawal
-path.
+names). Each needs `OKX_LIVE_TRADE=1` plus that go flag. The LITE live
+exit is deferred (owner hold). There are no withdrawal methods. Do not
+use it as a market-data source. Do not add instruments, raise the stub
+size or leverage caps, add another close name, or add a withdrawal path.
 
 ## Safety stance
 
@@ -47,9 +48,16 @@ path.
    `tdMode` `isolated` only, px at most `40000`. The same flags allow one
    resting mild-3.1 order on MU, SKHY, LITE, TSM (buy) or QQQ (sell),
    `tdMode` `isolated`, `limit` or `ioc`, sz at most 0.01 / 0.03 / 0.01 /
-   0.02 / 0.01. That order is not auto-cancelled. `cross` is not a live
-   SWAP shape. Amend, other instruments, larger sizes, the wrong side,
-   and asset mutations stay refused. `LIVE_TRADE_ENABLED` remains a source
+   0.02 / 0.01. That order is not auto-cancelled. The same flags allow
+   one reduce-only close: `LITE-USDT-SWAP` sell, sz at most 0.01, `limit`
+   or `ioc`, `posSide` empty (net mode omits it) or `long` (isolated
+   long/short close of the long). The command shape is in
+   `tools/okx/README.md`. It is the path for a future dual-flag close.
+   The LITE live exit is deferred (owner hold). Do not place that close
+   from this skill, and do not add a name-stop watcher. `cross` is not a
+   live SWAP shape. Amend, other instruments, larger sizes, the wrong
+   side, reduce-only on MU, SKHY, TSM, or QQQ, and asset mutations stay
+   refused. `LIVE_TRADE_ENABLED` remains a source
    tripwire, not the switch. Live reads do not flip it. Do not add names.
 4. **set-leverage** is the only account write. `POST /api/v5/account/set-leverage`
    with `mgnMode=isolated`, a `*-USDT-SWAP` `instId`, and `lever` from 1 to 5

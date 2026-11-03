@@ -10,6 +10,9 @@ and the order go flag) also allows the locked mild-3.1 equity SWAP stub:
 `MU-USDT-SWAP`, `SKHY-USDT-SWAP`, `LITE-USDT-SWAP`, `TSM-USDT-SWAP`, and
 `QQQ-USDT-SWAP`, isolated only, size at most the stub lot, leverage at
 most 2× on those names. Stub orders rest; they are not auto-cancelled.
+The same flags also allow one reduce-only close shape: `LITE-USDT-SWAP`
+sell, sz at most 0.01. That shape is for a future dual-flag close. The
+LITE live exit is deferred (owner hold). This package does not place it.
 Amend stays on demo. Withdrawal stays out.
 
 Docs: [OKX API v5](https://www.okx.com/docs-v5/en/). This package is written
@@ -300,7 +303,7 @@ limit buys at px at most `40000`, then cancel on that same client:
 The same two flags also open the locked mild-3.1 equity SWAP stub. There
 is no one-click book. `place_order` / CLI `place` may rest one order, and
 `cancel_order` / CLI `cancel` may pull it. `tdMode` is `isolated` only.
-`ordType` is `limit` or `ioc`. `reduceOnly` stays off. `posSide` is empty
+`ordType` is `limit` or `ioc`. Opens keep `reduceOnly` off. `posSide` is empty
 or the matching isolated side (`long` on a buy, `short` on a sell). Size
 is a multiple of `0.01` and at most the stub lot:
 
@@ -315,9 +318,25 @@ is a multiple of `0.01` and at most the stub lot:
 A live CLI `place` of a smoke still cancels before exit. A live CLI
 `place` of one of these five rests.
 
+One close shape uses the same dual opt-in. It is the path for a future
+dual-flag close. The LITE live exit is deferred (owner hold). This client
+does not watch a name-stop and does not send the close on its own.
+`reduceOnly` is required. `side` is `sell`. `sz` is a multiple of `0.01`
+and at most `0.01`. `ordType` is `limit` or `ioc`. `tdMode` is `isolated`.
+`posSide` is empty or `long`. Empty is net mode: this package omits the
+field, and the literal `net` stays refused, as on the open stub and on
+set-leverage. `long` is the isolated long/short close of the long.
+`short` is a different position. A live CLI `place` of this close rests,
+the same way the open stub rests.
+
+| `instId` | Side | Max `sz` | `posSide` |
+| --- | --- | ---: | --- |
+| `LITE-USDT-SWAP` | sell | 0.01 | empty or `long` |
+
 `cross` is still a demo `place_order` mode. It is not a live SWAP shape.
 Anything else, including amend, another instrument, a larger size, the
-wrong side, or a live SWAP with `tdMode` `cross`, stays `LiveTradingDisabled`.
+wrong side, a reduce-only sell on MU, SKHY, TSM, or QQQ, a LITE buy with
+`reduceOnly`, or a live SWAP with `tdMode` `cross`, stays `LiveTradingDisabled`.
 
 `set_leverage` is the only account write. It uses the same dual opt-in on a
 live key, and the demo go flag when `OKX_DEMO=1`. The body is `mgnMode`
@@ -396,6 +415,19 @@ stub = smoke.place_order(
 )
 smoke.set_leverage("MU-USDT-SWAP", "2")
 smoke.cancel_order("MU-USDT-SWAP", ord_id=stub.ord_id)
+
+# Future dual-flag close shape. The LITE live exit is deferred (owner hold).
+# px is the limit chosen when that close is requested. Net mode omits pos_side.
+# Isolated long/short mode passes pos_side="long".
+# smoke.place_order(
+#     "LITE-USDT-SWAP",
+#     side="sell",
+#     sz="0.01",
+#     td_mode="isolated",
+#     ord_type="limit",
+#     px="<limit>",
+#     reduce_only=True,
+# )
 ```
 
 Allowlisted routes only:
@@ -429,6 +461,9 @@ Enforced now:
    same client. The mild-3.1 stub is MU, SKHY, LITE, and TSM buys plus a
    QQQ sell, `tdMode` `isolated`, `limit` or `ioc`, size at most
    0.01 / 0.03 / 0.01 / 0.02 / 0.01. Those orders rest until `cancel`.
+   The same flags allow one reduce-only close shape: `LITE-USDT-SWAP`
+   sell, sz at most 0.01, `posSide` empty or `long`. That shape is for a
+   future dual-flag close. The LITE live exit is deferred (owner hold).
    Amend stays on demo. A live SWAP with `tdMode` `cross` is refused.
    Demo `place` still accepts `cross`. Isolated set-leverage (lever 1-5
    on a USDT-SWAP, 1-2 on the five stub names) uses the same live opt-in,
@@ -474,7 +509,10 @@ unset or off. `smoke` is the cash order. `smoke-swap` is the BTC-USDT-SWAP
 order at `tdMode` `isolated` (no other mode). Both cancel in the same
 process. A live `place` of either smoke shape cancels before the process
 exits. A live `place` on MU, SKHY, LITE, TSM, or QQQ USDT-SWAP rests when
-it matches the stub (isolated, locked side, sz at most the lot). Live
+it matches the stub (isolated, locked side, sz at most the lot). The LITE
+reduce-only sell (sz at most 0.01, `posSide` empty or `long`) is the only
+live close and also rests. That command is the future dual-flag shape.
+The LITE live exit is deferred (owner hold). Live
 `cancel` is those instruments plus the two smokes. Order lookup and amend
 are not live. `set-leverage` is isolated, lever 1-5, on a USDT-SWAP, and
 lever 1-2 on the five stub names. Demo needs `OKX_DEMO=1` and
@@ -501,6 +539,12 @@ OKX_LIVE_TRADE=1 python3 -m tools.okx.private_cli --allow-orders set-leverage \
 OKX_LIVE_TRADE=1 python3 -m tools.okx.private_cli --allow-orders place \
   --inst QQQ-USDT-SWAP --side sell --sz 0.01 --td-mode isolated \
   --ord-type limit --px 721 --margin-usd 4
+# Future dual-flag close shape. The LITE live exit is deferred (owner hold).
+# px is the limit chosen when that close is requested. Add --pos-side long
+# for isolated long/short mode. Net mode omits --pos-side.
+OKX_LIVE_TRADE=1 python3 -m tools.okx.private_cli --allow-orders place \
+  --inst LITE-USDT-SWAP --side sell --sz 0.01 --td-mode isolated \
+  --ord-type limit --px <limit> --reduce-only
 OKX_DEMO=1 python3 -m tools.okx.private_cli --allow-orders set-leverage \
   --inst BTC-USDT-SWAP --lever 1 --mgn-mode isolated
 ```
@@ -528,8 +572,10 @@ need API keys.
   funding balances omit it. Allowlisted trade and account routes, plus
   `GET /api/v5/asset/balances`. No withdrawal endpoints. Live place and
   cancel omit the demo header only for the BTC-USDT cash smoke, the
-  BTC-USDT-SWAP `isolated` smoke, and the mild-3.1 equity SWAP stub
-  under `OKX_LIVE_TRADE=1` and the order go flag. Live amend stays refused.
+  BTC-USDT-SWAP `isolated` smoke, the mild-3.1 equity SWAP stub, and the
+  LITE reduce-only close shape (sell, sz at most 0.01) under
+  `OKX_LIVE_TRADE=1` and the order go flag. That close is for a future
+  dual-flag place. The LITE live exit is deferred (owner hold). Live amend stays refused.
   Live SWAP `cross` stays refused. Live set-leverage is isolated, lever
   1-5 on a USDT-SWAP (1-2 on the stub names), under that same opt-in.
 - Unit tests mock HTTP with recorded JSON under `tests/fixtures/` and use an

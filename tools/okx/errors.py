@@ -97,7 +97,8 @@ class LiveTradingDisabled(UnsafeEndpointError):
 
     The allowlist is the BTC-USDT cash smoke, one BTC-USDT-SWAP limit, and
     the mild-3.1 equity SWAP stub (MU, SKHY, LITE, TSM, QQQ; isolated;
-    sz at most the stub lot). Live reads remain balance, positions, and
+    sz at most the stub lot), plus one LITE reduce-only sell (sz at most
+    0.01) for a future close. Live reads remain balance, positions, and
     funding balances. Live place, cancel, and isolated set-leverage
     (lever 1-5, or 1-2 on the stub names) need ``OKX_LIVE_TRADE=1`` and
     the order go flag, and still cannot withdraw or change position mode.

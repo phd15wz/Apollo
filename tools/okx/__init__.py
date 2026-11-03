@@ -5,6 +5,7 @@ is the stage-2 signed client: live read-only balance, positions, and funding
 balances, demo place, cancel, and amend, plus opt-in live place-then-cancel
 smokes for BTC-USDT cash and one BTC-USDT-SWAP limit (``OKX_LIVE_TRADE=1``),
 the locked mild-3.1 equity SWAP stub (isolated, sz at most the stub lot),
+one LITE reduce-only sell (sz at most 0.01) as a future close shape,
 and isolated set-leverage at lever 1-5 on a USDT-SWAP (1-2 on the stub
 names). It cannot withdraw.
 """
