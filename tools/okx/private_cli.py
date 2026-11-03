@@ -14,9 +14,11 @@ resting BTC-USDT-SWAP limit buy (size 0.01, tdMode isolated, px at most
 smoke shape cancels before exit. A live ``place`` on the mild-3.1 stub
 (MU, SKHY, LITE, TSM, QQQ USDT-SWAP; isolated; sz at most the stub lot)
 rests. Reduce-only closes for the remaining open lots (MU, SKHY, and TSM
-sells, and a QQQ buy-to-cover, sz at most that open lot) also rest. Those
-shapes are for a future dual-flag close. This CLI does not send them on
-its own. ``cancel`` can pull that order. ``set-leverage`` sets isolated
+sells, and a QQQ buy-to-cover, sz at most that open lot) and the LITE
+reduce-only sell (sz at most 0.01) also rest. Those shapes are for a
+future dual-flag close. The LITE live exit stays deferred. This CLI does
+not send them on its own and does not auto-flatten. ``cancel`` can pull
+that order. ``set-leverage`` sets isolated
 leverage from 1 to 5 on a USDT-SWAP, and 1 to 2 on those five names:
 demo with ``OKX_DEMO=1`` and ``--allow-orders``, live with
 ``OKX_LIVE_TRADE=1``, ``--allow-orders``, and ``OKX_DEMO`` unset. Amend and
@@ -41,8 +43,12 @@ order lookup stay on demo. Position mode stays unchanged. Withdraw stays off.
         --ord-type limit --px 967 --margin-usd 5
     # Future dual-flag close shape. Does not run unless both flags are set.
     # Jessie skim before any live use. This example is not invoked here.
+    # The LITE live exit stays deferred (owner hold). It does not auto-flatten.
     OKX_LIVE_TRADE=1 python -m tools.okx.private_cli --allow-orders place \\
         --inst MU-USDT-SWAP --side sell --sz 0.01 --td-mode isolated \\
+        --ord-type limit --px <limit> --reduce-only
+    OKX_LIVE_TRADE=1 python -m tools.okx.private_cli --allow-orders place \\
+        --inst LITE-USDT-SWAP --side sell --sz 0.01 --td-mode isolated \\
         --ord-type limit --px <limit> --reduce-only
 """
 
@@ -80,7 +86,7 @@ def _parser() -> argparse.ArgumentParser:
             "OKX_LIVE_TRADE=1 and --allow-orders "
             "(smoke for BTC-USDT cash, smoke-swap for BTC-USDT-SWAP, "
             "place/cancel for MU, SKHY, LITE, TSM, QQQ USDT-SWAP; "
-            "closes are reduce-only MU/SKHY/TSM sells and a QQQ buy-to-cover, "
+            "closes are reduce-only MU/SKHY/LITE/TSM sells and a QQQ buy-to-cover, "
             "sz at most the open lot). "
             "set-leverage is isolated, lever 1-5, USDT-SWAP only "
             "(1-2 on those five names). "
@@ -100,7 +106,7 @@ def _parser() -> argparse.ArgumentParser:
             "allow demo place, cancel, amend, and set-leverage (OKX_DEMO=1), "
             "or the live BTC smokes, the mild-3.1 equity SWAP stub "
             "(MU, SKHY, LITE, TSM, QQQ), the reduce-only closes for the "
-            "remaining open lots, and isolated set-leverage "
+            "remaining open lots and the LITE sell, and isolated set-leverage "
             "(OKX_LIVE_TRADE=1, OKX_DEMO unset)"
         ),
     )
@@ -126,7 +132,7 @@ def _parser() -> argparse.ArgumentParser:
         help=(
             "place one order (demo; a live BTC smoke, which then cancels; "
             "a resting mild-3.1 equity SWAP stub; or a reduce-only close "
-            "of the remaining open lots, which also rests)"
+            "of the remaining open lots or the LITE sell, which also rests)"
         ),
     )
     place.add_argument("--inst", required=True)
@@ -204,8 +210,9 @@ def cli_demo(command: str, *, allow_orders: bool = False) -> bool:
     Live place, cancel, ``smoke``, ``smoke-swap``, and ``set-leverage`` require
     ``OKX_LIVE_TRADE=1``, ``--allow-orders``, and ``OKX_DEMO`` unset or off.
     ``--allow-orders`` alone does not make a write live. The mild-3.1 stub,
-    including the reduce-only closes for the remaining open lots, uses
-    that same pair of flags.
+    including the reduce-only closes for the remaining open lots and the
+    LITE sell, uses that same pair of flags. The LITE live exit stays
+    deferred. These closes do not auto-flatten.
     """
     if command in _LIVE_ORDER_CMDS and env_flag("OKX_LIVE_TRADE"):
         if not allow_orders:

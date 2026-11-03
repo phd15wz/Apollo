@@ -12,9 +12,10 @@ and the order go flag) also allows the locked mild-3.1 equity SWAP stub:
 most 2× on those names. Stub orders rest; they are not auto-cancelled.
 The same flags also allow reduce-only closes for the remaining open lots:
 MU, SKHY, and TSM sells, and a QQQ buy-to-cover, each sz at most that
-open lot. That shape is an emergency soft-flag exit path for a future
-dual-flag close. It does not auto-flatten. Jessie skim before any live
-use. This package does not place those closes.
+open lot, plus one LITE reduce-only sell, sz at most 0.01. The four-name
+rows are an emergency soft-flag exit path for a future dual-flag close.
+The LITE live exit is deferred (owner hold). Neither path auto-flattens.
+Jessie skim before any live use. This package does not place those closes.
 Amend stays on demo. Withdrawal stays out.
 
 Docs: [OKX API v5](https://www.okx.com/docs-v5/en/). This package is written
@@ -321,30 +322,32 @@ A live CLI `place` of a smoke still cancels before exit. A live CLI
 `place` of one of these five rests.
 
 The same dual opt-in allows reduce-only closes for the remaining open
-lots. This is an emergency soft-flag exit path. It does not auto-flatten,
-and it does not send an order unless a caller places one after both flags
-are set. Jessie skim before any live use. `reduceOnly` must be boolean
-true. `ordType` is `limit` or `ioc`. `tdMode` is `isolated`. `sz` is a
-multiple of `0.01` and at most the open lot. `posSide` is empty or the
-position being reduced. Empty is net mode: this package omits the field,
-and the literal `net` stays refused, as on the open stub and on
-set-leverage. `long` closes the MU, SKHY, and TSM longs. `short` is the
-QQQ buy-to-cover. The other hedge side is refused. A live CLI `place` of
-one of these closes rests, the same way the open stub rests. LITE has no
-close row here.
+lots and for the LITE long. The four-name rows are an emergency soft-flag
+exit path. The LITE live exit is deferred (owner hold). It does not
+auto-flatten, and it does not send an order unless a caller places one
+after both flags are set. Jessie skim before any live use. `reduceOnly`
+must be boolean true. `ordType` is `limit` or `ioc`. `tdMode` is
+`isolated`. `sz` is a multiple of `0.01` and at most the open lot.
+`posSide` is empty or the position being reduced. Empty is net mode: this
+package omits the field, and the literal `net` stays refused, as on the
+open stub and on set-leverage. `long` closes the MU, SKHY, LITE, and TSM
+longs. `short` is the QQQ buy-to-cover. The other hedge side is refused.
+A live CLI `place` of one of these closes rests, the same way the open
+stub rests.
 
 | `instId` | Side | Max `sz` | `posSide` |
 | --- | --- | ---: | --- |
 | `MU-USDT-SWAP` | sell | 0.01 | empty or `long` |
 | `SKHY-USDT-SWAP` | sell | 0.03 | empty or `long` |
+| `LITE-USDT-SWAP` | sell | 0.01 | empty or `long` |
 | `TSM-USDT-SWAP` | sell | 0.02 | empty or `long` |
 | `QQQ-USDT-SWAP` | buy | 0.01 | empty or `short` |
 
 `cross` is still a demo `place_order` mode. It is not a live SWAP shape.
 Anything else, including amend, another instrument, a larger size, the
-wrong side, a buy on MU, SKHY, or TSM with `reduceOnly`, a sell on QQQ
-with `reduceOnly`, `reduceOnly` omitted or false on these closes, or a
-live SWAP with `tdMode` `cross`, stays `LiveTradingDisabled`.
+wrong side, a buy on MU, SKHY, LITE, or TSM with `reduceOnly`, a sell on
+QQQ with `reduceOnly`, `reduceOnly` omitted or false on these closes, or
+a live SWAP with `tdMode` `cross`, stays `LiveTradingDisabled`.
 
 `set_leverage` is the only account write. It uses the same dual opt-in on a
 live key, and the demo go flag when `OKX_DEMO=1`. The body is `mgnMode`
@@ -427,9 +430,19 @@ smoke.cancel_order("MU-USDT-SWAP", ord_id=stub.ord_id)
 # Future dual-flag close shape. Does not auto-flatten. Jessie skim before
 # any live use. px is the limit chosen when that close is requested.
 # Net mode omits pos_side. Isolated long/short mode passes pos_side="long"
-# on the three sells, or pos_side="short" on the QQQ buy-to-cover.
+# on the MU, SKHY, LITE, and TSM sells, or pos_side="short" on the QQQ
+# buy-to-cover. The LITE live exit stays deferred (owner hold).
 # smoke.place_order(
 #     "MU-USDT-SWAP",
+#     side="sell",
+#     sz="0.01",
+#     td_mode="isolated",
+#     ord_type="limit",
+#     px="<limit>",
+#     reduce_only=True,
+# )
+# smoke.place_order(
+#     "LITE-USDT-SWAP",
 #     side="sell",
 #     sz="0.01",
 #     td_mode="isolated",
@@ -472,9 +485,11 @@ Enforced now:
    0.01 / 0.03 / 0.01 / 0.02 / 0.01. Those orders rest until `cancel`.
    The same flags allow reduce-only closes for the remaining open lots:
    MU, SKHY, and TSM sells (sz at most 0.01 / 0.03 / 0.02, `posSide` empty
-   or `long`) and a QQQ buy-to-cover (sz at most 0.01, `posSide` empty or
-   `short`). That shape is an emergency soft-flag exit path. It does not
-   auto-flatten. Jessie skim before any live use.
+   or `long`), a LITE reduce-only sell (sz at most 0.01, `posSide` empty
+   or `long`), and a QQQ buy-to-cover (sz at most 0.01, `posSide` empty or
+   `short`). The four-name rows are an emergency soft-flag exit path. The
+   LITE live exit is deferred (owner hold). Neither path auto-flattens.
+   Jessie skim before any live use.
    Amend stays on demo. A live SWAP with `tdMode` `cross` is refused.
    Demo `place` still accepts `cross`. Isolated set-leverage (lever 1-5
    on a USDT-SWAP, 1-2 on the five stub names) uses the same live opt-in,
@@ -521,9 +536,10 @@ order at `tdMode` `isolated` (no other mode). Both cancel in the same
 process. A live `place` of either smoke shape cancels before the process
 exits. A live `place` on MU, SKHY, LITE, TSM, or QQQ USDT-SWAP rests when
 it matches the stub (isolated, locked side, sz at most the lot). The
-reduce-only closes (MU, SKHY, and TSM sells, and a QQQ buy-to-cover, sz
-at most the open lot) also rest. Those commands are the future dual-flag
-shape. They do not auto-flatten. Jessie skim before any live use. Live
+reduce-only closes (MU, SKHY, LITE, and TSM sells, and a QQQ
+buy-to-cover, sz at most the open lot) also rest. Those commands are the
+future dual-flag shape. The LITE live exit is deferred (owner hold). They
+do not auto-flatten. Jessie skim before any live use. Live
 `cancel` is those instruments plus the two smokes. Order lookup and amend
 are not live. `set-leverage` is isolated, lever 1-5, on a USDT-SWAP, and
 lever 1-2 on the five stub names. Demo needs `OKX_DEMO=1` and
@@ -552,10 +568,14 @@ OKX_LIVE_TRADE=1 python3 -m tools.okx.private_cli --allow-orders place \
   --ord-type limit --px 721 --margin-usd 4
 # Future dual-flag close shape. Does not auto-flatten. Jessie skim before
 # any live use. px is the limit chosen when that close is requested.
-# Add --pos-side long on the three sells, or --pos-side short on the QQQ
-# buy-to-cover, for isolated long/short mode. Net mode omits --pos-side.
+# Add --pos-side long on the MU, SKHY, LITE, and TSM sells, or
+# --pos-side short on the QQQ buy-to-cover, for isolated long/short mode.
+# Net mode omits --pos-side. The LITE live exit stays deferred (owner hold).
 # OKX_LIVE_TRADE=1 python3 -m tools.okx.private_cli --allow-orders place \
 #   --inst QQQ-USDT-SWAP --side buy --sz 0.01 --td-mode isolated \
+#   --ord-type limit --px <limit> --reduce-only
+# OKX_LIVE_TRADE=1 python3 -m tools.okx.private_cli --allow-orders place \
+#   --inst LITE-USDT-SWAP --side sell --sz 0.01 --td-mode isolated \
 #   --ord-type limit --px <limit> --reduce-only
 OKX_DEMO=1 python3 -m tools.okx.private_cli --allow-orders set-leverage \
   --inst BTC-USDT-SWAP --lever 1 --mgn-mode isolated
@@ -586,9 +606,11 @@ need API keys.
   cancel omit the demo header only for the BTC-USDT cash smoke, the
   BTC-USDT-SWAP `isolated` smoke, the mild-3.1 equity SWAP stub, and the
   reduce-only closes for the remaining open lots (MU, SKHY, and TSM sells,
-  and a QQQ buy-to-cover, sz at most the open lot) under `OKX_LIVE_TRADE=1`
-  and the order go flag. Those closes are for a future dual-flag place.
-  They do not auto-flatten. Jessie skim before any live use. Live amend stays refused.
+  and a QQQ buy-to-cover, sz at most the open lot) and the LITE reduce-only
+  sell (sz at most 0.01; live exit deferred, owner hold) under
+  `OKX_LIVE_TRADE=1` and the order go flag. Those closes are for a future
+  dual-flag place. They do not auto-flatten. Jessie skim before any live
+  use. Live amend stays refused.
   Live SWAP `cross` stays refused. Live set-leverage is isolated, lever
   1-5 on a USDT-SWAP (1-2 on the stub names), under that same opt-in.
 - Unit tests mock HTTP with recorded JSON under `tests/fixtures/` and use an

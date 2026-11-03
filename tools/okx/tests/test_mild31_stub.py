@@ -287,19 +287,22 @@ def _close(**overrides: object) -> dict[str, object]:
     return body
 
 
-def test_close_list_is_the_remaining_open_lots() -> None:
+def test_close_list_keeps_the_four_names_and_lite() -> None:
     assert [row.inst_id for row in MILD31_CLOSES] == [
         "MU-USDT-SWAP",
         "SKHY-USDT-SWAP",
+        "LITE-USDT-SWAP",
         "TSM-USDT-SWAP",
         "QQQ-USDT-SWAP",
     ]
-    assert "LITE-USDT-SWAP" not in MILD31_CLOSE
     assert MILD31_CLOSE["MU-USDT-SWAP"].side == "sell"
     assert MILD31_CLOSE["MU-USDT-SWAP"].max_sz == "0.01"
     assert MILD31_CLOSE["MU-USDT-SWAP"].pos_sides == frozenset({"", "long"})
     assert MILD31_CLOSE["SKHY-USDT-SWAP"].max_sz == "0.03"
     assert MILD31_CLOSE["SKHY-USDT-SWAP"].pos_sides == frozenset({"", "long"})
+    assert MILD31_CLOSE["LITE-USDT-SWAP"].side == "sell"
+    assert MILD31_CLOSE["LITE-USDT-SWAP"].max_sz == "0.01"
+    assert MILD31_CLOSE["LITE-USDT-SWAP"].pos_sides == frozenset({"", "long"})
     assert MILD31_CLOSE["TSM-USDT-SWAP"].max_sz == "0.02"
     assert MILD31_CLOSE["TSM-USDT-SWAP"].side == "sell"
     assert MILD31_CLOSE["QQQ-USDT-SWAP"].side == "buy"
@@ -315,6 +318,8 @@ def test_close_list_is_the_remaining_open_lots() -> None:
         {"inst_id": "SKHY-USDT-SWAP", "side": "sell", "sz": "0.01"},
         {"inst_id": "SKHY-USDT-SWAP", "side": "sell", "sz": "0.02"},
         {"inst_id": "SKHY-USDT-SWAP", "side": "sell", "sz": "0.03", "pos_side": "long"},
+        {"inst_id": "LITE-USDT-SWAP", "side": "sell", "sz": "0.01"},
+        {"inst_id": "LITE-USDT-SWAP", "side": "sell", "sz": "0.010", "pos_side": "long", "ord_type": "ioc"},
         {"inst_id": "TSM-USDT-SWAP", "side": "sell", "sz": "0.01", "ord_type": "ioc"},
         {"inst_id": "TSM-USDT-SWAP", "side": "sell", "sz": "0.02", "pos_side": "long"},
         {"inst_id": "QQQ-USDT-SWAP", "side": "buy", "sz": "0.01"},
@@ -343,7 +348,14 @@ def test_reduce_only_closes_are_allowed_under_live_guards(kwargs: dict[str, obje
         {"inst_id": "SKHY-USDT-SWAP", "sz": "0.025"},
         {"reduce_only": False},
         {"inst_id": "QQQ-USDT-SWAP", "side": "buy", "reduce_only": False},
-        {"inst_id": "LITE-USDT-SWAP", "side": "sell"},
+        {"inst_id": "LITE-USDT-SWAP", "side": "buy"},
+        {"inst_id": "LITE-USDT-SWAP", "side": "sell", "sz": "0.02"},
+        {"inst_id": "LITE-USDT-SWAP", "side": "sell", "sz": "0.015"},
+        {"inst_id": "LITE-USDT-SWAP", "side": "sell", "pos_side": "short"},
+        {"inst_id": "LITE-USDT-SWAP", "side": "sell", "pos_side": "net"},
+        {"inst_id": "LITE-USDT-SWAP", "side": "sell", "reduce_only": False},
+        {"inst_id": "LITE-USDT-SWAP", "side": "sell", "td_mode": "cross"},
+        {"inst_id": "LITE-USDT-SWAP", "side": "sell", "ord_type": "market"},
         {"inst_id": "NVDA-USDT-SWAP"},
         {"pos_side": "short"},
         {"pos_side": "net"},
@@ -365,6 +377,8 @@ def test_close_payload_requires_boolean_reduce_only() -> None:
     allowed = (
         ("MU-USDT-SWAP", "sell", "0.01", ""),
         ("SKHY-USDT-SWAP", "sell", "0.03", "long"),
+        ("LITE-USDT-SWAP", "sell", "0.01", ""),
+        ("LITE-USDT-SWAP", "sell", "0.01", "long"),
         ("TSM-USDT-SWAP", "sell", "0.02", ""),
         ("QQQ-USDT-SWAP", "buy", "0.01", "short"),
     )
@@ -394,6 +408,34 @@ def test_close_payload_requires_boolean_reduce_only() -> None:
                 "sz": "0.01",
                 "px": "300",
                 "reduceOnly": "true",
+            },
+        )
+    with pytest.raises(LiveTradingDisabled, match="boolean true"):
+        assert_live_trade_payload(
+            "POST",
+            "/api/v5/trade/order",
+            {
+                "instId": "LITE-USDT-SWAP",
+                "tdMode": "isolated",
+                "side": "sell",
+                "ordType": "limit",
+                "sz": "0.01",
+                "px": "300",
+                "reduceOnly": "true",
+            },
+        )
+    with pytest.raises(LiveTradingDisabled, match="mild-3.1"):
+        assert_live_trade_payload(
+            "POST",
+            "/api/v5/trade/order",
+            {
+                "instId": "LITE-USDT-SWAP",
+                "tdMode": "isolated",
+                "side": "sell",
+                "ordType": "limit",
+                "sz": "0.02",
+                "px": "300",
+                "reduceOnly": True,
             },
         )
     with pytest.raises(LiveTradingDisabled, match="mild-3.1"):
@@ -428,7 +470,7 @@ def test_close_payload_requires_boolean_reduce_only() -> None:
         ("SKHY-USDT-SWAP", "buy"),
         ("TSM-USDT-SWAP", "buy"),
         ("QQQ-USDT-SWAP", "sell"),
-        ("LITE-USDT-SWAP", "sell"),
+        ("LITE-USDT-SWAP", "buy"),
         ("NVDA-USDT-SWAP", "sell"),
     ):
         with pytest.raises(LiveTradingDisabled, match="mild-3.1"):
@@ -461,6 +503,10 @@ def test_open_stub_path_unchanged() -> None:
         assert_mild31_place(**_place(**kwargs))
         assert_live_place(**_place(**kwargs))
     with pytest.raises(LiveTradingDisabled, match="mild-3.1"):
+        assert_mild31_place(**_place(inst_id="LITE-USDT-SWAP", side="sell", reduce_only=True))
+    with pytest.raises(LiveTradingDisabled, match="mild-3.1"):
+        assert_live_place(**_place(inst_id="LITE-USDT-SWAP", side="sell"))
+    with pytest.raises(LiveTradingDisabled, match="mild-3.1"):
         assert_mild31_place(**_place(inst_id="MU-USDT-SWAP", side="sell", reduce_only=True))
     with pytest.raises(LiveTradingDisabled, match="mild-3.1"):
         assert_mild31_place(**_place(inst_id="QQQ-USDT-SWAP", side="buy", reduce_only=True))
@@ -492,6 +538,18 @@ def test_open_stub_path_unchanged() -> None:
     qqq_body = json.loads(transport.calls[1]["body"])
     assert qqq_body["side"] == "sell"
     assert "reduceOnly" not in qqq_body
+    lite = live.place_order(**_place(inst_id="LITE-USDT-SWAP", px="1021.35"), margin_usd=1)
+    assert lite.ord_id
+    lite_body = json.loads(transport.calls[2]["body"])
+    assert lite_body == {
+        "instId": "LITE-USDT-SWAP",
+        "ordType": "limit",
+        "px": "1021.35",
+        "side": "buy",
+        "sz": "0.01",
+        "tdMode": "isolated",
+    }
+    assert "reduceOnly" not in lite_body
 
 
 def test_live_close_needs_both_flags_and_rests() -> None:
@@ -527,6 +585,7 @@ def test_live_close_needs_both_flags_and_rests() -> None:
         {"inst_id": "SKHY-USDT-SWAP", "sz": "0.03", "pos_side": "long"},
         {"inst_id": "TSM-USDT-SWAP", "sz": "0.02", "ord_type": "ioc"},
         {"inst_id": "QQQ-USDT-SWAP", "side": "buy", "sz": "0.01", "pos_side": "short"},
+        {"inst_id": "LITE-USDT-SWAP", "side": "sell", "sz": "0.01", "pos_side": "long", "ord_type": "ioc"},
     )
     for kwargs in shapes:
         ack_row = live.place_order(**_close(**kwargs))
@@ -554,6 +613,16 @@ def test_live_close_needs_both_flags_and_rests() -> None:
         "sz": "0.01",
         "tdMode": "isolated",
     }
+    assert json.loads(transport.calls[4]["body"]) == {
+        "instId": "LITE-USDT-SWAP",
+        "ordType": "ioc",
+        "posSide": "long",
+        "px": "300",
+        "reduceOnly": True,
+        "side": "sell",
+        "sz": "0.01",
+        "tdMode": "isolated",
+    }
 
     before = len(transport.calls)
     for kwargs in (
@@ -563,7 +632,10 @@ def test_live_close_needs_both_flags_and_rests() -> None:
         {"inst_id": "QQQ-USDT-SWAP", "side": "sell"},
         {"inst_id": "QQQ-USDT-SWAP", "side": "buy", "sz": "0.02"},
         {"reduce_only": False},
-        {"inst_id": "LITE-USDT-SWAP", "side": "sell"},
+        {"inst_id": "LITE-USDT-SWAP", "side": "buy"},
+        {"inst_id": "LITE-USDT-SWAP", "sz": "0.02"},
+        {"inst_id": "LITE-USDT-SWAP", "pos_side": "short"},
+        {"inst_id": "LITE-USDT-SWAP", "pos_side": "net"},
         {"inst_id": "NVDA-USDT-SWAP"},
         {"pos_side": "short"},
         {"pos_side": "net"},
@@ -636,10 +708,40 @@ def test_cli_close_rests_and_wrong_sides_stay_refused(capsys: pytest.CaptureFixt
     assert json.loads(transport.calls[1]["body"])["posSide"] == "short"
     assert json.loads(transport.calls[1]["body"])["reduceOnly"] is True
 
+    code = main(
+        [
+            "place",
+            "--inst",
+            "LITE-USDT-SWAP",
+            "--side",
+            "sell",
+            "--sz",
+            "0.01",
+            "--td-mode",
+            "isolated",
+            "--ord-type",
+            "limit",
+            "--px",
+            "300",
+            "--pos-side",
+            "long",
+            "--reduce-only",
+        ],
+        client=live,
+    )
+    assert code == 0
+    assert "cancelled" not in json.loads(capsys.readouterr().out)
+    lite_body = json.loads(transport.calls[2]["body"])
+    assert lite_body["instId"] == "LITE-USDT-SWAP"
+    assert lite_body["side"] == "sell"
+    assert lite_body["posSide"] == "long"
+    assert lite_body["reduceOnly"] is True
+    assert lite_body["sz"] == "0.01"
+
     for inst, side in (
         ("MU-USDT-SWAP", "buy"),
         ("QQQ-USDT-SWAP", "sell"),
-        ("LITE-USDT-SWAP", "sell"),
+        ("LITE-USDT-SWAP", "buy"),
     ):
         code = main(
             [
@@ -662,4 +764,25 @@ def test_cli_close_rests_and_wrong_sides_stay_refused(capsys: pytest.CaptureFixt
         )
         assert code == 2
         assert "mild-3.1" in capsys.readouterr().err
-    assert len(transport.calls) == 2
+    code = main(
+        [
+            "place",
+            "--inst",
+            "LITE-USDT-SWAP",
+            "--side",
+            "sell",
+            "--sz",
+            "0.02",
+            "--td-mode",
+            "isolated",
+            "--ord-type",
+            "limit",
+            "--px",
+            "300",
+            "--reduce-only",
+        ],
+        client=live,
+    )
+    assert code == 2
+    assert "mild-3.1" in capsys.readouterr().err
+    assert len(transport.calls) == 3
