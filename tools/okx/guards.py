@@ -15,6 +15,11 @@ Enforced in this package
   BTC-USDT-SWAP limit (``tdMode`` ``isolated`` only) — and the locked
   mild-3.1 equity SWAP stub (MU, SKHY, LITE, TSM, QQQ ``USDT-SWAP``):
   ``tdMode`` ``isolated``, the stub side, and ``sz`` at most the stub lot.
+  Reduce-only closes sit beside those opens for the remaining open lots:
+  MU, SKHY, and TSM sells, and a QQQ buy-to-cover, each ``sz`` at most
+  that open lot. Opens stay ``reduceOnly`` off. The closes are an
+  allowlist shape for a later dual-flag place. This package does not
+  watch or send them on its own.
   ``LIVE_TRADE_ENABLED`` is a tripwire: setting it ``True`` does not enable
   live trading; the client refuses to start. The only account write is
   ``POST /api/v5/account/set-leverage``: ``mgnMode`` ``isolated``, a
@@ -98,6 +103,7 @@ _LIVE_CANCEL_INST_IDS = frozenset({LIVE_SMOKE_INST_ID, LIVE_SWAP_SMOKE_INST_ID})
 # Not a one-click book. Dual opt-in stays required. Isolated margin, the
 # stub side, and sz at most the lot. set-leverage on these names is 1-2.
 # Other account mutations, funding transfers, and withdraw stay off.
+# The open rows stay reduceOnly off. The close rows are a separate shape.
 MILD31_TD_MODE = "isolated"
 MILD31_MAX_LEVER = 2
 MILD31_LOT_STEP = Decimal("0.01")
@@ -120,6 +126,35 @@ MILD31_LOTS: tuple[Mild31Lot, ...] = (
 )
 MILD31_STUB: dict[str, Mild31Lot] = {lot.inst_id: lot for lot in MILD31_LOTS}
 _MILD31_POS_SIDE = {"buy": "long", "sell": "short"}
+
+
+@dataclass(frozen=True, slots=True)
+class Mild31Close:
+    """One reduce-only flatten. ``side`` is the order side, not the open side.
+
+    ``pos_sides`` follows the conventions already used in this package.
+    Net mode omits ``posSide`` (empty string): the open stub and
+    set-leverage do the same, and the literal ``net`` is not on those
+    allowlists. Isolated long/short mode names the position being reduced.
+    A long closes with ``long``. A short closes with ``short``.
+    """
+
+    inst_id: str
+    side: str
+    max_sz: str
+    pos_sides: frozenset[str]
+
+
+# Remaining open stub lots. MU, SKHY, and TSM opens are buys, so each
+# close is a sell at most that lot. QQQ's open is a sell, so the close
+# is a buy-to-cover at most 0.01. LITE has no close row here.
+MILD31_CLOSES: tuple[Mild31Close, ...] = (
+    Mild31Close("MU-USDT-SWAP", "sell", "0.01", frozenset({"", "long"})),
+    Mild31Close("SKHY-USDT-SWAP", "sell", "0.03", frozenset({"", "long"})),
+    Mild31Close("TSM-USDT-SWAP", "sell", "0.02", frozenset({"", "long"})),
+    Mild31Close("QQQ-USDT-SWAP", "buy", "0.01", frozenset({"", "short"})),
+)
+MILD31_CLOSE: dict[str, Mild31Close] = {row.inst_id: row for row in MILD31_CLOSES}
 
 NAME_MARGIN_CAP_USD = 10.0
 GATE_SIZE_FRACTION = 0.5
@@ -156,7 +191,9 @@ LIVE_TRADE_PATHS = frozenset(
 _SET_LEVERAGE_KEYS = frozenset({"instId", "lever", "mgnMode", "posSide"})
 _SET_LEVERAGE_POS_SIDES = frozenset({"long", "short"})
 
-_LIVE_PLACE_KEYS = frozenset({"instId", "tdMode", "side", "ordType", "sz", "px", "clOrdId", "posSide"})
+_LIVE_PLACE_KEYS = frozenset(
+    {"instId", "tdMode", "side", "ordType", "sz", "px", "clOrdId", "posSide", "reduceOnly"}
+)
 _LIVE_CANCEL_KEYS = frozenset({"instId", "ordId", "clOrdId"})
 
 _WITHDRAW_MARKERS = ("withdraw", "transfer", "deposit")
@@ -228,8 +265,9 @@ def require_cli_demo() -> None:
             "CLI place, cancel, order lookup, and set-leverage require OKX_DEMO=1. "
             "The live smokes, the mild-3.1 equity SWAP stub, and live "
             "set-leverage need OKX_LIVE_TRADE=1 and --allow-orders "
-            "(cash: smoke; SWAP: smoke-swap; stub: place/cancel on "
-            "MU, SKHY, LITE, TSM, QQQ USDT-SWAP). "
+            "(cash: smoke; SWAP: smoke-swap; stub opens: place/cancel on "
+            "MU, SKHY, LITE, TSM, QQQ USDT-SWAP; closes are reduce-only "
+            "MU/SKHY/TSM sells and a QQQ buy-to-cover, sz at most the open lot). "
             "Live Trade is not enabled."
         )
     resolve_demo(True)
@@ -289,7 +327,9 @@ def assert_live_read_only(demo: bool, method: str, path: str, *, live_trade: boo
         "Place, amend, and cancel stay on demo (OKX_DEMO=1) unless "
         "OKX_LIVE_TRADE=1 opens place and cancel for the BTC-USDT cash smoke, "
         "the BTC-USDT-SWAP smoke, or the mild-3.1 equity SWAP stub "
-        "(MU, SKHY, LITE, TSM, QQQ; isolated; sz at most the stub lot), "
+        "(MU, SKHY, LITE, TSM, QQQ; isolated; sz at most the stub lot; "
+        "closes are reduce-only MU/SKHY/TSM sells and a QQQ buy-to-cover, "
+        "sz at most the open lot), "
         "and isolated set-leverage at lever 1-5 (1-2 on those five names). "
         "Live Trade is not enabled."
     )
@@ -400,7 +440,11 @@ def assert_mild31_place(
     pos_side: str = "",
     reduce_only: bool = False,
 ) -> None:
-    """Refuse a live place outside the locked mild-3.1 equity SWAP stub."""
+    """Refuse a live open outside the locked mild-3.1 equity SWAP stub.
+
+    Reduce-only closes are not opens. They stay refused here. The close
+    shape is ``assert_mild31_close``.
+    """
     lot = MILD31_STUB.get(inst_id)
     expected_pos = _MILD31_POS_SIDE.get(side, "")
     if (
@@ -419,6 +463,49 @@ def assert_mild31_place(
         raise LiveTradingDisabled(_mild31_place_message())
 
 
+def _mild31_close_message() -> str:
+    caps = ", ".join(
+        f"{row.inst_id} {row.side} reduceOnly sz<={row.max_sz}" for row in MILD31_CLOSES
+    )
+    return (
+        "Live mild-3.1 close is reduce-only, isolated, limit or ioc, "
+        "with sz a multiple of the stub step and at most the close cap. "
+        f"Caps: {caps}. "
+        "posSide is empty (net mode omits it), long on MU, SKHY, and TSM, "
+        "or short on the QQQ buy-to-cover. "
+        "Opens stay reduceOnly off. Wrong sides, other names, and larger sizes stay refused."
+    )
+
+
+def assert_mild31_close(
+    *,
+    inst_id: str,
+    side: str,
+    sz: str,
+    td_mode: str,
+    ord_type: str,
+    px: str,
+    pos_side: str = "",
+    reduce_only: bool = False,
+) -> None:
+    """Refuse a live place outside the locked mild-3.1 reduce-only close list."""
+    row = MILD31_CLOSE.get(inst_id)
+    if (
+        row is None
+        or side != row.side
+        or td_mode != MILD31_TD_MODE
+        or ord_type not in MILD31_ORD_TYPES
+        or reduce_only is not True
+        or pos_side not in row.pos_sides
+    ):
+        raise LiveTradingDisabled(_mild31_close_message())
+    size = _smoke_decimal(sz, "sz")
+    _smoke_decimal(px, "px")
+    cap = Decimal(row.max_sz)
+    if size > cap or (size % MILD31_LOT_STEP) != 0:
+        raise LiveTradingDisabled(_mild31_close_message())
+
+
 def assert_live_place(
     *,
     inst_id: str,
@@ -430,7 +517,7 @@ def assert_live_place(
     pos_side: str = "",
     reduce_only: bool = False,
 ) -> None:
-    """Refuse a live place outside the BTC smokes or the mild-3.1 stub."""
+    """Refuse a live place outside the BTC smokes, the stub opens, or the close list."""
     if inst_id in (LIVE_SMOKE_INST_ID, LIVE_SWAP_SMOKE_INST_ID):
         assert_live_smoke_place(
             inst_id=inst_id,
@@ -444,7 +531,8 @@ def assert_live_place(
         )
         return
     if inst_id in MILD31_STUB:
-        assert_mild31_place(
+        checker = assert_mild31_close if reduce_only else assert_mild31_place
+        checker(
             inst_id=inst_id,
             side=side,
             sz=sz,
@@ -455,7 +543,9 @@ def assert_live_place(
             reduce_only=reduce_only,
         )
         return
-    raise LiveTradingDisabled(_live_place_message() + " " + _mild31_place_message())
+    raise LiveTradingDisabled(
+        _live_place_message() + " " + _mild31_place_message() + " " + _mild31_close_message()
+    )
 
 
 def assert_live_smoke_cancel(inst_id: str) -> None:
@@ -524,6 +614,21 @@ def assert_set_leverage_payload(payload: Mapping[str, Any] | None) -> dict[str, 
     return body
 
 
+def _payload_reduce_only(body: Mapping[str, Any]) -> bool:
+    """Return whether a live place body is the boolean ``reduceOnly: true``.
+
+    The field is optional. Any other value is refused. Opens omit it.
+    ``place_order`` sends the JSON boolean only when the caller set the flag.
+    """
+    if "reduceOnly" not in body:
+        return False
+    if body["reduceOnly"] is not True:
+        raise LiveTradingDisabled(
+            "Live reduceOnly must be boolean true, and only on a mild-3.1 reduce-only close."
+        )
+    return True
+
+
 def assert_live_trade_payload(method: str, path: str, payload: Mapping[str, Any] | None) -> None:
     """Refuse a live place, cancel, or set-leverage body outside its lock."""
     method_u = method.upper()
@@ -545,7 +650,7 @@ def assert_live_trade_payload(method: str, path: str, payload: Mapping[str, Any]
             ord_type=str(body.get("ordType") or ""),
             px=str(body.get("px") or ""),
             pos_side=str(body.get("posSide") or ""),
-            reduce_only=bool(body.get("reduceOnly")),
+            reduce_only=_payload_reduce_only(body),
         )
         return
     if (method_u, path) == ("POST", "/api/v5/trade/cancel-order"):
