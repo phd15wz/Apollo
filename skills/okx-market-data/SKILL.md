@@ -21,12 +21,15 @@ Live mode reads balance, positions, and `GET /api/v5/asset/balances`
 The live writes are the BTC-USDT cash place-then-cancel smoke, one
 BTC-USDT-SWAP place-then-cancel smoke (`tdMode` `isolated`, the strategy
 default), the locked mild-3.1 equity SWAP stub (MU, SKHY, LITE, TSM, QQQ;
-isolated; sz at most 0.01 / 0.03 / 0.01 / 0.02 / 0.01; QQQ is sell), and
-isolated set-leverage on a USDT-SWAP at lever 1-5 (1-2 on those five
-names). Each needs `OKX_LIVE_TRADE=1` plus that go flag. There are no
-withdrawal methods. Do not use it as a market-data source. Do not add
-instruments, raise the stub size or leverage caps, or add a withdrawal
-path.
+isolated; sz at most 0.01 / 0.03 / 0.01 / 0.02 / 0.01; QQQ is sell),
+reduce-only closes for the remaining open lots (MU, SKHY, and TSM sells,
+and a QQQ buy-to-cover, each sz at most that open lot) as a future close
+shape, and isolated set-leverage on a USDT-SWAP at lever 1-5 (1-2 on
+those five names). Each needs `OKX_LIVE_TRADE=1` plus that go flag. The
+closes do not auto-flatten. Jessie skim before any live use. There are
+no withdrawal methods. Do not use it as a market-data source. Do not add
+instruments, raise the stub size or leverage caps, add another close
+name, or add a withdrawal path.
 
 ## Safety stance
 
@@ -47,8 +50,18 @@ path.
    `tdMode` `isolated` only, px at most `40000`. The same flags allow one
    resting mild-3.1 order on MU, SKHY, LITE, TSM (buy) or QQQ (sell),
    `tdMode` `isolated`, `limit` or `ioc`, sz at most 0.01 / 0.03 / 0.01 /
-   0.02 / 0.01. That order is not auto-cancelled. `cross` is not a live
-   SWAP shape. Amend, other instruments, larger sizes, the wrong side,
+   0.02 / 0.01. That order is not auto-cancelled. The same flags allow
+   reduce-only closes for the remaining open lots: MU, SKHY, and TSM
+   sells (sz at most 0.01 / 0.03 / 0.02, `posSide` empty or `long`) and a
+   QQQ buy-to-cover (sz at most 0.01, `posSide` empty or `short`). Empty
+   `posSide` is net mode: the field is omitted, and the literal `net`
+   stays refused. The command shape is in `tools/okx/README.md`. It is an
+   emergency soft-flag exit path for a future dual-flag close. It does
+   not auto-flatten. Jessie skim before any live use. Do not place those
+   closes from this skill, and do not add a name-stop watcher. `cross` is
+   not a live SWAP shape. Amend, other instruments, larger sizes, the
+   wrong side (a buy on MU, SKHY, or TSM, or a sell on QQQ, when
+   `reduceOnly` is set), `reduceOnly` omitted or false on those closes,
    and asset mutations stay refused. `LIVE_TRADE_ENABLED` remains a source
    tripwire, not the switch. Live reads do not flip it. Do not add names.
 4. **set-leverage** is the only account write. `POST /api/v5/account/set-leverage`

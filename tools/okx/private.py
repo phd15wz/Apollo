@@ -6,8 +6,12 @@ balance, positions, and funding balances and omits that header. Live place
 and cancel are the BTC-USDT cash smoke, one BTC-USDT-SWAP smoke, and the
 locked mild-3.1 equity SWAP stub (MU, SKHY, LITE, TSM, QQQ; isolated;
 sz at most the stub lot), and only when ``OKX_LIVE_TRADE=1`` (or
-``live_trade=True``) is set with the order go flag. Amend stays on demo.
-The only account write is isolated set-leverage (USDT-SWAP, lever 1-5,
+``live_trade=True``) is set with the order go flag. The same opt-in
+allows reduce-only closes for the remaining open lots: MU, SKHY, and
+TSM sells, and a QQQ buy-to-cover, each sz at most that open lot, for
+a future dual-flag place. The client does not send those closes on its
+own. Amend stays on demo. The only account write is isolated
+set-leverage (USDT-SWAP, lever 1-5,
 or 1-2 on the five stub names) under that same opt-in on live, or the
 demo go flag. Withdrawal, deposit, transfer, and every other asset route
 are refused. Writes need an explicit go flag; see ``tools.okx.guards``.
