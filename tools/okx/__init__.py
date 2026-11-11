@@ -6,9 +6,10 @@ balances, demo place, cancel, and amend, plus opt-in live place-then-cancel
 smokes for BTC-USDT cash and one BTC-USDT-SWAP limit (``OKX_LIVE_TRADE=1``),
 the locked mild-3.1 equity SWAP stub (isolated, sz at most the stub lot),
 reduce-only closes for the remaining open lots (MU, SKHY, and TSM sells,
-and a QQQ buy-to-cover, each sz at most that open lot) as a future close
+and a QQQ buy-to-cover, each sz at most that open lot) and one LITE
+reduce-only sell (sz at most 0.01; live exit deferred) as a future close
 shape, and isolated set-leverage at lever 1-5 on a USDT-SWAP (1-2 on the
-stub names). It cannot withdraw.
+stub names). It cannot withdraw. These closes do not auto-flatten.
 """
 
 from tools.okx.archive import (

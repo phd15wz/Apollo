@@ -15,11 +15,12 @@ Enforced in this package
   BTC-USDT-SWAP limit (``tdMode`` ``isolated`` only) — and the locked
   mild-3.1 equity SWAP stub (MU, SKHY, LITE, TSM, QQQ ``USDT-SWAP``):
   ``tdMode`` ``isolated``, the stub side, and ``sz`` at most the stub lot.
-  Reduce-only closes sit beside those opens for the remaining open lots:
-  MU, SKHY, and TSM sells, and a QQQ buy-to-cover, each ``sz`` at most
-  that open lot. Opens stay ``reduceOnly`` off. The closes are an
-  allowlist shape for a later dual-flag place. This package does not
-  watch or send them on its own.
+  Reduce-only closes sit beside those opens: MU, SKHY, LITE, and TSM
+  sells, and a QQQ buy-to-cover, each ``sz`` at most that open lot.
+  The four-name rows are the emergency path. The LITE live exit stays
+  deferred. Opens stay ``reduceOnly`` off. The closes are an allowlist
+  shape for a later dual-flag place. This package does not watch or send
+  them on its own, and it does not auto-flatten.
   ``LIVE_TRADE_ENABLED`` is a tripwire: setting it ``True`` does not enable
   live trading; the client refuses to start. The only account write is
   ``POST /api/v5/account/set-leverage``: ``mgnMode`` ``isolated``, a
@@ -145,12 +146,14 @@ class Mild31Close:
     pos_sides: frozenset[str]
 
 
-# Remaining open stub lots. MU, SKHY, and TSM opens are buys, so each
-# close is a sell at most that lot. QQQ's open is a sell, so the close
-# is a buy-to-cover at most 0.01. LITE has no close row here.
+# Remaining open stub lots, plus the LITE long. MU, SKHY, LITE, and TSM
+# opens are buys, so each close is a sell at most that lot. QQQ's open
+# is a sell, so the close is a buy-to-cover at most 0.01. The LITE live
+# exit stays deferred; this row is the allowlist shape only.
 MILD31_CLOSES: tuple[Mild31Close, ...] = (
     Mild31Close("MU-USDT-SWAP", "sell", "0.01", frozenset({"", "long"})),
     Mild31Close("SKHY-USDT-SWAP", "sell", "0.03", frozenset({"", "long"})),
+    Mild31Close("LITE-USDT-SWAP", "sell", "0.01", frozenset({"", "long"})),
     Mild31Close("TSM-USDT-SWAP", "sell", "0.02", frozenset({"", "long"})),
     Mild31Close("QQQ-USDT-SWAP", "buy", "0.01", frozenset({"", "short"})),
 )
@@ -267,7 +270,7 @@ def require_cli_demo() -> None:
             "set-leverage need OKX_LIVE_TRADE=1 and --allow-orders "
             "(cash: smoke; SWAP: smoke-swap; stub opens: place/cancel on "
             "MU, SKHY, LITE, TSM, QQQ USDT-SWAP; closes are reduce-only "
-            "MU/SKHY/TSM sells and a QQQ buy-to-cover, sz at most the open lot). "
+            "MU/SKHY/LITE/TSM sells and a QQQ buy-to-cover, sz at most the open lot). "
             "Live Trade is not enabled."
         )
     resolve_demo(True)
@@ -328,7 +331,7 @@ def assert_live_read_only(demo: bool, method: str, path: str, *, live_trade: boo
         "OKX_LIVE_TRADE=1 opens place and cancel for the BTC-USDT cash smoke, "
         "the BTC-USDT-SWAP smoke, or the mild-3.1 equity SWAP stub "
         "(MU, SKHY, LITE, TSM, QQQ; isolated; sz at most the stub lot; "
-        "closes are reduce-only MU/SKHY/TSM sells and a QQQ buy-to-cover, "
+        "closes are reduce-only MU/SKHY/LITE/TSM sells and a QQQ buy-to-cover, "
         "sz at most the open lot), "
         "and isolated set-leverage at lever 1-5 (1-2 on those five names). "
         "Live Trade is not enabled."
@@ -471,7 +474,7 @@ def _mild31_close_message() -> str:
         "Live mild-3.1 close is reduce-only, isolated, limit or ioc, "
         "with sz a multiple of the stub step and at most the close cap. "
         f"Caps: {caps}. "
-        "posSide is empty (net mode omits it), long on MU, SKHY, and TSM, "
+        "posSide is empty (net mode omits it), long on MU, SKHY, LITE, and TSM, "
         "or short on the QQQ buy-to-cover. "
         "Opens stay reduceOnly off. Wrong sides, other names, and larger sizes stay refused."
     )
