@@ -100,8 +100,10 @@ class LiveTradingDisabled(UnsafeEndpointError):
     sz at most the stub lot), plus reduce-only closes for the remaining
     open lots (MU, SKHY, and TSM sells, and a QQQ buy-to-cover, each sz
     at most that open lot) and one LITE reduce-only sell (sz at most
-    0.01; live exit deferred). Live reads remain balance, positions, and
-    funding balances. Live place, cancel, and isolated set-leverage
+    0.01; live exit deferred). Live reads are balance, positions, funding
+    balances, and the sanctioned Read GETs (pending orders, one order,
+    recent order history, account config, fee tier, leverage, and 7-day
+    bills). Live place, cancel, and isolated set-leverage
     (lever 1-5, or 1-2 on the stub names) need ``OKX_LIVE_TRADE=1`` and
     the order go flag, and still cannot withdraw or change position mode.
     """
