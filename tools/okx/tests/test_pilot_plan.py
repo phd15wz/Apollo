@@ -895,4 +895,5 @@ def test_runbook_names_the_sanctioned_reads_and_refuses_clearance() -> None:
     assert "15 minutes" in text
     assert "d7fa452" in text
     assert "3394944" in text
+    assert "74ecb90" in text
     assert "24.5554" in text

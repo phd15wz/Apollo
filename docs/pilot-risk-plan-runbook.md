@@ -106,10 +106,11 @@ close-attempt exhaustion, an oversized position, and `enter` without
 ## Runtime versus this source
 
 The read-only runtime noted at `d7fa452c9ddad790501e01fdc1372b8dca61f002`
-does not contain the LITE reduce-only allowlist row. `main` at
-`3394944f6f6fbf809feeba1ad33aa5ffe9b45c9e` has that row from `f33c729`.
-The row does not auto-flatten and was not live-proven. COHR is not a
-stub name. Do not treat the runtime checkout as this branch.
+does not contain the LITE reduce-only allowlist row. That row is in
+`3394944f6f6fbf809feeba1ad33aa5ffe9b45c9e` from `f33c729`. Reviewed `main`
+is now `74ecb90d0f8a658912cce91f0fe697a80e133ffa`, the merge of the
+permanent reads. The row does not auto-flatten and was not live-proven.
+COHR is not a stub name. Do not treat the runtime checkout as this branch.
 
 ## Arming checks
 
