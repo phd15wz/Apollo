@@ -170,8 +170,6 @@ def test_live_writes_and_other_reads_raise(monkeypatch: pytest.MonkeyPatch) -> N
         client.cancel_order("BTC-USDT-SWAP", ord_id="312269865356374016")
     with pytest.raises(LiveTradingDisabled, match="Live Trade"):
         client.amend_order("BTC-USDT-SWAP", ord_id="312269865356374016", new_px="60001", margin_usd=1)
-    with pytest.raises(LiveTradingDisabled, match="balance, positions, and funding"):
-        client.get_order("BTC-USDT-SWAP", ord_id="312269865356374016")
     assert transport.calls == []
 
     monkeypatch.setenv("OKX_ALLOW_ORDERS", "1")
@@ -229,8 +227,6 @@ def test_live_smoke_place_cancel_needs_opt_in(monkeypatch: pytest.MonkeyPatch, c
         client.place_order(**_smoke_order(px="40001"))
     with pytest.raises(LiveTradingDisabled, match="Live Trade"):
         client.amend_order("BTC-USDT", ord_id="312269865356374016", new_px="39000")
-    with pytest.raises(LiveTradingDisabled, match="balance, positions, and funding"):
-        client.get_order("BTC-USDT", ord_id="312269865356374016")
     with pytest.raises(LiveTradingDisabled):
         client.cancel_order("ETH-USDT", ord_id="312269865356374016")
     with pytest.raises(UnsafeEndpointError):

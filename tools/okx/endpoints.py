@@ -118,6 +118,10 @@ FUNDING_RATE = "/api/v5/public/funding-rate"
 FUNDING_RATE_HISTORY = "/api/v5/public/funding-rate-history"
 OPEN_INTEREST = "/api/v5/public/open-interest"
 MARK_PRICE = "/api/v5/public/mark-price"
+# Keyless. Maintenance-margin tiers for a pre-entry liquidation projection.
+# Account ``/api/v5/account/position-tiers`` is a portfolio-margin size limit
+# and does not return mmr, so it is not used.
+POSITION_TIERS = "/api/v5/public/position-tiers"
 MARKET_DATA_HISTORY = "/api/v5/public/market-data-history"
 SERVER_TIME = "/api/v5/public/time"
 
@@ -157,6 +161,7 @@ ALLOWED_GET: frozenset[str] = frozenset(
         FUNDING_RATE_HISTORY,
         OPEN_INTEREST,
         MARK_PRICE,
+        POSITION_TIERS,
         MARKET_DATA_HISTORY,
         SERVER_TIME,
         TICKERS,
@@ -188,6 +193,8 @@ RATE_LIMITS: dict[str, tuple[int, float]] = {
     FUNDING_RATE: (10, 2.0),
     FUNDING_RATE_HISTORY: (10, 2.0),
     MARK_PRICE: (10, 2.0),
+    # OKX v5 public position tiers: 10 requests / 2 seconds, IP.
+    POSITION_TIERS: (10, 2.0),
     MARKET_DATA_HISTORY: (5, 2.0),
     SERVER_TIME: (10, 2.0),
     SYSTEM_STATUS: (1, 5.0),

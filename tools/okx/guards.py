@@ -6,8 +6,10 @@ Enforced in this package
   ``OKX_ALLOW_ORDERS=1``. ``read_only=True``, ``--read-only``, and
   ``OKX_READ_ONLY=1`` win over that go flag (kill switch). Cancel is a write.
 * Demo by default. ``OKX_DEMO`` on, or a library ``PrivateClient()`` with the
-  variable unset, sends ``x-simulated-trading: 1``. Live mode is read-only
-  balance, positions, and funding balances: ``demo=False``, or ``OKX_DEMO``
+  variable unset, sends ``x-simulated-trading: 1``. Live mode signs the
+  sanctioned Read GETs (balance, positions, funding, pending orders, one
+  order, recent order history, account config, fee tier, leverage, and
+  7-day bills) and does not turn on Trade to do it: ``demo=False``, or ``OKX_DEMO``
   unset on the CLI (explicit ``0`` / ``false`` / ``no`` / ``off`` too).
   Amend stays on demo. Live place and cancel exist only with an explicit
   opt-in (``OKX_LIVE_TRADE=1`` or ``live_trade=True``) plus the order go
@@ -169,14 +171,82 @@ _OFF = frozenset({"0", "false", "no", "off"})
 FUNDING_BALANCE_PATH = "/api/v5/asset/balances"
 
 # Signed GETs that may run against a live Read key. Funding stays in this set.
-# Live writes are not reads: see ``LIVE_TRADE_PATHS``.
-LIVE_READ_PATHS = frozenset(
-    {
+# These reads do not require ``OKX_LIVE_TRADE``. Trade permission is not turned
+# on to read. Live writes are not reads: see ``LIVE_TRADE_PATHS``.
+ACCOUNT_CONFIG_PATH = "/api/v5/account/config"
+TRADE_FEE_PATH = "/api/v5/account/trade-fee"
+LEVERAGE_INFO_PATH = "/api/v5/account/leverage-info"
+BILLS_PATH = "/api/v5/account/bills"
+ORDER_PATH = "/api/v5/trade/order"
+ORDERS_PENDING_PATH = "/api/v5/trade/orders-pending"
+ORDERS_HISTORY_PATH = "/api/v5/trade/orders-history"
+
+
+@dataclass(frozen=True, slots=True)
+class SanctionedRead:
+    """One live GET, the OKX permission, and why a read-only check needs it."""
+
+    path: str
+    permission: str
+    why: str
+
+
+# Official OKX v5 (docs-v5, Read permission, not Trade). No withdraw, transfer,
+# deposit, or account-mutation route is in this tuple.
+SANCTIONED_LIVE_READS: tuple[SanctionedRead, ...] = (
+    SanctionedRead(
         "/api/v5/account/balance",
+        "Read",
+        "Trading-account equity. Already a live read. Not a loss measure.",
+    ),
+    SanctionedRead(
         "/api/v5/account/positions",
+        "Read",
+        "Signed position, avgPx, upl, isolated margin, markPx, and liqPx once a position exists.",
+    ),
+    SanctionedRead(
         FUNDING_BALANCE_PATH,
-    }
+        "Read",
+        "Funding-account balance only. Already the sole asset GET. Not a transfer.",
+    ),
+    SanctionedRead(
+        ORDERS_PENDING_PATH,
+        "Read",
+        "Incomplete orders. Pending state was unknown because this GET was refused on a live key.",
+    ),
+    SanctionedRead(
+        ORDER_PATH,
+        "Read",
+        "One order by id after a place or cancel, so a restart can reconcile a fill.",
+    ),
+    SanctionedRead(
+        ORDERS_HISTORY_PATH,
+        "Read",
+        "Terminal orders from the last 7 days when a restart must reconcile a clOrdId.",
+    ),
+    SanctionedRead(
+        ACCOUNT_CONFIG_PATH,
+        "Read",
+        "acctLv and posMode. This GET does not set either.",
+    ),
+    SanctionedRead(
+        TRADE_FEE_PATH,
+        "Read",
+        "Account fee tier (maker/taker), including the instrument fee group. Not a guessed rate.",
+    ),
+    SanctionedRead(
+        LEVERAGE_INFO_PATH,
+        "Read",
+        "Leverage actually set on the instrument. Reading it is not set-leverage.",
+    ),
+    SanctionedRead(
+        BILLS_PATH,
+        "Read",
+        "Trade pnl, trade fee, and funding. Last 7 days. Not bills-archive.",
+    ),
 )
+
+LIVE_READ_PATHS = frozenset(row.path for row in SANCTIONED_LIVE_READS)
 
 # Live POSTs a Trade key may sign, and only after the opt-in. Amend is absent.
 # set-leverage is the only account POST. Place and cancel stay the two smokes
@@ -209,9 +279,13 @@ ALLOWED_PRIVATE: frozenset[tuple[str, str]] = frozenset(
         ("GET", "/api/v5/account/balance"),
         ("GET", "/api/v5/account/positions"),
         ("GET", FUNDING_BALANCE_PATH),
-        ("GET", "/api/v5/trade/order"),
-        ("GET", "/api/v5/trade/orders-pending"),
-        ("GET", "/api/v5/trade/orders-history"),
+        ("GET", ACCOUNT_CONFIG_PATH),
+        ("GET", TRADE_FEE_PATH),
+        ("GET", LEVERAGE_INFO_PATH),
+        ("GET", BILLS_PATH),
+        ("GET", ORDER_PATH),
+        ("GET", ORDERS_PENDING_PATH),
+        ("GET", ORDERS_HISTORY_PATH),
         ("GET", "/api/v5/trade/orders-history-archive"),
         ("POST", "/api/v5/trade/order"),
         ("POST", "/api/v5/trade/cancel-order"),
@@ -226,9 +300,17 @@ PRIVATE_RATE_LIMITS: dict[str, tuple[int, float]] = {
     "/api/v5/account/positions": (10, 2.0),
     # OKX: 6 requests per second, user id, Read.
     FUNDING_BALANCE_PATH: (6, 1.0),
-    "/api/v5/trade/order": (60, 2.0),
-    "/api/v5/trade/orders-pending": (60, 2.0),
-    "/api/v5/trade/orders-history": (40, 2.0),
+    # OKX v5 account config: 5 requests / 2 seconds, user id, Read.
+    ACCOUNT_CONFIG_PATH: (5, 2.0),
+    # OKX v5 trade fee: 5 requests / 2 seconds, user id, Read.
+    TRADE_FEE_PATH: (5, 2.0),
+    # OKX v5 leverage info: 20 requests / 2 seconds, user id, Read.
+    LEVERAGE_INFO_PATH: (20, 2.0),
+    # OKX v5 bills (last 7 days): 5 requests / second, user id, Read.
+    BILLS_PATH: (5, 1.0),
+    ORDER_PATH: (60, 2.0),
+    ORDERS_PENDING_PATH: (60, 2.0),
+    ORDERS_HISTORY_PATH: (40, 2.0),
     "/api/v5/trade/orders-history-archive": (20, 2.0),
     "/api/v5/trade/cancel-order": (60, 2.0),
     "/api/v5/trade/amend-order": (60, 2.0),
@@ -311,7 +393,7 @@ def resolve_demo(demo: bool | None) -> bool:
 
 
 def assert_live_read_only(demo: bool, method: str, path: str, *, live_trade: bool = False) -> None:
-    """Live reads are balance, positions, and funding.
+    """Live reads are the sanctioned Read GETs. They do not need Trade.
 
     Place, cancel, and set-leverage are signed on a live key only when
     ``live_trade`` is true. Amend and every other private call stay refused.
@@ -326,7 +408,9 @@ def assert_live_read_only(demo: bool, method: str, path: str, *, live_trade: boo
     if live_trade and (method_u, path_only) in LIVE_TRADE_PATHS:
         return
     raise LiveTradingDisabled(
-        "Live mode is read-only for balance, positions, and funding. "
+        "Live mode signs balance, positions, funding, and the sanctioned Read "
+        "GETs (pending orders, one order, recent order history, account config, "
+        "fee tier, leverage, and 7-day bills). It does not turn on Trade to read. "
         "Place, amend, and cancel stay on demo (OKX_DEMO=1) unless "
         "OKX_LIVE_TRADE=1 opens place and cancel for the BTC-USDT cash smoke, "
         "the BTC-USDT-SWAP smoke, or the mild-3.1 equity SWAP stub "
@@ -632,7 +716,11 @@ def _payload_reduce_only(body: Mapping[str, Any]) -> bool:
     return True
 
 
-def assert_live_trade_payload(method: str, path: str, payload: Mapping[str, Any] | None) -> None:
+def assert_live_trade_payload(
+    method: str,
+    path: str,
+    payload: Mapping[str, Any] | None,
+) -> None:
     """Refuse a live place, cancel, or set-leverage body outside its lock."""
     method_u = method.upper()
     body = dict(payload or {})

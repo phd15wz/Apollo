@@ -100,6 +100,8 @@ class Instrument:
     ct_mult: str
     list_time_ms: int | None
     exp_time_ms: int | None
+    ct_type: str = ""
+    group_id: str = ""
 
     @classmethod
     def from_dict(cls, row: dict[str, Any]) -> Instrument:
@@ -118,6 +120,8 @@ class Instrument:
             ct_mult=_s(row.get("ctMult")),
             list_time_ms=_opt_i(row.get("listTime")),
             exp_time_ms=_opt_i(row.get("expTime")),
+            ct_type=_s(row.get("ctType")),
+            group_id=_s(row.get("groupId")),
         )
 
 
@@ -283,6 +287,35 @@ class OpenInterest:
             oi=_f(row.get("oi")),
             oi_ccy=_f(row.get("oiCcy")),
             ts_ms=_i(row.get("ts")),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class PositionTier:
+    """One row from ``GET /api/v5/public/position-tiers``."""
+
+    inst_id: str
+    inst_family: str
+    underlying: str
+    tier: str
+    min_sz: str
+    max_sz: str
+    mmr: str
+    imr: str
+    max_lever: str
+
+    @classmethod
+    def from_dict(cls, row: dict[str, Any]) -> PositionTier:
+        return cls(
+            inst_id=_s(row.get("instId")),
+            inst_family=_s(row.get("instFamily")),
+            underlying=_s(row.get("uly")),
+            tier=_s(row.get("tier")),
+            min_sz=_s(row.get("minSz")),
+            max_sz=_s(row.get("maxSz")),
+            mmr=_s(row.get("mmr")),
+            imr=_s(row.get("imr")),
+            max_lever=_s(row.get("maxLever")),
         )
 
 

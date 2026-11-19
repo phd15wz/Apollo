@@ -2,8 +2,10 @@
 
 Stage 1 is a keyless Python client for OKX v5 **public** REST and WebSocket
 data. It cannot trade. Stage 2 (`PrivateClient`) signs account reads and
-demo orders. Live mode reads trading balance, positions, and funding
-balances. Opt-in smokes may place and immediately cancel one resting
+demo orders. Live mode reads trading balance, positions, funding
+balances, and the sanctioned Read GETs (pending orders, one order,
+recent order history, account config, fee tier, leverage, and 7-day
+bills). Those reads do not turn on Trade. Opt-in smokes may place and immediately cancel one resting
 BTC-USDT cash limit, or one resting BTC-USDT-SWAP limit with `tdMode`
 `isolated`, on a live Trade key. The same dual opt-in (`OKX_LIVE_TRADE=1`
 and the order go flag) also allows the locked mild-3.1 equity SWAP stub:
