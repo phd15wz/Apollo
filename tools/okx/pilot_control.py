@@ -395,86 +395,86 @@ class PilotController:
         guard = 0
         limit = int(self.policy.max_close_attempts or 1) + 1
         while self.audit.phase == "unwinding" and guard < limit:
-            self._unwind_once(book, now_ms)
+            if self._unwind_once(book, now_ms):
+                return
             guard += 1
         if self.audit.phase == "unwinding":
             self._escalate("unwind did not finish inside the close bound")
 
-    def _unwind_once(self, book: Any, now_ms: int) -> None:
+    def _unwind_once(self, book: Any, now_ms: int) -> bool:
+        """Try one reduce-only pass. True means this step should not loop again."""
         if self.audit.phase != "unwinding":
-            return
+            return True
         if self.audit.close_attempts >= int(self.policy.max_close_attempts or 0):
-            self._escalate("close attempts exhausted")
-            return
+            self._escalate(self._exhausted_reason())
+            return True
         facts = self._facts(book, now_ms, need_bills=False, require_trade=False)
         if facts.positions is None or facts.pending is None:
             self._escalate("cannot flatten because the book is not visible")
-            return
+            return True
         if self._foreign_pilot_pending(facts.pending):
             self._escalate("unknown pending order on a selected leg; it was not cancelled")
-            return
+            return True
         self._cancel_ours(book, facts.pending)
         facts = self._facts(book, now_ms, need_bills=False, require_trade=False)
         if facts.positions is None or facts.pending is None:
             self._escalate("cannot reconcile after cancel")
-            return
+            return True
         if self._foreign_pilot_pending(facts.pending):
             self._escalate("unknown pending order on a selected leg; it was not cancelled")
-            return
+            return True
         exposed = self._signed(facts.positions)
         if exposed is None:
             self._escalate("position sign does not match the selected plan")
-            return
+            return True
         pending_ours = [row for row in facts.pending if self._ours(row)]
         if not any(qty != 0 for qty in exposed.values()) and not pending_ours:
             self.audit.phase = "flat"
             self.audit.entries_sealed = True
             self._reason = self._reason or "flat"
             self._save()
-            return
-        if not self._priceable(facts, exposed):
+            return True
+        if not self._priceable(facts, {inst: qty for inst, qty in exposed.items() if inst in self._closable_legs(exposed, facts)}):
             self._escalate("cannot price a reduce-only close")
-            return
+            return True
+        unresolved = self._unresolved_legs(exposed, facts)
+        closable = self._closable_legs(exposed, facts)
+        if not closable:
+            self._remember_unresolved(unresolved)
+            return True
         self.audit.close_attempts += 1
         self.audit.entries_sealed = True
         self._save()
         for leg in PILOT_LEGS:
             signed = exposed.get(leg.inst_id, Decimal("0"))
-            if signed == 0:
+            if signed == 0 or leg.inst_id not in closable:
                 continue
             if (signed > 0) != (leg.direction == "long"):
                 self._escalate(f"{leg.inst_id} exposure is the wrong direction")
-                return
-            instrument = facts.instruments.get(leg.inst_id)
-            if instrument is None:
-                self._escalate(f"{leg.inst_id} instrument is missing")
-                return
-            sized = _closable(abs(signed), leg.size, instrument.lot_sz, instrument.min_sz)
-            if sized == "oversized":
-                self._escalate(f"{leg.inst_id} position is larger than the plan; it was not closed larger")
-                return
-            if sized == "dust":
-                self._escalate(f"{leg.inst_id} remainder is below the lot and was not rounded up")
-                return
+                return True
             try:
-                request = self._close_request(facts, leg, sized, now_ms)
+                request = self._close_request(facts, leg, closable[leg.inst_id], now_ms)
             except (PnlInputError, PilotTransportError) as exc:
                 self._reason = f"close price unavailable: {exc.__class__.__name__}"
                 continue
             self._submit(book, request)
+        self._remember_unresolved(unresolved)
         facts = self._facts(book, now_ms, need_bills=False, require_trade=False)
         if facts.positions is None:
             self._escalate("position read failed after a close attempt")
-            return
+            return True
         exposed = self._signed(facts.positions)
         pending_ours = [row for row in (facts.pending or ()) if self._ours(row)]
         if exposed is not None and not any(qty != 0 for qty in exposed.values()) and not pending_ours:
             self.audit.phase = "flat"
             self._reason = self._reason or "flat"
             self._save()
-            return
+            return True
+        if unresolved:
+            return True
         if self.audit.close_attempts >= int(self.policy.max_close_attempts or 0):
-            self._escalate("close attempts exhausted")
+            self._escalate(self._exhausted_reason())
+        return False
 
     def _facts(self, book: Any, now_ms: int, *, need_bills: bool, require_trade: bool) -> _Facts:
         facts = _Facts([], None, {}, {}, {}, {}, {}, None, None, [] if need_bills else None, None, None)
@@ -755,6 +755,55 @@ class PilotController:
         self.audit.entries_sealed = True
         self._reason = reason
         self._save()
+
+    def _closable_legs(
+        self, exposed: dict[str, Decimal], facts: _Facts
+    ) -> dict[str, Decimal]:
+        chosen: dict[str, Decimal] = {}
+        for leg in PILOT_LEGS:
+            signed = exposed.get(leg.inst_id, Decimal("0"))
+            if signed == 0 or (signed > 0) != (leg.direction == "long"):
+                continue
+            instrument = facts.instruments.get(leg.inst_id)
+            if instrument is None:
+                continue
+            sized = _closable(abs(signed), leg.size, instrument.lot_sz, instrument.min_sz)
+            if isinstance(sized, Decimal):
+                chosen[leg.inst_id] = sized
+        return chosen
+
+    def _unresolved_legs(self, exposed: dict[str, Decimal], facts: _Facts) -> tuple[str, ...]:
+        notes: list[str] = []
+        for leg in PILOT_LEGS:
+            signed = exposed.get(leg.inst_id, Decimal("0"))
+            if signed == 0:
+                continue
+            if (signed > 0) != (leg.direction == "long"):
+                notes.append(f"{leg.inst_id} exposure is the wrong direction")
+                continue
+            instrument = facts.instruments.get(leg.inst_id)
+            if instrument is None:
+                notes.append(f"{leg.inst_id} instrument is missing")
+                continue
+            sized = _closable(abs(signed), leg.size, instrument.lot_sz, instrument.min_sz)
+            if sized == "oversized":
+                notes.append(f"{leg.inst_id} position is larger than the plan; it was not closed larger")
+            elif sized == "dust":
+                notes.append(f"{leg.inst_id} remainder is below the lot and was not rounded up")
+        return tuple(notes)
+
+    def _remember_unresolved(self, notes: tuple[str, ...]) -> None:
+        if not notes:
+            return
+        self.audit.escalation_reason = "; ".join(notes)
+        self._reason = self.audit.escalation_reason
+        self._save()
+
+    def _exhausted_reason(self) -> str:
+        recorded = self.audit.escalation_reason
+        if recorded:
+            return recorded + "; close attempts exhausted"
+        return "close attempts exhausted"
 
     def _escalate(self, reason: str) -> None:
         self.audit.phase = "escalated"

@@ -513,8 +513,14 @@ def test_partial_dust_does_not_round_up_or_continue(tmp_path: Path) -> None:
     controller, book, _entered = _go(tmp_path, book)
     assert [row.inst_id for row in _entries(book)] == ["MU-USDT-SWAP"]
     assert _closes(book) == []
-    assert controller.audit.phase == "escalated"
+    assert controller.audit.phase == "unwinding"
     assert "below the lot" in controller.audit.escalation_reason
+    before = len(book.placed)
+    book.now = NOW + 15 * 60 * 1000
+    book.mark_ts["MU-USDT-SWAP"] = book.now
+    controller.step(book, book.now)
+    assert len(book.placed) == before
+    assert book.state["MU-USDT-SWAP"]["pos"] == Decimal("0.005")
 
 
 def test_partial_fill_unwinds_without_top_up(tmp_path: Path) -> None:
@@ -726,15 +732,96 @@ def test_close_failures_persist_and_then_send_nothing(tmp_path: Path) -> None:
     assert len(book.placed) == before
 
 
-def test_oversized_position_is_not_closed_above_the_plan(tmp_path: Path) -> None:
+def _fresh_marks(book: SyntheticBook, now_ms: int) -> None:
+    book.now = now_ms
+    for inst in MARKS:
+        book.mark_ts[inst] = now_ms
+
+
+def test_oversized_leg_does_not_block_the_other_closes(tmp_path: Path) -> None:
+    path = tmp_path / "audit.json"
     controller, book, _entered = _go(tmp_path)
     book.state["MU-USDT-SWAP"]["pos"] = Decimal("0.05")
     book.state["MU-USDT-SWAP"]["upl"] = Decimal("-7")
-    book.now = NOW + 1_000
-    result = controller.step(book, NOW + 1_000)
-    assert result.phase == "escalated"
+    _fresh_marks(book, NOW + 1_000)
+    result = controller.step(book, book.now)
     assert "larger than the plan" in result.reason
+    assert "MU-USDT-SWAP" in result.reason
     assert not any(row.inst_id == "MU-USDT-SWAP" for row in _closes(book))
+    assert {row.inst_id for row in _closes(book)} == {"LITE-USDT-SWAP", "COHR-USDT-SWAP", "QQQ-USDT-SWAP"}
+    assert [(row.inst_id, row.side, row.sz, row.reduce_only) for row in _closes(book)] == [
+        ("LITE-USDT-SWAP", "sell", "0.01", True),
+        ("COHR-USDT-SWAP", "sell", "0.02", True),
+        ("QQQ-USDT-SWAP", "buy", "0.01", True),
+    ]
+    assert book.state["MU-USDT-SWAP"]["pos"] == Decimal("0.05")
+    assert "larger than the plan" in path.read_text(encoding="utf-8")
+    before = len(book.placed)
+    _fresh_marks(book, NOW + 15 * 60 * 1000)
+    again = controller.step(book, book.now)
+    assert len(book.placed) == before
+    assert "larger than the plan" in again.reason
+    loaded = PilotController.load(path, _policy())
+    loaded.step(book, book.now)
+    assert len(book.placed) == before
+    assert book.state["MU-USDT-SWAP"]["pos"] == Decimal("0.05")
+    assert "MU-USDT-SWAP" in loaded.audit.escalation_reason
+
+
+def test_dust_leg_does_not_block_the_other_closes(tmp_path: Path) -> None:
+    controller, book, _entered = _go(tmp_path)
+    book.state["MU-USDT-SWAP"]["pos"] = Decimal("0.005")
+    book.state["MU-USDT-SWAP"]["upl"] = Decimal("-7")
+    _fresh_marks(book, NOW + 1_000)
+    result = controller.step(book, book.now)
+    assert "below the lot" in result.reason
+    assert not any(row.inst_id == "MU-USDT-SWAP" for row in _closes(book))
+    assert [(row.inst_id, row.side, row.sz, row.reduce_only) for row in _closes(book)] == [
+        ("LITE-USDT-SWAP", "sell", "0.01", True),
+        ("COHR-USDT-SWAP", "sell", "0.02", True),
+        ("QQQ-USDT-SWAP", "buy", "0.01", True),
+    ]
+    assert book.state["MU-USDT-SWAP"]["pos"] == Decimal("0.005")
+    before = len(book.placed)
+    _fresh_marks(book, NOW + 15 * 60 * 1000)
+    controller.step(book, book.now)
+    assert len(book.placed) == before
+
+
+def test_next_check_and_restart_finish_valid_legs_without_a_duplicate(tmp_path: Path) -> None:
+    path = tmp_path / "audit.json"
+    controller, book, _entered = _go(tmp_path)
+    book.state["MU-USDT-SWAP"]["pos"] = Decimal("0.05")
+    book.state["MU-USDT-SWAP"]["upl"] = Decimal("-7")
+    book.close_failures = 1
+    _fresh_marks(book, NOW + 1_000)
+    first = controller.step(book, book.now)
+    assert "larger than the plan" in first.reason
+    assert [row.inst_id for row in _closes(book)] == [
+        "LITE-USDT-SWAP",
+        "COHR-USDT-SWAP",
+        "QQQ-USDT-SWAP",
+    ]
+    assert book.state["LITE-USDT-SWAP"]["pos"] != 0
+    assert book.state["COHR-USDT-SWAP"]["pos"] == 0
+    assert book.state["QQQ-USDT-SWAP"]["pos"] == 0
+    assert controller.audit.phase == "unwinding"
+    _fresh_marks(book, NOW + 15 * 60 * 1000)
+    loaded = PilotController.load(path, _policy())
+    second = loaded.step(book, book.now)
+    lite = [row for row in _closes(book) if row.inst_id == "LITE-USDT-SWAP"]
+    assert len(lite) == 2
+    assert all(row.side == "sell" and row.sz == "0.01" and row.reduce_only for row in lite)
+    assert [row.inst_id for row in _closes(book) if row.inst_id == "COHR-USDT-SWAP"] == ["COHR-USDT-SWAP"]
+    assert [row.inst_id for row in _closes(book) if row.inst_id == "QQQ-USDT-SWAP"] == ["QQQ-USDT-SWAP"]
+    assert not any(row.inst_id == "MU-USDT-SWAP" for row in _closes(book))
+    assert book.state["LITE-USDT-SWAP"]["pos"] == 0
+    assert book.state["MU-USDT-SWAP"]["pos"] == Decimal("0.05")
+    assert "larger than the plan" in second.reason
+    before = len(book.placed)
+    _fresh_marks(book, book.now + 15 * 60 * 1000)
+    PilotController.load(path, _policy()).step(book, book.now)
+    assert len(book.placed) == before
 
 
 def test_enter_without_send_orders_places_nothing(tmp_path: Path) -> None:

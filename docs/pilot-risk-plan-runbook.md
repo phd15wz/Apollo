@@ -97,9 +97,14 @@ close-attempt exhaustion, an oversized position, and `enter` without
 - `step` runs only when something calls it. The intended cadence is 15
   minutes. Passing 15 minutes does not flatten the book by itself, and
   it is not evidence the call was on time. This PR starts no service.
-- An oversized leg, or a remainder below the lot, escalates and does not
-  round. The automatic flatten stops. A person has to finish.
-- After escalation, `step` sends nothing.
+- An oversized leg is not closed above the plan, and a remainder below
+  the lot is not rounded up. Those legs stay in the recovery record.
+  Every other leg that is still within the plan size still gets a
+  reduce-only close. The next operator check and a restart retry only
+  those safe closes. They do not send a second close for a leg that is
+  already flat, and they do not reverse it. A person still has to finish
+  the unresolved leg.
+- After a book-level escalation, `step` sends nothing.
 - Fills are not atomic. One leg can fill and another can fail. The
   controller then cancels its own prefix and reduces what it can see.
 
