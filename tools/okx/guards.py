@@ -71,6 +71,7 @@ from typing import Any, Mapping
 
 from tools.okx.endpoints import validate_inst_id
 from tools.okx.errors import LiveTradingDisabled, OrdersDisabled, RiskLimitError, UnsafeEndpointError
+from tools.okx.pilot_policy import PILOT_LEG, assert_pilot_plan_order, pilot_plan_message
 
 # Tripwire. Flipping this to True does not place live orders; ``resolve_demo``
 # refuses to start so a one-line edit cannot unlock live Trade. The opt-in is
@@ -603,8 +604,29 @@ def assert_live_place(
     px: str,
     pos_side: str = "",
     reduce_only: bool = False,
+    pilot_plan: bool = False,
 ) -> None:
-    """Refuse a live place outside the BTC smokes, the stub opens, or the close list."""
+    """Refuse a live place outside the BTC smokes, the stub, or the selected plan.
+
+    ``pilot_plan`` defaults off. The mild-3.1 stub is unchanged when it is off.
+    COHR is reachable only when it is on, and only at the selected size.
+    """
+    if pilot_plan and inst_id in PILOT_LEG:
+        assert_pilot_plan_order(
+            inst_id=inst_id,
+            side=side,
+            sz=sz,
+            td_mode=td_mode,
+            ord_type=ord_type,
+            px=px,
+            pos_side=pos_side,
+            reduce_only=reduce_only,
+        )
+        return
+    if inst_id == "COHR-USDT-SWAP":
+        raise LiveTradingDisabled(
+            "COHR-USDT-SWAP is outside the mild-3.1 stub. " + pilot_plan_message()
+        )
     if inst_id in (LIVE_SMOKE_INST_ID, LIVE_SWAP_SMOKE_INST_ID):
         assert_live_smoke_place(
             inst_id=inst_id,
@@ -635,12 +657,15 @@ def assert_live_place(
     )
 
 
-def assert_live_smoke_cancel(inst_id: str) -> None:
+def assert_live_smoke_cancel(inst_id: str, *, pilot_plan: bool = False) -> None:
     if inst_id in _LIVE_CANCEL_INST_IDS or inst_id in MILD31_STUB:
+        return
+    if pilot_plan and inst_id in PILOT_LEG:
         return
     raise LiveTradingDisabled(
         "Live cancel is only for the BTC-USDT cash smoke, the BTC-USDT-SWAP smoke, "
-        "or the mild-3.1 equity SWAP stub (MU, SKHY, LITE, TSM, QQQ USDT-SWAP)."
+        "or the mild-3.1 equity SWAP stub (MU, SKHY, LITE, TSM, QQQ USDT-SWAP). "
+        "COHR cancel also needs the explicit pilot_plan flag."
     )
 
 
@@ -720,6 +745,8 @@ def assert_live_trade_payload(
     method: str,
     path: str,
     payload: Mapping[str, Any] | None,
+    *,
+    pilot_plan: bool = False,
 ) -> None:
     """Refuse a live place, cancel, or set-leverage body outside its lock."""
     method_u = method.upper()
@@ -742,6 +769,7 @@ def assert_live_trade_payload(
             px=str(body.get("px") or ""),
             pos_side=str(body.get("posSide") or ""),
             reduce_only=_payload_reduce_only(body),
+            pilot_plan=pilot_plan,
         )
         return
     if (method_u, path) == ("POST", "/api/v5/trade/cancel-order"):
@@ -750,7 +778,7 @@ def assert_live_trade_payload(
             raise LiveTradingDisabled(
                 "Live cancel payload is outside the cash smoke, SWAP smoke, or mild-3.1 stub."
             )
-        assert_live_smoke_cancel(str(body.get("instId") or ""))
+        assert_live_smoke_cancel(str(body.get("instId") or ""), pilot_plan=pilot_plan)
         return
     raise LiveTradingDisabled(f"Live Trade is not enabled for {method_u} {path}.")
 

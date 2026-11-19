@@ -507,6 +507,7 @@ class PrivateClient:
         read_only: bool | None = None,
         risk_gate: bool | None = None,
         live_trade: bool | None = None,
+        pilot_plan: bool = False,
         site: str = "global",
         base_url: str | None = None,
         timeout: float = 10.0,
@@ -524,6 +525,9 @@ class PrivateClient:
         self.allow_orders = resolve_allow_orders(allow_orders=allow_orders, read_only=read_only)
         self.risk_gate = resolve_risk_gate(risk_gate)
         self.live_trade = resolve_live_trade(live_trade)
+        if not isinstance(pilot_plan, bool):
+            raise TypeError("pilot_plan must be a bool; it is not read from the environment")
+        self.pilot_plan = pilot_plan
         if site not in endpoints.SITE_BASE_URLS and base_url is None:
             raise ValueError(f"unknown site {site!r}; expected one of {sorted(endpoints.SITE_BASE_URLS)}")
         self.site = site
@@ -559,7 +563,7 @@ class PrivateClient:
         return (
             f"PrivateClient(site={self.site!r}, demo={self.demo!r}, "
             f"allow_orders={self.allow_orders!r}, risk_gate={self.risk_gate!r}, "
-            f"live_trade={self.live_trade!r})"
+            f"live_trade={self.live_trade!r}, pilot_plan={self.pilot_plan!r})"
         )
 
     def balance(self, ccy: str = "") -> AccountBalance:
@@ -652,6 +656,7 @@ class PrivateClient:
                 px=px_n,
                 pos_side=pos_side_n,
                 reduce_only=reduce_only,
+                pilot_plan=self.pilot_plan,
             )
         self._check_new_margin(inst, margin_usd, reduce_only=reduce_only, open_margins=open_margins)
         payload = _clean_payload(
@@ -675,7 +680,7 @@ class PrivateClient:
         self._guards.assert_orders_enabled()
         inst = endpoints.validate_inst_id(inst_id)
         if not self.demo:
-            assert_live_smoke_cancel(inst)
+            assert_live_smoke_cancel(inst, pilot_plan=self.pilot_plan)
         ord_n = _optional_id("ord_id", ord_id)
         cl_n = _cl_ord_id(cl_ord_id)
         if not ord_n and not cl_n:
@@ -953,7 +958,7 @@ class PrivateClient:
         if (method_u, path_only) == ("POST", SET_LEVERAGE_PATH):
             payload = assert_set_leverage_payload(payload)
         elif not self.demo and (method_u, path_only) in LIVE_TRADE_PATHS:
-            assert_live_trade_payload(method_u, path_only, payload)
+            assert_live_trade_payload(method_u, path_only, payload, pilot_plan=self.pilot_plan)
         if method_u == "POST":
             self._guards.assert_orders_enabled()
         pairs = [(key, value) for key, value in (query or []) if value not in (None, "")]

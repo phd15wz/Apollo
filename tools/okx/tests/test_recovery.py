@@ -40,8 +40,8 @@ def test_audit_identity_is_required() -> None:
         create_audit(Path("/tmp/does-not-write.json"), plan_id="fixture-book", policy_fingerprint="not-hex")
 
 
-def test_permanent_tree_has_no_portfolio_files() -> None:
+def test_portfolio_files_exist_only_on_this_temporary_branch() -> None:
     root = Path("tools/okx")
     for name in ("pilot_policy.py", "pilot_control.py", "pilot_book.py", "pilot_audit.py"):
-        assert not (root / name).exists()
-    assert not Path("docs/pilot-risk-plan-runbook.md").exists()
+        assert (root / name).exists()
+    assert Path("docs/pilot-risk-plan-runbook.md").exists()

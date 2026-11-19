@@ -14,11 +14,12 @@ pytestmark = pytest.mark.usefixtures("clean_okx_env")
 NOW = 1_700_000_000_000
 
 
-def test_client_has_no_portfolio_authorization_flag() -> None:
+def test_portfolio_flag_defaults_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OKX_PILOT_PLAN", "1")
     client, _clock = _client(FakeTransport(), demo=False)
-    assert not hasattr(client, "pilot_plan")
+    assert client.pilot_plan is False
     with pytest.raises(TypeError):
-        _client(FakeTransport(), demo=False, pilot_plan=True)  # type: ignore[call-arg]
+        _client(FakeTransport(), demo=False, pilot_plan="yes")  # type: ignore[call-arg]
     with pytest.raises(LiveTradingDisabled):
         assert_live_place(
             inst_id="COHR-USDT-SWAP",

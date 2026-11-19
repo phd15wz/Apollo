@@ -18,7 +18,9 @@ open lot, plus one LITE reduce-only sell, sz at most 0.01. The four-name
 rows are an emergency soft-flag exit path for a future dual-flag close.
 The LITE live exit is deferred (owner hold). Neither path auto-flattens.
 Jessie skim before any live use. This package does not place those closes.
-Amend stays on demo. Withdrawal stays out.
+Amend stays on demo. Withdrawal stays out. The temporary 2026-11-19 book,
+its 2x / 30 USDT / 15 USDT / 7 USDT policy, and the 15-minute check note
+are in `docs/pilot-risk-plan-runbook.md`. That note is not live clearance.
 
 Docs: [OKX API v5](https://www.okx.com/docs-v5/en/). This package is written
 from those public endpoints. It does not vendor [OKX Agent Trade Kit](https://github.com/okx/agent-trade-kit).
