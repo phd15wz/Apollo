@@ -909,21 +909,20 @@ def _decision_ms(book: Any, now_ms: int) -> int:
 
 
 def _fresh(observed_ms: int, exchange_ts_ms: int | None, now_ms: int, max_age: int) -> bool:
-    """True when the receipt and the venue time are each within ``max_age``.
+    """True when both the receipt and the venue time are inside ``max_age`` of the check.
 
-    ``now_ms`` is the check time. ``observed_ms`` is when this process
-    received the row. The venue timestamp is compared with that receipt,
-    not rewritten to the check time. Neither interval may exceed ``max_age``.
+    ``now_ms`` is the decision time. ``observed_ms`` is when this process
+    received the row. Venue age is ``now_ms - exchange_ts_ms``, not the
+    receipt delay and the venue-to-receipt gap measured separately. A
+    timestamp after the decision is rejected. Values are not rewritten.
     """
     if observed_ms > now_ms or now_ms - observed_ms > max_age:
         return False
     if exchange_ts_ms is None:
         return True
-    if exchange_ts_ms <= 0:
+    if exchange_ts_ms <= 0 or exchange_ts_ms > now_ms:
         return False
-    if exchange_ts_ms > observed_ms:
-        return exchange_ts_ms - observed_ms <= max_age
-    return observed_ms - exchange_ts_ms <= max_age
+    return now_ms - exchange_ts_ms <= max_age
 
 
 def _instrument_problems(row: InstrumentSnap) -> tuple[str, ...]:

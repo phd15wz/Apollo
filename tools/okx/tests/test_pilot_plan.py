@@ -36,6 +36,7 @@ from tools.okx.pilot_control import (
     PilotResult,
     PilotTransportError,
     PositionSnap,
+    _fresh,
     TierSnap,
     projection_ready,
 )
@@ -1205,3 +1206,22 @@ def test_one_old_venue_timestamp_stays_stale(tmp_path: Path) -> None:
     assert "stale or bad mark:LITE-USDT-SWAP" not in text
     assert "stale fee" not in text
     assert all(call["method"] == "GET" for call in transport.calls)
+
+
+def test_summed_receipt_and_venue_delay_exceeds_the_5s_limit() -> None:
+    """Receipt delay 5s plus venue-to-receipt 5s is 10s at the decision."""
+    assert _fresh(10_000, 5_000, 15_000, 5_000) is False
+
+
+def test_fresh_accepts_exact_5s_and_rejects_one_ms_or_a_future_stamp() -> None:
+    assert _fresh(10_000, 10_000, 15_000, 5_000) is True
+    assert _fresh(12_500, 10_000, 15_000, 5_000) is True
+    assert _fresh(15_000, 10_000, 15_000, 5_000) is True
+    assert _fresh(10_000, 9_999, 15_000, 5_000) is False
+    assert _fresh(9_999, 10_000, 15_000, 5_000) is False
+    assert _fresh(12_000, 14_000, 15_000, 5_000) is True
+    assert _fresh(15_000, 15_001, 15_000, 5_000) is False
+    assert _fresh(15_001, 15_000, 15_000, 5_000) is False
+    assert _fresh(15_000, 0, 15_000, 5_000) is False
+    assert _fresh(15_000, None, 15_000, 5_000) is True
+    assert _fresh(9_999, None, 15_000, 5_000) is False
