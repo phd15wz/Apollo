@@ -21,7 +21,7 @@ The client can place and cancel two resting limits on a live Trade key when `OKX
 
 `set-leverage` can set isolated leverage from 1 to 5 on a USDT-SWAP under those same two flags. Demo uses `OKX_DEMO=1` and `--allow-orders`. `cross` stays refused. The five mild-3.1 names (MU, SKHY, LITE, TSM, QQQ USDT-SWAP) are capped at lever 2. Log a run here only after it happens.
 
-The locked mild-3.1 stub can place and cancel under the same two flags: isolated only, MU/LITE buy sz ≤ 0.01, SKHY buy sz ≤ 0.03, TSM buy sz ≤ 0.02, QQQ sell sz ≤ 0.01. Those orders rest. The same flags allow reduce-only closes for the remaining open lots: MU sell sz ≤ 0.01, SKHY sell sz ≤ 0.03, TSM sell sz ≤ 0.02, and a QQQ buy-to-cover sz ≤ 0.01. That shape is an emergency soft-flag exit path. It does not auto-flatten. Jessie skim before any live use. This directory does not place them. Log a run here only after it happens.
+The locked mild-3.1 stub can place and cancel under the same two flags: isolated only, MU/LITE buy sz ≤ 0.01, SKHY buy sz ≤ 0.03, TSM buy sz ≤ 0.02, QQQ sell sz ≤ 0.01. Those orders rest. The same flags allow reduce-only closes for the remaining open lots: MU sell sz ≤ 0.01, SKHY sell sz ≤ 0.03, TSM sell sz ≤ 0.02, and a QQQ buy-to-cover sz ≤ 0.01, plus a LITE reduce-only sell sz ≤ 0.01. The four-name rows are an emergency soft-flag exit path. The LITE live exit stays deferred (owner hold). Neither path auto-flattens. Jessie skim before any live use. This directory does not place them. Log a run here only after it happens.
 
 ## Log
 
