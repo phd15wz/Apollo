@@ -660,9 +660,10 @@ def test_unknown_pending_blocks_arm_and_escalates_without_cancel(tmp_path: Path)
     clean.foreign.append(OrderSnap("QQQ-USDT-SWAP", "EXT999", "sell", Decimal("0.01"), Decimal("0"), "live", NOW))
     clean.now = NOW + 1_000
     stepped = controller.step(clean, NOW + 1_000)
-    assert stepped.phase == "escalated"
+    assert stepped.phase == "monitoring"
     assert "EXT999" not in clean.cancelled
     assert _closes(clean) == []
+    assert "unknown live order" in stepped.reason
 
 
 def test_missing_inputs_and_bad_marks_do_not_arm_or_invent_a_price(tmp_path: Path) -> None:
@@ -703,8 +704,9 @@ def test_missing_inputs_and_bad_marks_do_not_arm_or_invent_a_price(tmp_path: Pat
     book.mark_ts["MU-USDT-SWAP"] = NOW - 20_000
     book.now = NOW + 1_000
     stale = controller.step(book, NOW + 1_000)
-    assert stale.phase == "escalated"
+    assert stale.phase == "monitoring"
     assert _closes(book) == []
+    assert "no close price was sent" in stale.reason
 
     controller, book, _entered = _go(tmp_path / "zero")
     book.marks["MU-USDT-SWAP"] = Decimal("0")
@@ -786,6 +788,63 @@ def test_dust_leg_does_not_block_the_other_closes(tmp_path: Path) -> None:
     _fresh_marks(book, NOW + 15 * 60 * 1000)
     controller.step(book, book.now)
     assert len(book.placed) == before
+
+
+def test_stale_quote_does_not_block_fresh_legs(tmp_path: Path) -> None:
+    path = tmp_path / "audit.json"
+    controller, book, _entered = _go(tmp_path)
+    for inst in MARKS:
+        book.state[inst]["upl"] = Decimal("-1.75")
+    _fresh_marks(book, NOW + 1_000)
+    book.mark_ts["MU-USDT-SWAP"] = NOW - 20_000
+    result = controller.step(book, book.now)
+    assert "no close price was sent" in result.reason
+    assert not any(row.inst_id == "MU-USDT-SWAP" for row in _closes(book))
+    assert [(row.inst_id, row.side, row.sz, row.reduce_only) for row in _closes(book)] == [
+        ("LITE-USDT-SWAP", "sell", "0.01", True),
+        ("COHR-USDT-SWAP", "sell", "0.02", True),
+        ("QQQ-USDT-SWAP", "buy", "0.01", True),
+    ]
+    assert book.state["MU-USDT-SWAP"]["pos"] != 0
+    assert "MU-USDT-SWAP" in path.read_text(encoding="utf-8")
+    _fresh_marks(book, NOW + 15 * 60 * 1000)
+    loaded = PilotController.load(path, _policy())
+    loaded.step(book, book.now)
+    mu = [row for row in _closes(book) if row.inst_id == "MU-USDT-SWAP"]
+    assert len(mu) == 1
+    assert mu[0].side == "sell" and mu[0].sz == "0.01" and mu[0].reduce_only is True
+    assert [row.inst_id for row in _closes(book) if row.inst_id == "LITE-USDT-SWAP"] == ["LITE-USDT-SWAP"]
+    assert book.state["MU-USDT-SWAP"]["pos"] == 0
+
+
+def test_unknown_order_does_not_block_other_closes_or_get_duplicated(tmp_path: Path) -> None:
+    path = tmp_path / "audit.json"
+    controller, book, _entered = _go(tmp_path)
+    for inst in MARKS:
+        book.state[inst]["upl"] = Decimal("-1.75")
+    book.foreign.append(OrderSnap("QQQ-USDT-SWAP", "EXT999", "sell", Decimal("0.01"), Decimal("0"), "live", NOW))
+    _fresh_marks(book, NOW + 1_000)
+    result = controller.step(book, book.now)
+    assert "unknown live order" in result.reason
+    assert "EXT999" not in book.cancelled
+    assert not any(row.inst_id == "QQQ-USDT-SWAP" for row in _closes(book))
+    assert [(row.inst_id, row.side, row.sz, row.reduce_only) for row in _closes(book)] == [
+        ("MU-USDT-SWAP", "sell", "0.01", True),
+        ("LITE-USDT-SWAP", "sell", "0.01", True),
+        ("COHR-USDT-SWAP", "sell", "0.02", True),
+    ]
+    assert book.state["QQQ-USDT-SWAP"]["pos"] != 0
+    assert "QQQ-USDT-SWAP" in path.read_text(encoding="utf-8")
+    book.foreign.clear()
+    _fresh_marks(book, NOW + 15 * 60 * 1000)
+    loaded = PilotController.load(path, _policy())
+    loaded.step(book, book.now)
+    qqq = [row for row in _closes(book) if row.inst_id == "QQQ-USDT-SWAP"]
+    assert len(qqq) == 1
+    assert qqq[0].side == "buy" and qqq[0].sz == "0.01" and qqq[0].reduce_only is True
+    assert [row.inst_id for row in _closes(book) if row.inst_id == "MU-USDT-SWAP"] == ["MU-USDT-SWAP"]
+    assert "EXT999" not in book.cancelled
+    assert book.state["QQQ-USDT-SWAP"]["pos"] == 0
 
 
 def test_next_check_and_restart_finish_valid_legs_without_a_duplicate(tmp_path: Path) -> None:

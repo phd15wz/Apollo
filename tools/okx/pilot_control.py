@@ -4,7 +4,8 @@ Opens happen only in ``enter(..., send_orders=True)`` and only for the four
 exact legs. ``step`` can cancel and send reduce-only closes. It does not
 open risk and it does not start a thread. The intended cadence is one
 operator call about every 15 minutes. Time since the last call does not
-flatten the book. A stale mark at the call still fails closed.
+flatten the book. A stale quote or an unknown live order does not get a
+priced close, and the other legs still can.
 ``LIVE_CLEARANCE`` stays false.
 
 The audit file is the recovery record. The policy object is temporary
@@ -331,18 +332,12 @@ class PilotController:
         if facts.positions is None or facts.pending is None:
             self._escalate("positions or pending orders are not visible")
             return
-        if self._foreign_pilot_pending(facts.pending):
-            self._escalate("unknown pending order on a selected leg; it was not cancelled")
-            return
         exposed = self._signed(facts.positions)
         if exposed is None:
             self._escalate("selected-leg position is reversed, duplicated, or not a decimal")
             return
         open_book = any(qty != 0 for qty in exposed.values())
-        ours = any(self._ours(row) for row in facts.pending)
-        if not self._priceable(facts, exposed) and open_book:
-            self._escalate("mark is missing or stale; no close price will be invented")
-            return
+        live_orders = self._legs_with_live_orders(facts.pending)
         if facts.bills is None and open_book:
             self._begin_unwind("pnl ledger is incomplete; loss is not treated as zero")
             return
@@ -350,13 +345,21 @@ class PilotController:
         if reason and open_book:
             self._begin_unwind(reason)
             return
-        if not open_book and not ours:
+        if not open_book and not live_orders:
             self.audit.phase = "flat"
             self.audit.entries_sealed = True
+            self.audit.escalation_reason = ""
             if reason:
                 self._reason = reason
             elif not self._reason:
                 self._reason = "flat"
+            self._save()
+            return
+        notes = self._uncertainty(exposed, facts, live_orders)
+        if notes:
+            self._remember_unresolved(notes)
+        elif self.audit.escalation_reason:
+            self.audit.escalation_reason = ""
             self._save()
 
     def _exit_reason(self, facts: _Facts, exposed: dict[str, Decimal]) -> str | None:
@@ -381,9 +384,11 @@ class PilotController:
         for inst_id, signed in exposed.items():
             if signed == 0:
                 continue
-            stop = self._stop_for(facts, inst_id, signed)
             mark = facts.marks.get(inst_id)
-            if stop is None or mark is None:
+            if mark is None:
+                continue
+            stop = self._stop_for(facts, inst_id, signed)
+            if stop is None:
                 return f"leg protection for {inst_id} is not verifiable"
             if signed > 0 and mark.mark_px <= stop:
                 return f"leg stop on {inst_id}"
@@ -412,33 +417,26 @@ class PilotController:
         if facts.positions is None or facts.pending is None:
             self._escalate("cannot flatten because the book is not visible")
             return True
-        if self._foreign_pilot_pending(facts.pending):
-            self._escalate("unknown pending order on a selected leg; it was not cancelled")
-            return True
         self._cancel_ours(book, facts.pending)
         facts = self._facts(book, now_ms, need_bills=False, require_trade=False)
         if facts.positions is None or facts.pending is None:
             self._escalate("cannot reconcile after cancel")
             return True
-        if self._foreign_pilot_pending(facts.pending):
-            self._escalate("unknown pending order on a selected leg; it was not cancelled")
-            return True
         exposed = self._signed(facts.positions)
         if exposed is None:
             self._escalate("position sign does not match the selected plan")
             return True
-        pending_ours = [row for row in facts.pending if self._ours(row)]
-        if not any(qty != 0 for qty in exposed.values()) and not pending_ours:
+        live_orders = self._legs_with_live_orders(facts.pending)
+        if not any(qty != 0 for qty in exposed.values()) and not live_orders:
             self.audit.phase = "flat"
             self.audit.entries_sealed = True
             self._reason = self._reason or "flat"
             self._save()
             return True
-        if not self._priceable(facts, {inst: qty for inst, qty in exposed.items() if inst in self._closable_legs(exposed, facts)}):
-            self._escalate("cannot price a reduce-only close")
-            return True
-        unresolved = self._unresolved_legs(exposed, facts)
+        unresolved = self._uncertainty(exposed, facts, live_orders)
         closable = self._closable_legs(exposed, facts)
+        for inst_id in live_orders:
+            closable.pop(inst_id, None)
         if not closable:
             self._remember_unresolved(unresolved)
             return True
@@ -464,9 +462,10 @@ class PilotController:
             self._escalate("position read failed after a close attempt")
             return True
         exposed = self._signed(facts.positions)
-        pending_ours = [row for row in (facts.pending or ()) if self._ours(row)]
-        if exposed is not None and not any(qty != 0 for qty in exposed.values()) and not pending_ours:
+        live_after = self._legs_with_live_orders(facts.pending or ())
+        if exposed is not None and not any(qty != 0 for qty in exposed.values()) and not live_after:
             self.audit.phase = "flat"
+            self.audit.escalation_reason = ""
             self._reason = self._reason or "flat"
             self._save()
             return True
@@ -699,14 +698,6 @@ class PilotController:
         except PnlInputError:
             return None
 
-    def _priceable(self, facts: _Facts, exposed: dict[str, Decimal]) -> bool:
-        for inst_id, qty in exposed.items():
-            if qty == 0:
-                continue
-            if inst_id not in facts.marks or inst_id not in facts.instruments:
-                return False
-        return True
-
     def _signed(self, positions: tuple[PositionSnap, ...]) -> dict[str, Decimal] | None:
         signed = {leg.inst_id: Decimal("0") for leg in PILOT_LEGS}
         for row in positions:
@@ -731,12 +722,6 @@ class PilotController:
             if row.inst_id == inst_id and row.pos != 0:
                 return row.upl
         return Decimal("0")
-
-    def _foreign_pilot_pending(self, pending: tuple[OrderSnap, ...]) -> bool:
-        for row in pending:
-            if row.inst_id in PILOT_LEG and not row.cl_ord_id.startswith(CLIENT_PREFIX):
-                return True
-        return False
 
     def _ours(self, row: OrderSnap) -> bool:
         return row.inst_id in PILOT_LEG and row.cl_ord_id.startswith(CLIENT_PREFIX)
@@ -764,6 +749,8 @@ class PilotController:
             signed = exposed.get(leg.inst_id, Decimal("0"))
             if signed == 0 or (signed > 0) != (leg.direction == "long"):
                 continue
+            if leg.inst_id not in facts.marks:
+                continue
             instrument = facts.instruments.get(leg.inst_id)
             if instrument is None:
                 continue
@@ -781,6 +768,9 @@ class PilotController:
             if (signed > 0) != (leg.direction == "long"):
                 notes.append(f"{leg.inst_id} exposure is the wrong direction")
                 continue
+            if leg.inst_id not in facts.marks:
+                notes.append(f"{leg.inst_id} quote is stale or missing; no close price was sent")
+                continue
             instrument = facts.instruments.get(leg.inst_id)
             if instrument is None:
                 notes.append(f"{leg.inst_id} instrument is missing")
@@ -790,6 +780,33 @@ class PilotController:
                 notes.append(f"{leg.inst_id} position is larger than the plan; it was not closed larger")
             elif sized == "dust":
                 notes.append(f"{leg.inst_id} remainder is below the lot and was not rounded up")
+        return tuple(notes)
+
+    def _legs_with_live_orders(self, pending: tuple[OrderSnap, ...]) -> dict[str, str]:
+        found: dict[str, str] = {}
+        for row in pending:
+            if row.inst_id not in PILOT_LEG or row.inst_id in found:
+                continue
+            if self._ours(row):
+                found[row.inst_id] = (
+                    f"{row.inst_id} still has live order {row.cl_ord_id}; no second order was sent"
+                )
+            else:
+                found[row.inst_id] = (
+                    f"{row.inst_id} has an unknown live order; it was not cancelled and no second order was sent"
+                )
+        return found
+
+    def _uncertainty(
+        self,
+        exposed: dict[str, Decimal],
+        facts: _Facts,
+        live_orders: dict[str, str],
+    ) -> tuple[str, ...]:
+        notes = list(self._unresolved_legs(exposed, facts))
+        for inst_id, note in live_orders.items():
+            if inst_id not in {item.split(" ", 1)[0] for item in notes}:
+                notes.append(note)
         return tuple(notes)
 
     def _remember_unresolved(self, notes: tuple[str, ...]) -> None:
