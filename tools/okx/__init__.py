@@ -1,8 +1,9 @@
 """OKX v5 clients.
 
 ``PublicClient`` is keyless public market data (stage 1). ``PrivateClient``
-is the stage-2 signed client: live read-only balance, positions, and funding
-balances, demo place, cancel, and amend, plus opt-in live place-then-cancel
+is the stage-2 signed client: live read-only balance, positions, funding
+balances, and the sanctioned Read GETs, demo place, cancel, and amend,
+plus opt-in live place-then-cancel
 smokes for BTC-USDT cash and one BTC-USDT-SWAP limit (``OKX_LIVE_TRADE=1``),
 the locked mild-3.1 equity SWAP stub (isolated, sz at most the stub lot),
 reduce-only closes for the remaining open lots (MU, SKHY, and TSM sells,

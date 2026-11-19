@@ -1,0 +1,889 @@
+"""Offline checks for the 2026-11-19 book.
+
+NO NETWORK. NO TRADE. Synthetic prices are not the Nov 19 quote.
+Fractions and attempt counts in this file are test policy, not a
+risk-approved buffer. A passing mock is not proof of a live exit.
+"""
+
+from __future__ import annotations
+
+from decimal import Decimal
+from pathlib import Path
+
+import pytest
+
+from tools.okx.errors import LiveTradingDisabled, OrdersDisabled, RiskLimitError, UnsafeEndpointError
+from tools.okx.guards import SANCTIONED_LIVE_READS, assert_live_place
+from tools.okx.pilot_audit import AuditError, load_audit
+from tools.okx.pilot_book import OkxPilotBook
+from tools.okx.pilot_control import (
+    PILOT_LEGS,
+    AccountSnap,
+    BillSnap,
+    FeeSnap,
+    InstrumentSnap,
+    LeverSnap,
+    MarkSnap,
+    OrderRequest,
+    OrderSnap,
+    PilotBlocked,
+    PilotController,
+    PilotNotFound,
+    PilotRejected,
+    PilotResult,
+    PilotTransportError,
+    PositionSnap,
+    TierSnap,
+    projection_ready,
+)
+from tools.okx.pilot_policy import (
+    LIVE_CLEARANCE,
+    NET_LOSS_TRIGGER_USDT,
+    PILOT_LEG,
+    BillInput,
+    PilotPolicy,
+    PnlInputError,
+    cap_problems,
+    commission_rate,
+    net_pnl,
+    policy_problems,
+    portfolio_amounts,
+    project_isolated_liq,
+    stop_price,
+)
+from tools.okx.tests.conftest import FakeTransport, load_fixture, make_client
+from tools.okx.tests.test_private import _client
+
+pytestmark = pytest.mark.usefixtures("clean_okx_env")
+
+NOW = 1_700_000_000_000
+# SYNTHETIC notionals: gross 19.5, initial margin 9.75. Not the Nov 19 quote.
+MARKS = {
+    "MU-USDT-SWAP": Decimal("370"),
+    "LITE-USDT-SWAP": Decimal("350"),
+    "COHR-USDT-SWAP": Decimal("280"),
+    "QQQ-USDT-SWAP": Decimal("670"),
+}
+
+
+def _policy(**overrides: object) -> PilotPolicy:
+    """TEST POLICY. 0.25 and 3 attempts are fixtures, not approved settings."""
+    values: dict[str, object] = {
+        "distance_to_liq_fraction": Decimal("0.25"),
+        "max_slippage_fraction": Decimal("0.01"),
+        "max_input_age_ms": 5_000,
+        "max_step_gap_ms": 5_000,
+        "entry_ord_type": "ioc",
+        "limit_rest_steps": None,
+        "max_close_attempts": 3,
+        "acknowledge_leg_can_liquidate_before_portfolio_stop": True,
+        "acknowledge_public_tier_table": True,
+    }
+    values.update(overrides)
+    return PilotPolicy(**values)  # type: ignore[arg-type]
+
+
+class SyntheticBook:
+    """In-memory book. It does not open a socket and it cannot set leverage."""
+
+    def __init__(self) -> None:
+        self.now = NOW
+        self.marks = dict(MARKS)
+        self.mark_ts = {inst: NOW for inst in MARKS}
+        self.state = {
+            inst: {"pos": Decimal("0"), "avg": None, "upl": Decimal("0"), "liq": None}
+            for inst in PILOT_LEG
+        }
+        self.orders: dict[str, OrderSnap] = {}
+        self.ledger: list[BillSnap] = []
+        self.placed: list[OrderRequest] = []
+        self.cancelled: list[str] = []
+        self.fail_entry: set[str] = set()
+        self.partial: dict[str, Decimal] = {}
+        self.rest_on_place = False
+        self.fill_on_cancel = False
+        self.close_failures = 0
+        self.foreign: list[OrderSnap] = []
+        self.hide_pending = False
+        self.hide_positions = False
+        self.hide_bills = False
+        self.lookup_fail: set[str] = set()
+        self.acct_lv = "2"
+        self.pos_mode = "net_mode"
+        self.perm = "read_only,trade"
+        self.lever = "2"
+        self.mmr = Decimal("0.01")
+        self.taker = Decimal("-0.001")
+        self.tier_error = False
+        self.fee_error = False
+
+    def set_leverage(self, *_args: object, **_kwargs: object) -> None:
+        raise AssertionError("the pilot must not set leverage")
+
+    def account(self) -> AccountSnap:
+        return AccountSnap(self.acct_lv, self.pos_mode, self.perm, self.now)
+
+    def fee(self, inst_id: str) -> FeeSnap:
+        if self.fee_error:
+            raise PilotTransportError("fee missing")
+        return FeeSnap(self.taker, "Lv1", "g1", self.now, self.now)
+
+    def leverage(self, inst_id: str) -> tuple[LeverSnap, ...]:
+        if self.pos_mode == "long_short_mode":
+            side = "short" if inst_id.startswith("QQQ") else "long"
+        else:
+            side = "net"
+        return (LeverSnap(side, self.lever, "isolated"),)
+
+    def tiers(self, inst_id: str) -> tuple[TierSnap, ...]:
+        del inst_id
+        if self.tier_error:
+            raise PilotTransportError("tier missing")
+        return (TierSnap(Decimal("0"), Decimal("1000"), self.mmr, Decimal("50"), self.now),)
+
+    def instrument(self, inst_id: str) -> InstrumentSnap:
+        del inst_id
+        return InstrumentSnap(
+            Decimal("1"), "1", "linear", "USDT", "live", Decimal("0.1"), Decimal("0.01"), Decimal("0.01"), "g1", self.now
+        )
+
+    def mark(self, inst_id: str) -> MarkSnap:
+        return MarkSnap(self.marks[inst_id], self.mark_ts[inst_id], self.now)
+
+    def positions(self) -> tuple[PositionSnap, ...]:
+        if self.hide_positions:
+            raise PilotTransportError("positions")
+        rows = []
+        for inst, row in self.state.items():
+            if row["pos"] == 0:
+                continue
+            rows.append(
+                PositionSnap(
+                    inst, "", row["pos"], row["avg"], row["upl"], row["liq"], "isolated", self.now
+                )
+            )
+        return tuple(rows)
+
+    def pending(self) -> tuple[OrderSnap, ...]:
+        if self.hide_pending:
+            raise PilotTransportError("pending")
+        live = [row for row in self.orders.values() if row.state in {"live", "partially_filled"}]
+        return tuple(live + self.foreign)
+
+    def order(self, inst_id: str, cl_ord_id: str) -> OrderSnap:
+        if cl_ord_id in self.lookup_fail:
+            raise PilotTransportError("lookup")
+        row = self.orders.get(cl_ord_id)
+        if row is None or row.inst_id != inst_id:
+            raise PilotNotFound(cl_ord_id)
+        return row
+
+    def bills(self, inst_id: str, begin_ms: int) -> tuple[BillSnap, ...]:
+        del begin_ms
+        if self.hide_bills:
+            raise PilotTransportError("bills")
+        return tuple(row for row in self.ledger if row.inst_id == inst_id)
+
+    def place(self, request: OrderRequest) -> None:
+        self.placed.append(request)
+        if request.intent == "entry":
+            if Decimal(request.sz) != PILOT_LEG[request.inst_id].size or request.reduce_only:
+                raise AssertionError("entry left the selected size")
+            if request.inst_id in self.fail_entry:
+                raise PilotRejected("entry refused")
+            if request.inst_id in self.partial:
+                self._fill(request, self.partial[request.inst_id], "canceled")
+                return
+            if self.rest_on_place:
+                self._store(request, Decimal("0"), "live")
+                return
+            self._fill(request, Decimal(request.sz), "filled")
+            return
+        if request.reduce_only is not True:
+            raise AssertionError("close is not reduce-only")
+        pos = self.state[request.inst_id]["pos"]
+        size = Decimal(request.sz)
+        if size > abs(pos) or size > PILOT_LEG[request.inst_id].size:
+            raise AssertionError("reduce-only close is larger than the position or the plan")
+        if self.close_failures > 0:
+            self.close_failures -= 1
+            raise PilotTransportError("close failed")
+        remaining = abs(pos) - size
+        self.state[request.inst_id]["pos"] = Decimal("0") if remaining == 0 else remaining.copy_sign(pos)
+        self._store(request, size, "filled")
+
+    def cancel(self, inst_id: str, cl_ord_id: str) -> None:
+        self.cancelled.append(cl_ord_id)
+        row = self.orders.get(cl_ord_id)
+        if row is None:
+            return
+        if self.fill_on_cancel and row.acc_fill_sz == 0:
+            signed = row.sz if row.side == "buy" else -row.sz
+            self.state[inst_id]["pos"] = signed
+            self.state[inst_id]["avg"] = self.marks[inst_id]
+            self.orders[cl_ord_id] = OrderSnap(inst_id, cl_ord_id, row.side, row.sz, row.sz, "filled", self.now)
+            return
+        self.orders[cl_ord_id] = OrderSnap(inst_id, cl_ord_id, row.side, row.sz, row.acc_fill_sz, "canceled", self.now)
+
+    def _fill(self, request: OrderRequest, size: Decimal, state: str) -> None:
+        signed = size if request.side == "buy" else -size
+        self.state[request.inst_id]["pos"] = signed
+        self.state[request.inst_id]["avg"] = self.marks[request.inst_id]
+        self._store(request, size, state)
+
+    def _store(self, request: OrderRequest, filled: Decimal, state: str) -> None:
+        self.orders[request.cl_ord_id] = OrderSnap(
+            request.inst_id, request.cl_ord_id, request.side, Decimal(request.sz), filled, state, self.now
+        )
+
+
+def _go(tmp_path: Path, book: SyntheticBook | None = None, **overrides: object):
+    book = book or SyntheticBook()
+    controller = PilotController.create(tmp_path / "audit.json", _policy(**overrides))
+    controller.arm(book, NOW)
+    entered = controller.enter(book, NOW, send_orders=True)
+    return controller, book, entered
+
+
+def _entries(book: SyntheticBook) -> list[OrderRequest]:
+    return [row for row in book.placed if row.intent == "entry"]
+
+
+def _closes(book: SyntheticBook) -> list[OrderRequest]:
+    return [row for row in book.placed if row.intent == "close"]
+
+
+def test_policy_has_no_silent_defaults_and_exact_liq_identity() -> None:
+    problems = policy_problems(PilotPolicy())
+    assert any("distance_to_liq_fraction" in item for item in problems)
+    assert any("liquidated before" in item for item in problems)
+    assert any("public tier" in item for item in problems)
+    assert LIVE_CLEARANCE is False
+    long = project_isolated_liq(
+        direction="long",
+        avg_px=Decimal("100"),
+        pos=Decimal("1"),
+        ct_val=Decimal("1"),
+        mmr=Decimal("0.01"),
+        taker_commission=Decimal("0.001"),
+    )
+    short = project_isolated_liq(
+        direction="short",
+        avg_px=Decimal("100"),
+        pos=Decimal("1"),
+        ct_val=Decimal("1"),
+        mmr=Decimal("0.01"),
+        taker_commission=Decimal("0.001"),
+    )
+    assert long == Decimal("50.1") / Decimal("0.989")
+    assert short == Decimal("149.9") / Decimal("1.011")
+    stop = stop_price(direction="long", entry=Decimal("100"), liq=long, distance_fraction=Decimal("0.25"))
+    assert long < stop < Decimal("100")
+    with pytest.raises(PnlInputError):
+        stop_price(direction="long", entry=Decimal("100"), liq=long, distance_fraction=Decimal("0"))
+    assert commission_rate(Decimal("-0.001")) == Decimal("0.001")
+    assert commission_rate(Decimal("0.001")) == Decimal("0")
+
+
+def test_caps_boundary_and_loss_trigger_include_fee_and_funding_sign() -> None:
+    gross, margin, _net = portfolio_amounts(tuple((inst, px, Decimal("1")) for inst, px in MARKS.items()))
+    assert gross == Decimal("19.5")
+    assert margin == Decimal("9.75")
+    assert cap_problems(gross, margin) == ()
+    boundary = (
+        ("MU-USDT-SWAP", Decimal("100"), Decimal("1")),
+        ("LITE-USDT-SWAP", Decimal("100"), Decimal("1")),
+        ("COHR-USDT-SWAP", Decimal("100"), Decimal("1")),
+        ("QQQ-USDT-SWAP", Decimal("2600"), Decimal("1")),
+    )
+    exact_gross, exact_margin, _ = portfolio_amounts(boundary)
+    assert exact_gross == Decimal("30")
+    assert exact_margin == Decimal("15")
+    assert cap_problems(exact_gross, exact_margin) == ()
+    over = portfolio_amounts(
+        (
+            ("MU-USDT-SWAP", Decimal("100"), Decimal("1")),
+            ("LITE-USDT-SWAP", Decimal("100"), Decimal("1")),
+            ("COHR-USDT-SWAP", Decimal("100"), Decimal("1")),
+            ("QQQ-USDT-SWAP", Decimal("2600.02"), Decimal("1")),
+        )
+    )
+    assert cap_problems(over[0], over[1])
+
+    def bill(bill_id: str, bill_type: str, pnl: str, fee: str = "0", ts: int = 10) -> BillInput:
+        return BillInput(bill_id, "MU-USDT-SWAP", bill_type, ts, Decimal(pnl), Decimal(fee), "USDT")
+
+    open_loss = net_pnl(unrealized_by_inst={"MU-USDT-SWAP": Decimal("-1")}, bills=(), baseline_ms=0)
+    closed = net_pnl(unrealized_by_inst={}, bills=(bill("b1", "2", "-1"),), baseline_ms=0)
+    assert open_loss.net == Decimal("-1")
+    assert closed.net == Decimal("-1")
+    doubled = net_pnl(
+        unrealized_by_inst={"MU-USDT-SWAP": Decimal("-1")},
+        bills=(bill("b1", "2", "-1"),),
+        baseline_ms=0,
+    )
+    assert doubled.net == Decimal("-2")
+    with_fee = net_pnl(
+        unrealized_by_inst={},
+        bills=(bill("b1", "2", "-6.9", "-0.1"),),
+        baseline_ms=0,
+    )
+    assert with_fee.net == Decimal("-7")
+    assert with_fee.trigger_hit is True
+    funding_in = net_pnl(unrealized_by_inst={}, bills=(bill("f", "8", "0.4"),), baseline_ms=0)
+    funding_out = net_pnl(unrealized_by_inst={}, bills=(bill("f", "8", "-0.4"),), baseline_ms=0)
+    assert funding_in.net == Decimal("0.4")
+    assert funding_out.net == Decimal("-0.4")
+    before = net_pnl(unrealized_by_inst={}, bills=(bill("old", "2", "-9", ts=1),), baseline_ms=5)
+    assert before.net == Decimal("0")
+    exact = net_pnl(unrealized_by_inst={}, bills=(bill("b", "2", "-7"),), baseline_ms=0)
+    assert exact.trigger_hit is True
+    just_above = net_pnl(unrealized_by_inst={}, bills=(bill("b", "2", "-6.99"),), baseline_ms=0)
+    assert just_above.trigger_hit is False
+    with pytest.raises(PnlInputError):
+        net_pnl(unrealized_by_inst={}, bills=(bill("x", "7", "-1"),), baseline_ms=0)
+    with pytest.raises(PnlInputError):
+        net_pnl(unrealized_by_inst={}, bills=(bill("x", "8", "-1", "-0.01"),), baseline_ms=0)
+    assert NET_LOSS_TRIGGER_USDT == Decimal("7")
+
+
+def test_each_leg_can_be_liquidated_before_the_portfolio_trigger(tmp_path: Path) -> None:
+    for inst, mark in MARKS.items():
+        leg = PILOT_LEG[inst]
+        _liq, _stop, loss = projection_ready(
+            direction=leg.direction,
+            mark=mark,
+            pos=leg.size,
+            ct_val=Decimal("1"),
+            mmr=Decimal("0.01"),
+            taker_signed=Decimal("-0.001"),
+            distance_fraction=Decimal("0.25"),
+        )
+        assert loss < Decimal("7")
+    with pytest.raises(PilotBlocked):
+        PilotController.create(
+            tmp_path / "audit.json",
+            _policy(acknowledge_leg_can_liquidate_before_portfolio_stop=False),
+        )
+
+
+def test_gate_keeps_the_stub_and_refuses_anything_outside_the_plan(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OKX_PILOT_PLAN", "1")
+    transport = FakeTransport()
+    ignored, _clock = _client(transport, demo=False, allow_orders=True, live_trade=True)
+    assert ignored.pilot_plan is False
+    with pytest.raises(TypeError, match="bool"):
+        _client(FakeTransport(), demo=False, pilot_plan="yes")  # type: ignore[arg-type]
+    with pytest.raises(LiveTradingDisabled, match="outside the mild-3.1 stub"):
+        ignored.place_order(
+            inst_id="COHR-USDT-SWAP",
+            side="buy",
+            sz="0.02",
+            td_mode="isolated",
+            ord_type="limit",
+            px="280",
+            margin_usd=1,
+        )
+    assert transport.calls == []
+
+    assert_live_place(
+        inst_id="LITE-USDT-SWAP",
+        side="sell",
+        sz="0.01",
+        td_mode="isolated",
+        ord_type="limit",
+        px="300",
+        reduce_only=True,
+        pilot_plan=False,
+    )
+    with pytest.raises(LiveTradingDisabled):
+        assert_live_place(
+            inst_id="LITE-USDT-SWAP",
+            side="sell",
+            sz="0.02",
+            td_mode="isolated",
+            ord_type="limit",
+            px="300",
+            reduce_only=True,
+        )
+    assert_live_place(
+        inst_id="SKHY-USDT-SWAP",
+        side="buy",
+        sz="0.03",
+        td_mode="isolated",
+        ord_type="limit",
+        px="10",
+        pilot_plan=True,
+    )
+
+    ack = load_fixture("private_order_ack.json")
+    live_transport = FakeTransport()
+    live_transport.add("/api/v5/trade/order", ack)
+    missing_trade, _clock = _client(live_transport, demo=False, allow_orders=True, live_trade=False, pilot_plan=True)
+    with pytest.raises(LiveTradingDisabled):
+        missing_trade.place_order(
+            inst_id="COHR-USDT-SWAP", side="buy", sz="0.02", td_mode="isolated", ord_type="ioc", px="280", margin_usd=1
+        )
+    missing_go, _clock = _client(live_transport, demo=False, allow_orders=False, live_trade=True, pilot_plan=True)
+    with pytest.raises(OrdersDisabled):
+        missing_go.place_order(
+            inst_id="COHR-USDT-SWAP", side="buy", sz="0.02", td_mode="isolated", ord_type="ioc", px="280", margin_usd=1
+        )
+    locked, _clock = _client(
+        live_transport, demo=False, allow_orders=True, live_trade=True, pilot_plan=True, read_only=True
+    )
+    with pytest.raises(OrdersDisabled):
+        locked.place_order(
+            inst_id="COHR-USDT-SWAP", side="buy", sz="0.02", td_mode="isolated", ord_type="ioc", px="280", margin_usd=1
+        )
+    assert live_transport.calls == []
+
+    live, _clock = _client(live_transport, demo=False, allow_orders=True, live_trade=True, pilot_plan=True)
+    opened = live.place_order(
+        inst_id="COHR-USDT-SWAP", side="buy", sz="0.02", td_mode="isolated", ord_type="ioc", px="280", margin_usd=1
+    )
+    assert opened.ord_id
+    body = __import__("json").loads(live_transport.calls[0]["body"])
+    assert body["instId"] == "COHR-USDT-SWAP"
+    assert body["sz"] == "0.02"
+    assert body["side"] == "buy"
+    assert "reduceOnly" not in body
+    with pytest.raises(LiveTradingDisabled):
+        live.place_order(
+            inst_id="COHR-USDT-SWAP", side="buy", sz="0.01", td_mode="isolated", ord_type="ioc", px="280", margin_usd=1
+        )
+    with pytest.raises(LiveTradingDisabled):
+        live.place_order(
+            inst_id="COHR-USDT-SWAP",
+            side="sell",
+            sz="0.03",
+            td_mode="isolated",
+            ord_type="ioc",
+            px="280",
+            reduce_only=True,
+        )
+    closed = live.place_order(
+        inst_id="COHR-USDT-SWAP",
+        side="sell",
+        sz="0.02",
+        td_mode="isolated",
+        ord_type="ioc",
+        px="270",
+        reduce_only=True,
+    )
+    assert closed.ord_id
+    capped = FakeTransport()
+    capped_client, _clock = _client(capped, demo=False, allow_orders=True, live_trade=True, pilot_plan=True)
+    with pytest.raises(RiskLimitError, match="optical"):
+        capped_client.place_order(
+            inst_id="COHR-USDT-SWAP",
+            side="buy",
+            sz="0.02",
+            td_mode="isolated",
+            ord_type="ioc",
+            px="280",
+            margin_usd=6,
+            open_margins={"LITE-USDT-SWAP": 6},
+        )
+    assert capped.calls == []
+
+
+@pytest.mark.parametrize("inst_id", [leg.inst_id for leg in PILOT_LEGS])
+def test_one_leg_entry_failure_unwinds_and_stops(tmp_path: Path, inst_id: str) -> None:
+    book = SyntheticBook()
+    book.fail_entry.add(inst_id)
+    controller, book, entered = _go(tmp_path, book)
+    assert entered.live_clearance is False
+    assert inst_id in {row.inst_id for row in _entries(book)}
+    later = [leg.inst_id for leg in PILOT_LEGS]
+    later = later[later.index(inst_id) + 1 :]
+    assert not any(row.inst_id in later for row in _entries(book))
+    assert all(row.reduce_only for row in _closes(book))
+    assert controller.audit.entries_sealed is True
+    assert controller.audit.phase in {"flat", "escalated"}
+    before = len(book.placed)
+    controller.step(book, NOW + 1_000)
+    assert len(book.placed) == before
+
+
+def test_partial_dust_does_not_round_up_or_continue(tmp_path: Path) -> None:
+    book = SyntheticBook()
+    book.partial["MU-USDT-SWAP"] = Decimal("0.005")
+    controller, book, _entered = _go(tmp_path, book)
+    assert [row.inst_id for row in _entries(book)] == ["MU-USDT-SWAP"]
+    assert _closes(book) == []
+    assert controller.audit.phase == "escalated"
+    assert "below the lot" in controller.audit.escalation_reason
+
+
+def test_partial_fill_unwinds_without_top_up(tmp_path: Path) -> None:
+    book = SyntheticBook()
+    book.partial["COHR-USDT-SWAP"] = Decimal("0.01")
+    _controller, book, _entered = _go(tmp_path, book)
+    assert "QQQ-USDT-SWAP" not in {row.inst_id for row in _entries(book)}
+    cohr_closes = [row for row in _closes(book) if row.inst_id == "COHR-USDT-SWAP"]
+    assert [row.sz for row in cohr_closes] == ["0.01"]
+    assert all(row.reduce_only and row.side == "sell" for row in cohr_closes)
+
+
+def test_ioc_rest_cancels_then_closes_the_fill_from_the_cancel(tmp_path: Path) -> None:
+    book = SyntheticBook()
+    book.rest_on_place = True
+    book.fill_on_cancel = True
+    controller, book, entered = _go(tmp_path, book)
+    assert entered.phase == "flat"
+    assert len(_entries(book)) == 1
+    assert book.cancelled
+    assert len(_closes(book)) == 1
+    assert _closes(book)[0].reduce_only is True
+    assert controller.audit.phase == "flat"
+
+
+def test_limit_rest_is_cancelled_after_the_allowed_steps(tmp_path: Path) -> None:
+    book = SyntheticBook()
+    book.rest_on_place = True
+    controller = PilotController.create(tmp_path / "audit.json", _policy(entry_ord_type="limit", limit_rest_steps=1))
+    controller.arm(book, NOW)
+    entered = controller.enter(book, NOW, send_orders=True)
+    assert entered.phase == "entering"
+    assert len(_entries(book)) == 1
+    book.now = NOW + 1_000
+    stepped = controller.step(book, NOW + 1_000)
+    assert book.cancelled
+    assert stepped.phase in {"flat", "escalated"}
+    assert len(_entries(book)) == 1
+
+
+def test_delayed_fill_continues_only_the_unsubmitted_legs(tmp_path: Path) -> None:
+    book = SyntheticBook()
+    book.rest_on_place = True
+    controller = PilotController.create(tmp_path / "audit.json", _policy(entry_ord_type="limit", limit_rest_steps=3))
+    controller.arm(book, NOW)
+    controller.enter(book, NOW, send_orders=True)
+    resting = _entries(book)[0]
+    book.rest_on_place = False
+    book.state[resting.inst_id]["pos"] = Decimal(resting.sz)
+    book.state[resting.inst_id]["avg"] = book.marks[resting.inst_id]
+    book.orders[resting.cl_ord_id] = OrderSnap(
+        resting.inst_id, resting.cl_ord_id, resting.side, Decimal(resting.sz), Decimal(resting.sz), "filled", NOW
+    )
+    book.now = NOW + 1_000
+    result = controller.step(book, NOW + 1_000)
+    assert result.phase == "monitoring"
+    assert {row.inst_id for row in _entries(book)} == {leg.inst_id for leg in PILOT_LEGS}
+    assert len([row for row in _entries(book) if row.inst_id == "MU-USDT-SWAP"]) == 1
+
+
+def test_restart_does_not_send_the_submitted_entry_again(tmp_path: Path) -> None:
+    book = SyntheticBook()
+    book.rest_on_place = True
+    path = tmp_path / "audit.json"
+    controller = PilotController.create(path, _policy(entry_ord_type="limit", limit_rest_steps=3))
+    controller.arm(book, NOW)
+    controller.enter(book, NOW, send_orders=True)
+    submitted = controller.audit.orders[0].cl_ord_id
+    resumed = PilotController.load(path, _policy(entry_ord_type="limit", limit_rest_steps=3))
+    assert resumed._resumed is True
+    book.now = NOW + 1_000
+    result = resumed.step(book, NOW + 1_000)
+    assert result.phase in {"flat", "escalated"}
+    assert [row.cl_ord_id for row in _entries(book)] == [submitted]
+    assert submitted in book.cancelled
+
+
+def test_portfolio_trigger_and_leg_stop_flatten_every_open_leg(tmp_path: Path) -> None:
+    controller, book, entered = _go(tmp_path)
+    assert entered.phase == "monitoring"
+    for inst in MARKS:
+        book.state[inst]["upl"] = Decimal("-1.75")
+    book.now = NOW + 1_000
+    triggered = controller.step(book, NOW + 1_000)
+    assert triggered.phase == "flat"
+    assert " -7 " in f" {triggered.reason} " or "-7" in triggered.reason
+    assert {row.inst_id for row in _closes(book)} == set(MARKS)
+    assert all(row.reduce_only for row in _closes(book))
+
+    controller, book, _entered = _go(tmp_path / "stop")
+    _liq, stop, _loss = projection_ready(
+        direction="long",
+        mark=Decimal("370"),
+        pos=Decimal("0.01"),
+        ct_val=Decimal("1"),
+        mmr=Decimal("0.01"),
+        taker_signed=Decimal("-0.001"),
+        distance_fraction=Decimal("0.25"),
+    )
+    book.marks["MU-USDT-SWAP"] = stop
+    book.mark_ts["MU-USDT-SWAP"] = NOW + 1_000
+    book.now = NOW + 1_000
+    stopped = controller.step(book, NOW + 1_000)
+    assert stopped.phase == "flat"
+    assert "leg stop" in stopped.reason
+    assert {row.inst_id for row in _closes(book)} == set(MARKS)
+
+
+def test_realized_transition_does_not_keep_the_old_upl(tmp_path: Path) -> None:
+    controller, book, _entered = _go(tmp_path)
+    book.state["MU-USDT-SWAP"]["upl"] = Decimal("-1")
+    book.now = NOW + 1_000
+    marked = controller.step(book, NOW + 1_000)
+    assert marked.phase == "monitoring"
+    assert Decimal(marked.net_pnl) == Decimal("-1")
+    book.state["MU-USDT-SWAP"]["pos"] = Decimal("0")
+    book.ledger.append(BillSnap("trade-1", "MU-USDT-SWAP", "2", NOW + 1_000, Decimal("-1"), Decimal("0"), "USDT"))
+    for inst in ("LITE-USDT-SWAP", "COHR-USDT-SWAP", "QQQ-USDT-SWAP"):
+        book.state[inst]["pos"] = Decimal("0")
+    book.now = NOW + 2_000
+    flat = controller.step(book, NOW + 2_000)
+    assert flat.phase == "flat"
+    assert Decimal(flat.net_pnl) == Decimal("-1")
+
+
+def test_unknown_pending_blocks_arm_and_escalates_without_cancel(tmp_path: Path) -> None:
+    book = SyntheticBook()
+    book.foreign.append(OrderSnap("MU-USDT-SWAP", "EXT123", "buy", Decimal("0.01"), Decimal("0"), "live", NOW))
+    controller = PilotController.create(tmp_path / "audit.json", _policy())
+    with pytest.raises(PilotBlocked, match="pending"):
+        controller.arm(book, NOW)
+    assert book.placed == []
+    assert book.cancelled == []
+
+    clean = SyntheticBook()
+    controller, clean, _entered = _go(tmp_path / "watch")
+    clean.foreign.append(OrderSnap("QQQ-USDT-SWAP", "EXT999", "sell", Decimal("0.01"), Decimal("0"), "live", NOW))
+    clean.now = NOW + 1_000
+    stepped = controller.step(clean, NOW + 1_000)
+    assert stepped.phase == "escalated"
+    assert "EXT999" not in clean.cancelled
+    assert _closes(clean) == []
+
+
+def test_missing_inputs_and_bad_marks_do_not_arm_or_invent_a_price(tmp_path: Path) -> None:
+    book = SyntheticBook()
+    book.tier_error = True
+    controller = PilotController.create(tmp_path / "tier.json", _policy())
+    with pytest.raises(PilotBlocked):
+        controller.arm(book, NOW)
+    assert book.placed == []
+
+    book = SyntheticBook()
+    book.fee_error = True
+    controller = PilotController.create(tmp_path / "fee.json", _policy())
+    with pytest.raises(PilotBlocked):
+        controller.arm(book, NOW)
+
+    book = SyntheticBook()
+    book.lever = "5"
+    controller = PilotController.create(tmp_path / "lever.json", _policy())
+    with pytest.raises(PilotBlocked, match="leverage"):
+        controller.arm(book, NOW)
+
+    book = SyntheticBook()
+    book.acct_lv = "3"
+    controller = PilotController.create(tmp_path / "mode.json", _policy())
+    with pytest.raises(PilotBlocked, match="acctLv"):
+        controller.arm(book, NOW)
+
+    book = SyntheticBook()
+    for inst in MARKS:
+        book.marks[inst] = Decimal("10000")
+    controller = PilotController.create(tmp_path / "cap.json", _policy())
+    with pytest.raises(PilotBlocked, match="cap"):
+        controller.arm(book, NOW)
+    assert book.placed == []
+
+    controller, book, _entered = _go(tmp_path / "stale")
+    book.mark_ts["MU-USDT-SWAP"] = NOW - 20_000
+    book.now = NOW + 1_000
+    stale = controller.step(book, NOW + 1_000)
+    assert stale.phase == "escalated"
+    assert _closes(book) == []
+
+    controller, book, _entered = _go(tmp_path / "zero")
+    book.marks["MU-USDT-SWAP"] = Decimal("0")
+    book.mark_ts["MU-USDT-SWAP"] = NOW + 1_000
+    book.now = NOW + 1_000
+    controller.step(book, NOW + 1_000)
+    assert not any(row.inst_id == "MU-USDT-SWAP" for row in _closes(book))
+
+
+def test_close_failures_persist_and_then_send_nothing(tmp_path: Path) -> None:
+    book = SyntheticBook()
+    book.close_failures = 50
+    path = tmp_path / "audit.json"
+    controller, book, _entered = _go(path.parent, book, max_close_attempts=2)
+    for inst in MARKS:
+        book.state[inst]["upl"] = Decimal("-2")
+    book.now = NOW + 1_000
+    failed = controller.step(book, NOW + 1_000)
+    assert failed.phase == "escalated"
+    assert controller.audit.close_attempts == 2
+    assert len(_closes(book)) == 8
+    before = len(book.placed)
+    loaded = PilotController.load(path, _policy(max_close_attempts=2))
+    loaded.step(book, NOW + 2_000)
+    assert len(book.placed) == before
+
+
+def test_oversized_position_is_not_closed_above_the_plan(tmp_path: Path) -> None:
+    controller, book, _entered = _go(tmp_path)
+    book.state["MU-USDT-SWAP"]["pos"] = Decimal("0.05")
+    book.state["MU-USDT-SWAP"]["upl"] = Decimal("-7")
+    book.now = NOW + 1_000
+    result = controller.step(book, NOW + 1_000)
+    assert result.phase == "escalated"
+    assert "larger than the plan" in result.reason
+    assert not any(row.inst_id == "MU-USDT-SWAP" for row in _closes(book))
+
+
+def test_enter_without_send_orders_places_nothing(tmp_path: Path) -> None:
+    book = SyntheticBook()
+    controller = PilotController.create(tmp_path / "audit.json", _policy())
+    controller.arm(book, NOW)
+    with pytest.raises(PilotBlocked, match="send_orders"):
+        controller.enter(book, NOW)
+    with pytest.raises(PilotBlocked, match="send_orders"):
+        controller.enter(book, NOW, send_orders=False)
+    assert book.placed == []
+    assert controller.audit.phase == "armed"
+
+
+def test_read_permission_can_arm_but_cannot_enter(tmp_path: Path) -> None:
+    book = SyntheticBook()
+    book.perm = "read_only"
+    controller = PilotController.create(tmp_path / "audit.json", _policy())
+    armed = controller.arm(book, NOW)
+    assert armed.phase == "armed"
+    assert book.placed == []
+    with pytest.raises(PilotBlocked, match="trade"):
+        controller.enter(book, NOW, send_orders=True)
+    assert book.placed == []
+
+
+def test_audit_stores_recovery_not_policy_or_secrets(tmp_path: Path) -> None:
+    path = tmp_path / "audit.json"
+    policy = _policy()
+    controller = PilotController.create(path, policy)
+    text = path.read_text(encoding="utf-8")
+    assert "distance_to_liq_fraction" not in text
+    assert "0.25" not in text
+    assert "test-key" not in text
+    assert "2026-11-19-mu-lite-cohr-qqq" in text
+    with pytest.raises(AuditError):
+        PilotController.create(path, policy)
+    with pytest.raises(AuditError, match="fingerprint"):
+        load_audit(path, policy_fingerprint="different")
+    controller.arm(SyntheticBook(), NOW)
+    assert controller.audit.baseline_ms == NOW
+
+
+def test_gap_while_marks_are_fresh_unwinds(tmp_path: Path) -> None:
+    controller, book, _entered = _go(tmp_path)
+    book.now = NOW + 5_001
+    for inst in MARKS:
+        book.mark_ts[inst] = book.now
+    result = controller.step(book, book.now)
+    assert result.phase == "flat"
+    assert "gap" in result.reason
+    assert {row.inst_id for row in _closes(book)} == set(MARKS)
+
+
+def test_scenarios_do_not_open_sockets(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def _boom(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("socket opened")
+
+    monkeypatch.setattr("socket.socket", _boom)
+    test_portfolio_trigger_and_leg_stop_flatten_every_open_leg(tmp_path)
+
+
+def test_result_cannot_claim_live_clearance() -> None:
+    with pytest.raises(PilotBlocked):
+        PilotResult("armed", "arm", None, "", (), True)
+
+
+def test_sanctioned_reads_do_not_need_trade_or_the_demo_header() -> None:
+    transport = FakeTransport()
+    transport.add("/api/v5/account/config", {"code": "0", "data": [{
+        "acctLv": "2", "posMode": "net_mode", "perm": "read_only,trade", "level": "Lv1",
+        "uid": "999", "label": "secret", "ip": "203.0.113.5",
+    }]})
+    transport.add("/api/v5/account/trade-fee", {"code": "0", "data": [{
+        "instType": "SWAP", "level": "Lv1", "ts": str(NOW), "maker": "-0.0002", "taker": "-0.0005",
+        "feeGroup": [{"groupId": "g1", "maker": "-0.0002", "taker": "-0.0005"}],
+    }]})
+    transport.add("/api/v5/account/leverage-info", {"code": "0", "data": [{
+        "instId": "MU-USDT-SWAP", "mgnMode": "isolated", "posSide": "net", "lever": "2",
+    }]})
+    transport.add("/api/v5/account/bills", {"code": "0", "data": [{
+        "billId": "1", "instId": "MU-USDT-SWAP", "type": "8", "subType": "173",
+        "ts": str(NOW), "pnl": "-0.2", "fee": "0", "ccy": "USDT",
+    }]})
+    transport.add("/api/v5/trade/orders-pending", {"code": "0", "data": []})
+    transport.add("/api/v5/trade/order", load_fixture("private_order.json"))
+    transport.add("/api/v5/trade/orders-history", {"code": "0", "data": []})
+    transport.add("/api/v5/account/positions", {"code": "0", "data": [{
+        "instId": "MU-USDT-SWAP", "instType": "SWAP", "posSide": "net", "pos": "0.01",
+        "avgPx": "370", "upl": "-1", "margin": "1.85", "mgnMode": "isolated", "lever": "2",
+        "uTime": str(NOW), "liqPx": "", "markPx": "370", "fee": "-0.01", "fundingFee": "0",
+        "realizedPnl": "0",
+    }]})
+    client, _clock = _client(transport, demo=False, allow_orders=False, live_trade=False, pilot_plan=False)
+    config = client.account_config()
+    assert config.acct_lv == "2"
+    assert not hasattr(config, "uid")
+    fee = client.trade_fee("SWAP", inst_family="MU-USDT")
+    assert fee.groups[0].taker == "-0.0005"
+    assert client.leverage_info("MU-USDT-SWAP")[0].lever == "2"
+    bill = client.bills(inst_id="MU-USDT-SWAP", begin=str(NOW))[0]
+    assert bill.pnl == "-0.2"
+    assert bill.fee == "0"
+    assert client.open_orders(inst_type="SWAP") == []
+    order = client.get_order("BTC-USDT-SWAP", ord_id="312269865356374016")
+    assert order.state == "live"
+    assert client.order_history("SWAP", inst_id="MU-USDT-SWAP") == []
+    position = client.positions(inst_type="SWAP")[0]
+    assert position.liq_px == ""
+    assert position.fee == "-0.01"
+    assert all(call["method"] == "GET" for call in transport.calls)
+    assert all("x-simulated-trading" not in call["headers"] for call in transport.calls)
+    with pytest.raises(LiveTradingDisabled):
+        client.order_history("SWAP", archived=True)
+    with pytest.raises(UnsafeEndpointError):
+        client._request("GET", "/api/v5/account/position-tiers")
+    public = FakeTransport()
+    public.add("/api/v5/public/position-tiers", {"code": "0", "data": [{
+        "instId": "MU-USDT-SWAP", "instFamily": "MU-USDT", "uly": "MU-USDT", "tier": "1",
+        "minSz": "0", "maxSz": "100", "mmr": "0.004", "imr": "0.01", "maxLever": "50",
+    }]})
+    tiers = make_client(public).position_tiers("SWAP", td_mode="isolated", inst_id="MU-USDT-SWAP")
+    assert tiers[0].mmr == "0.004"
+    assert public.calls[0]["method"] == "GET"
+
+
+def test_okx_book_read_does_not_post_or_enable_trade() -> None:
+    transport = FakeTransport()
+    transport.add("/api/v5/account/config", {"code": "0", "data": [{
+        "acctLv": "2", "posMode": "net_mode", "perm": "read_only", "level": "Lv1",
+    }]})
+    transport.add("/api/v5/account/positions", {"code": "0", "data": []})
+    client, _clock = _client(transport, demo=False, allow_orders=False, live_trade=False, pilot_plan=True)
+    public = FakeTransport()
+    book = OkxPilotBook(client, make_client(public), now_ms=NOW)
+    assert book.account().acct_lv == "2"
+    request = OrderRequest(
+        "COHR-USDT-SWAP", "buy", "0.02", "280", "ioc", False, "", "APL60650001", "1", "entry"
+    )
+    with pytest.raises(PilotRejected):
+        book.place(request)
+    assert all(call["method"] == "GET" for call in transport.calls)
+    assert client.live_trade is False
+
+
+def test_runbook_names_the_sanctioned_reads_and_refuses_clearance() -> None:
+    text = Path("docs/pilot-risk-plan-runbook.md").read_text(encoding="utf-8")
+    for row in SANCTIONED_LIVE_READS:
+        assert row.path in text
+    assert "not live clearance" in text
+    assert "d7fa452" in text
+    assert "3394944" in text
+    assert "24.5554" in text

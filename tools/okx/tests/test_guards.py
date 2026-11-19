@@ -7,6 +7,7 @@ from tools.okx.guards import (
     ALLOWED_PRIVATE,
     LIVE_TRADE_ENABLED,
     LIVE_TRADE_PATHS,
+    SANCTIONED_LIVE_READS,
     SET_LEVERAGE_PATH,
     CapBook,
     CapGroup,
@@ -73,11 +74,12 @@ def test_live_trade_constant_is_a_tripwire(monkeypatch: pytest.MonkeyPatch) -> N
         resolve_demo(False)
 
 
-def test_live_reads_are_balance_positions_and_funding() -> None:
+def test_live_reads_are_sanctioned_gets() -> None:
     assert_live_read_only(True, "POST", "/api/v5/trade/order")
-    assert_live_read_only(False, "GET", "/api/v5/account/balance")
-    assert_live_read_only(False, "GET", "/api/v5/account/positions")
-    assert_live_read_only(False, "GET", "/api/v5/asset/balances")
+    for row in SANCTIONED_LIVE_READS:
+        assert row.permission == "Read"
+        assert_live_read_only(False, "GET", row.path)
+        assert_live_read_only(False, "GET", row.path, live_trade=False)
     with pytest.raises(LiveTradingDisabled):
         assert_live_read_only(False, "POST", "/api/v5/trade/order")
     with pytest.raises(LiveTradingDisabled):
@@ -85,7 +87,11 @@ def test_live_reads_are_balance_positions_and_funding() -> None:
     with pytest.raises(LiveTradingDisabled):
         assert_live_read_only(False, "POST", "/api/v5/trade/amend-order")
     with pytest.raises(LiveTradingDisabled):
-        assert_live_read_only(False, "GET", "/api/v5/trade/order")
+        assert_live_read_only(False, "GET", "/api/v5/trade/orders-history-archive")
+    with pytest.raises(LiveTradingDisabled):
+        assert_live_read_only(False, "GET", "/api/v5/account/position-tiers")
+    with pytest.raises(UnsafeEndpointError):
+        assert_private_request("GET", "/api/v5/account/position-tiers")
     with pytest.raises(LiveTradingDisabled):
         assert_live_read_only(False, "POST", "/api/v5/asset/balances")
     with pytest.raises(LiveTradingDisabled):
@@ -110,8 +116,10 @@ def test_live_trade_opt_in_is_place_and_cancel_only(monkeypatch: pytest.MonkeyPa
         assert_live_read_only(False, "POST", "/api/v5/trade/order", live_trade=False)
     with pytest.raises(LiveTradingDisabled, match="Live Trade"):
         assert_live_read_only(False, "POST", "/api/v5/trade/amend-order", live_trade=True)
-    with pytest.raises(LiveTradingDisabled, match="Live Trade"):
-        assert_live_read_only(False, "GET", "/api/v5/trade/order", live_trade=True)
+    assert_live_read_only(False, "GET", "/api/v5/trade/order", live_trade=False)
+    assert_live_read_only(False, "GET", "/api/v5/trade/order", live_trade=True)
+    with pytest.raises(LiveTradingDisabled):
+        assert_live_read_only(False, "GET", "/api/v5/trade/orders-history-archive", live_trade=True)
     with pytest.raises(LiveTradingDisabled):
         assert_live_read_only(False, "POST", "/api/v5/asset/balances", live_trade=True)
     assert_live_read_only(False, "POST", SET_LEVERAGE_PATH, live_trade=True)

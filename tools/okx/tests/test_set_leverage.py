@@ -12,7 +12,12 @@ import pytest
 from tools.okx.auth import sign
 from tools.okx.client import PublicClient, RateLimiter
 from tools.okx.errors import LiveTradingDisabled, OrdersDisabled, UnsafeEndpointError
-from tools.okx.guards import SET_LEVERAGE_PATH, assert_live_trade_payload, assert_set_leverage_payload
+from tools.okx.guards import (
+    SET_LEVERAGE_PATH,
+    assert_live_read_only,
+    assert_live_trade_payload,
+    assert_set_leverage_payload,
+)
 from tools.okx.private_cli import main
 from tools.okx.tests.conftest import FakeClock, FakeTransport
 from tools.okx.tests.test_private import _SECRET, _TS, _client
@@ -202,7 +207,6 @@ def test_other_account_paths_stay_blocked_with_opt_in() -> None:
         ("POST", "/api/v5/account/set-position-mode", {"posMode": "net_mode"}),
         ("POST", "/api/v5/account/set-account-level", {"acctLv": "2"}),
         ("POST", "/api/v5/account/config", {}),
-        ("GET", "/api/v5/account/config", None),
         ("POST", "/api/v5/asset/transfer", {"ccy": "USDT", "amt": "1"}),
         ("POST", "/api/v5/asset/withdrawal", {"ccy": "USDT", "amt": "1"}),
         ("GET", "/api/v5/asset/deposit-address", None),
@@ -211,6 +215,7 @@ def test_other_account_paths_stay_blocked_with_opt_in() -> None:
     for method, path, payload in blocked:
         with pytest.raises(UnsafeEndpointError):
             client._request(method, path, payload=payload)
+    assert_live_read_only(False, "GET", "/api/v5/account/config", live_trade=False)
     with pytest.raises(ValueError, match="isolated"):
         client._request(
             "POST",

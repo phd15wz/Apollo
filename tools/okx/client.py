@@ -24,6 +24,7 @@ from tools.okx.types import (
     MarkPrice,
     OpenInterest,
     OrderBook,
+    PositionTier,
     Ticker,
     Trade,
 )
@@ -388,6 +389,30 @@ class PublicClient:
             {"instType": inst_type, "instId": inst_id, "instFamily": inst_family},
         )
         return [MarkPrice.from_dict(row) for row in data]
+
+    def position_tiers(
+        self,
+        inst_type: str,
+        *,
+        td_mode: str,
+        inst_id: str = "",
+        inst_family: str = "",
+    ) -> list[PositionTier]:
+        """Public maintenance tiers. Keyless. ``td_mode`` is ``isolated`` or ``cross``.
+
+        This is the tier table (``mmr``, size band, max leverage). It is not
+        ``GET /api/v5/account/position-tiers``, which is a portfolio-margin
+        position limit and does not return ``mmr``.
+        """
+        if td_mode not in {"isolated", "cross"}:
+            raise ValueError("td_mode must be isolated or cross")
+        params: dict[str, Any] = {"instType": inst_type, "tdMode": td_mode}
+        if inst_id:
+            params["instId"] = endpoints.validate_inst_id(inst_id)
+        if inst_family:
+            params["instFamily"] = endpoints.validate_inst_id(inst_family)
+        data = self.get(endpoints.POSITION_TIERS, params)
+        return [PositionTier.from_dict(row) for row in data]
 
     def index_tickers(self, *, inst_id: str = "", quote_ccy: str = "") -> list[IndexTicker]:
         data = self.get(endpoints.INDEX_TICKERS, {"instId": inst_id, "quoteCcy": quote_ccy})

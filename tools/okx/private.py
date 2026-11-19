@@ -2,7 +2,8 @@
 
 Public market data stays on ``PublicClient`` and never uses this module.
 Demo calls send ``x-simulated-trading: 1``. Live mode (``demo=False``) signs
-balance, positions, and funding balances and omits that header. Live place
+balance, positions, funding balances, and the sanctioned Read GETs, and
+omits that header. Live place
 and cancel are the BTC-USDT cash smoke, one BTC-USDT-SWAP smoke, and the
 locked mild-3.1 equity SWAP stub (MU, SKHY, LITE, TSM, QQQ; isolated;
 sz at most the stub lot), and only when ``OKX_LIVE_TRADE=1`` (or
@@ -37,7 +38,10 @@ from tools.okx.auth import OkxCredentials, access_headers, load_credentials, red
 from tools.okx.client import HttpResponse, RateLimiter, RequestsTransport
 from tools.okx.errors import OkxError, OkxHttpError, RiskLimitError
 from tools.okx.guards import (
+    ACCOUNT_CONFIG_PATH,
+    BILLS_PATH,
     FUNDING_BALANCE_PATH,
+    LEVERAGE_INFO_PATH,
     LIVE_SMOKE_INST_ID,
     LIVE_SMOKE_ORD_TYPE,
     LIVE_SMOKE_PX_MAX,
@@ -53,6 +57,7 @@ from tools.okx.guards import (
     LIVE_TRADE_PATHS,
     PRIVATE_RATE_LIMITS,
     SET_LEVERAGE_PATH,
+    TRADE_FEE_PATH,
     RiskGuards,
     assert_live_place,
     assert_live_read_only,
@@ -254,6 +259,17 @@ class Position:
     margin_mode: str
     lever: float
     updated_ms: int
+    # Raw exchange strings. Empty means the field was absent, not a zero price.
+    mark_px: str = ""
+    liq_px: str = ""
+    mmr: str = ""
+    imr: str = ""
+    mgn_ratio: str = ""
+    fee: str = ""
+    funding_fee: str = ""
+    realized_pnl: str = ""
+    pnl: str = ""
+    ccy: str = ""
 
     @classmethod
     def from_dict(cls, row: Mapping[str, Any]) -> Position:
@@ -268,6 +284,16 @@ class Position:
             margin_mode=_s(row.get("mgnMode")),
             lever=_f(row.get("lever")),
             updated_ms=_i(row.get("uTime")),
+            mark_px=_s(row.get("markPx")),
+            liq_px=_s(row.get("liqPx")),
+            mmr=_s(row.get("mmr")),
+            imr=_s(row.get("imr")),
+            mgn_ratio=_s(row.get("mgnRatio")),
+            fee=_s(row.get("fee")),
+            funding_fee=_s(row.get("fundingFee")),
+            realized_pnl=_s(row.get("realizedPnl")),
+            pnl=_s(row.get("pnl")),
+            ccy=_s(row.get("ccy")),
         )
 
 
@@ -324,6 +350,116 @@ class OrderRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class AccountConfig:
+    """Account mode and position mode. Identifiers and IPs are not stored."""
+
+    acct_lv: str
+    pos_mode: str
+    perm: str
+    level: str
+    ct_iso_mode: str
+
+    @classmethod
+    def from_dict(cls, row: Mapping[str, Any]) -> AccountConfig:
+        return cls(
+            acct_lv=_s(row.get("acctLv")),
+            pos_mode=_s(row.get("posMode")),
+            perm=_s(row.get("perm")),
+            level=_s(row.get("level")),
+            ct_iso_mode=_s(row.get("ctIsoMode")),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class FeeGroup:
+    group_id: str
+    maker: str
+    taker: str
+
+
+@dataclass(frozen=True, slots=True)
+class TradeFee:
+    """Account fee tier. Rates stay strings. Negative means commission."""
+
+    inst_type: str
+    level: str
+    ts_ms: int
+    maker: str
+    taker: str
+    maker_u: str
+    taker_u: str
+    groups: tuple[FeeGroup, ...]
+
+    @classmethod
+    def from_dict(cls, row: Mapping[str, Any]) -> TradeFee:
+        groups: list[FeeGroup] = []
+        raw_groups = row.get("feeGroup") or []
+        if isinstance(raw_groups, list):
+            for item in raw_groups:
+                if not isinstance(item, dict):
+                    continue
+                groups.append(
+                    FeeGroup(
+                        group_id=_s(item.get("groupId")),
+                        maker=_s(item.get("maker")),
+                        taker=_s(item.get("taker")),
+                    )
+                )
+        return cls(
+            inst_type=_s(row.get("instType")),
+            level=_s(row.get("level")),
+            ts_ms=_i(row.get("ts")),
+            maker=_s(row.get("maker")),
+            taker=_s(row.get("taker")),
+            maker_u=_s(row.get("makerU")),
+            taker_u=_s(row.get("takerU")),
+            groups=tuple(groups),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class LeverageInfo:
+    inst_id: str
+    mgn_mode: str
+    pos_side: str
+    lever: str
+
+    @classmethod
+    def from_dict(cls, row: Mapping[str, Any]) -> LeverageInfo:
+        return cls(
+            inst_id=_s(row.get("instId")),
+            mgn_mode=_s(row.get("mgnMode")),
+            pos_side=_s(row.get("posSide")),
+            lever=_s(row.get("lever")),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class Bill:
+    bill_id: str
+    inst_id: str
+    bill_type: str
+    sub_type: str
+    ts_ms: int
+    pnl: str
+    fee: str
+    ccy: str
+
+    @classmethod
+    def from_dict(cls, row: Mapping[str, Any]) -> Bill:
+        return cls(
+            bill_id=_s(row.get("billId")),
+            inst_id=_s(row.get("instId")),
+            bill_type=_s(row.get("type")),
+            sub_type=_s(row.get("subType")),
+            ts_ms=_i(row.get("ts")),
+            pnl=_s(row.get("pnl")),
+            fee=_s(row.get("fee")),
+            ccy=_s(row.get("ccy")),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class LeverageResult:
     """One row from ``POST /api/v5/account/set-leverage``."""
 
@@ -371,6 +507,7 @@ class PrivateClient:
         read_only: bool | None = None,
         risk_gate: bool | None = None,
         live_trade: bool | None = None,
+        pilot_plan: bool = False,
         site: str = "global",
         base_url: str | None = None,
         timeout: float = 10.0,
@@ -388,6 +525,9 @@ class PrivateClient:
         self.allow_orders = resolve_allow_orders(allow_orders=allow_orders, read_only=read_only)
         self.risk_gate = resolve_risk_gate(risk_gate)
         self.live_trade = resolve_live_trade(live_trade)
+        if not isinstance(pilot_plan, bool):
+            raise TypeError("pilot_plan must be a bool; it is not read from the environment")
+        self.pilot_plan = pilot_plan
         if site not in endpoints.SITE_BASE_URLS and base_url is None:
             raise ValueError(f"unknown site {site!r}; expected one of {sorted(endpoints.SITE_BASE_URLS)}")
         self.site = site
@@ -423,7 +563,7 @@ class PrivateClient:
         return (
             f"PrivateClient(site={self.site!r}, demo={self.demo!r}, "
             f"allow_orders={self.allow_orders!r}, risk_gate={self.risk_gate!r}, "
-            f"live_trade={self.live_trade!r})"
+            f"live_trade={self.live_trade!r}, pilot_plan={self.pilot_plan!r})"
         )
 
     def balance(self, ccy: str = "") -> AccountBalance:
@@ -516,6 +656,7 @@ class PrivateClient:
                 px=px_n,
                 pos_side=pos_side_n,
                 reduce_only=reduce_only,
+                pilot_plan=self.pilot_plan,
             )
         self._check_new_margin(inst, margin_usd, reduce_only=reduce_only, open_margins=open_margins)
         payload = _clean_payload(
@@ -539,7 +680,7 @@ class PrivateClient:
         self._guards.assert_orders_enabled()
         inst = endpoints.validate_inst_id(inst_id)
         if not self.demo:
-            assert_live_smoke_cancel(inst)
+            assert_live_smoke_cancel(inst, pilot_plan=self.pilot_plan)
         ord_n = _optional_id("ord_id", ord_id)
         cl_n = _cl_ord_id(cl_ord_id)
         if not ord_n and not cl_n:
@@ -715,6 +856,73 @@ class PrivateClient:
         payload = self._request("GET", path, query=query)
         return [OrderRecord.from_dict(row) for row in _data_list(payload)]
 
+    def account_config(self) -> AccountConfig:
+        """``GET /api/v5/account/config``. Read permission. Does not change config.
+
+        ``uid``, ``ip``, and the API label are dropped and are not returned.
+        """
+        payload = self._request("GET", ACCOUNT_CONFIG_PATH)
+        rows = _data_list(payload)
+        if not rows:
+            raise OkxError("0", "empty account config", payload)
+        return AccountConfig.from_dict(rows[0])
+
+    def trade_fee(self, inst_type: str, *, inst_family: str = "") -> TradeFee:
+        """``GET /api/v5/account/trade-fee``. Read permission.
+
+        ``inst_family`` selects the SWAP/FUTURES fee group. This method does
+        not send ``groupId`` together with ``instFamily`` (OKX allows only one).
+        """
+        query = [("instType", _choice("inst_type", inst_type, _INST_TYPES))]
+        if inst_family:
+            query.append(("instFamily", endpoints.validate_inst_id(inst_family)))
+        payload = self._request("GET", TRADE_FEE_PATH, query=query)
+        rows = _data_list(payload)
+        if not rows:
+            raise OkxError("0", "empty trade fee", payload)
+        return TradeFee.from_dict(rows[0])
+
+    def leverage_info(self, inst_id: str, *, mgn_mode: str = "isolated") -> list[LeverageInfo]:
+        """``GET /api/v5/account/leverage-info``. Read permission. Does not set leverage."""
+        if mgn_mode not in {"isolated", "cross"}:
+            raise ValueError("mgn_mode must be isolated or cross")
+        payload = self._request(
+            "GET",
+            LEVERAGE_INFO_PATH,
+            query=[("instId", endpoints.validate_inst_id(inst_id)), ("mgnMode", mgn_mode)],
+        )
+        return [LeverageInfo.from_dict(row) for row in _data_list(payload)]
+
+    def bills(
+        self,
+        *,
+        inst_type: str = "",
+        inst_id: str = "",
+        begin: str = "",
+        after: str = "",
+        limit: int | None = None,
+    ) -> list[Bill]:
+        """``GET /api/v5/account/bills`` (last 7 days). Read permission.
+
+        One page. The caller pages with ``after`` = the oldest ``billId``.
+        This is not the archive endpoint and it does not apply for a download.
+        """
+        query: list[tuple[str, str]] = []
+        if inst_type:
+            query.append(("instType", _choice("inst_type", inst_type, _INST_TYPES)))
+        if inst_id:
+            query.append(("instId", endpoints.validate_inst_id(inst_id)))
+        if begin:
+            query.append(("begin", _optional_id("begin", begin)))
+        if after:
+            query.append(("after", _optional_id("after", after)))
+        if limit is not None:
+            if limit < 1 or limit > 100:
+                raise ValueError("limit must be between 1 and 100")
+            query.append(("limit", str(limit)))
+        payload = self._request("GET", BILLS_PATH, query=query)
+        return [Bill.from_dict(row) for row in _data_list(payload)]
+
     def _check_new_margin(
         self,
         inst_id: str,
@@ -750,7 +958,7 @@ class PrivateClient:
         if (method_u, path_only) == ("POST", SET_LEVERAGE_PATH):
             payload = assert_set_leverage_payload(payload)
         elif not self.demo and (method_u, path_only) in LIVE_TRADE_PATHS:
-            assert_live_trade_payload(method_u, path_only, payload)
+            assert_live_trade_payload(method_u, path_only, payload, pilot_plan=self.pilot_plan)
         if method_u == "POST":
             self._guards.assert_orders_enabled()
         pairs = [(key, value) for key, value in (query or []) if value not in (None, "")]
