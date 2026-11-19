@@ -476,8 +476,11 @@ class PilotController:
         return False
 
     def _facts(self, book: Any, now_ms: int, *, need_bills: bool, require_trade: bool) -> _Facts:
+        begin = getattr(book, "begin_reads", None)
+        if callable(begin):
+            begin()
         facts = _Facts([], None, {}, {}, {}, {}, {}, None, None, [] if need_bills else None, None, None)
-        facts.account = _call(book.account, facts.blockers, "account")
+        # Reads that are not age-checked stay outside the freshness window.
         facts.positions = _call(book.positions, facts.blockers, "positions")
         facts.pending = _call(book.pending, facts.blockers, "pending")
         if need_bills and self.audit.baseline_ms is not None:
@@ -490,23 +493,35 @@ class PilotController:
                 rows.extend(page)
             else:
                 facts.bills = rows
+        lever_rows: dict[str, tuple[LeverSnap, ...] | None] = {}
+        for leg in PILOT_LEGS:
+            lever_rows[leg.inst_id] = _call(
+                lambda inst=leg.inst_id: book.leverage(inst), facts.blockers, f"leverage:{leg.inst_id}"
+            )
+        facts.account = _call(book.account, facts.blockers, "account")
+        snapped: dict[str, tuple[Any, Any, Any, Any]] = {}
+        for leg in PILOT_LEGS:
+            snapped[leg.inst_id] = (
+                _call(lambda inst=leg.inst_id: book.mark(inst), facts.blockers, f"mark:{leg.inst_id}"),
+                _call(lambda inst=leg.inst_id: book.instrument(inst), facts.blockers, f"instrument:{leg.inst_id}"),
+                _call(lambda inst=leg.inst_id: book.fee(inst), facts.blockers, f"fee:{leg.inst_id}"),
+                _call(lambda inst=leg.inst_id: book.tiers(inst), facts.blockers, f"tier:{leg.inst_id}"),
+            )
+        decision_ms = _decision_ms(book, now_ms)
         age = self.policy.max_input_age_ms
         for leg in PILOT_LEGS:
-            mark = _call(lambda inst=leg.inst_id: book.mark(inst), facts.blockers, f"mark:{leg.inst_id}")
-            instrument = _call(lambda inst=leg.inst_id: book.instrument(inst), facts.blockers, f"instrument:{leg.inst_id}")
-            fee = _call(lambda inst=leg.inst_id: book.fee(inst), facts.blockers, f"fee:{leg.inst_id}")
-            tiers = _call(lambda inst=leg.inst_id: book.tiers(inst), facts.blockers, f"tier:{leg.inst_id}")
-            levers = _call(lambda inst=leg.inst_id: book.leverage(inst), facts.blockers, f"leverage:{leg.inst_id}")
-            if mark is not None and age is not None and _fresh(mark.observed_ms, mark.exchange_ts_ms, now_ms, age):
+            mark, instrument, fee, tiers = snapped[leg.inst_id]
+            levers = lever_rows[leg.inst_id]
+            if mark is not None and age is not None and _fresh(mark.observed_ms, mark.exchange_ts_ms, decision_ms, age):
                 facts.marks[leg.inst_id] = mark
             elif mark is not None:
                 facts.blockers.append(f"stale or bad mark:{leg.inst_id}")
-            if instrument is not None and age is not None and _fresh(instrument.observed_ms, None, now_ms, age):
+            if instrument is not None and age is not None and _fresh(instrument.observed_ms, None, decision_ms, age):
                 problems = _instrument_problems(instrument)
                 facts.blockers.extend(f"{leg.inst_id} {item}" for item in problems)
                 if not problems:
                     facts.instruments[leg.inst_id] = instrument
-            if fee is not None and age is not None and _fresh(fee.observed_ms, fee.ts_ms, now_ms, age):
+            if fee is not None and age is not None and _fresh(fee.observed_ms, fee.ts_ms, decision_ms, age):
                 if fee.group_id and instrument is not None and fee.group_id == instrument.group_id:
                     facts.fees[leg.inst_id] = fee
                 else:
@@ -515,7 +530,7 @@ class PilotController:
                 facts.blockers.append(f"stale fee:{leg.inst_id}")
             if tiers is not None and instrument is not None:
                 tier = _matching_tier(tiers, leg.size)
-                if tier is None or age is None or not _fresh(tier.observed_ms, None, now_ms, age):
+                if tier is None or age is None or not _fresh(tier.observed_ms, None, decision_ms, age):
                     facts.blockers.append(f"maintenance tier missing or stale:{leg.inst_id}")
                 elif tier.max_lever < Decimal("2"):
                     facts.blockers.append(f"tier max leverage below 2:{leg.inst_id}")
@@ -527,7 +542,7 @@ class PilotController:
                     facts.blockers.append(f"leverage is not isolated 2:{leg.inst_id}")
                 else:
                     facts.levers[leg.inst_id] = lever
-        self._account_blockers(facts, require_trade, now_ms)
+        self._account_blockers(facts, require_trade, decision_ms)
         self._book_blockers(facts)
         if self.audit.phase in {"unarmed", "armed", "entering"}:
             self._cap_blockers(facts)
@@ -876,12 +891,39 @@ def _call(fn, blockers: list[str], label: str):
         return None
 
 
+def _decision_ms(book: Any, now_ms: int) -> int:
+    """Time the freshness check uses after the reads inside this call.
+
+    The caller's ``now_ms`` is taken before those reads. A venue timestamp
+    from during the read is then newer than that frozen value and looks
+    stale. The book's clock, read after the responses, is the check time.
+    A clock behind the caller is not used.
+    """
+    clock = getattr(book, "clock_ms", None)
+    if not callable(clock):
+        return now_ms
+    current = int(clock())
+    if current < now_ms:
+        return now_ms
+    return current
+
+
 def _fresh(observed_ms: int, exchange_ts_ms: int | None, now_ms: int, max_age: int) -> bool:
+    """True when the receipt and the venue time are each within ``max_age``.
+
+    ``now_ms`` is the check time. ``observed_ms`` is when this process
+    received the row. The venue timestamp is compared with that receipt,
+    not rewritten to the check time. Neither interval may exceed ``max_age``.
+    """
     if observed_ms > now_ms or now_ms - observed_ms > max_age:
         return False
     if exchange_ts_ms is None:
         return True
-    return exchange_ts_ms > 0 and exchange_ts_ms <= now_ms and now_ms - exchange_ts_ms <= max_age
+    if exchange_ts_ms <= 0:
+        return False
+    if exchange_ts_ms > observed_ms:
+        return exchange_ts_ms - observed_ms <= max_age
+    return observed_ms - exchange_ts_ms <= max_age
 
 
 def _instrument_problems(row: InstrumentSnap) -> tuple[str, ...]:

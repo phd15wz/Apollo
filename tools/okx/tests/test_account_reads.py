@@ -84,6 +84,8 @@ def test_sanctioned_reads_do_not_need_trade_or_the_demo_header() -> None:
         "instId": "ABC-USDT-SWAP", "instFamily": "ABC-USDT", "uly": "ABC-USDT", "tier": "1",
         "minSz": "0", "maxSz": "100", "mmr": "0.004", "imr": "0.01", "maxLever": "50",
     }]})
-    tiers = make_client(public).position_tiers("SWAP", td_mode="isolated", inst_id="ABC-USDT-SWAP")
+    tiers = make_client(public).position_tiers("SWAP", td_mode="isolated", inst_family="ABC-USDT")
     assert tiers[0].mmr == "0.004"
     assert public.calls[0]["method"] == "GET"
+    assert public.calls[0]["params"]["instFamily"] == "ABC-USDT"
+    assert "instId" not in public.calls[0]["params"]

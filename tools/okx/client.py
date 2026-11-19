@@ -130,6 +130,17 @@ class RateLimiter:
         return waited
 
 
+def _id_list(value: str, *, label: str, limit: int) -> tuple[str, ...]:
+    if not value or not value.strip():
+        return ()
+    parts = tuple(part.strip() for part in value.split(","))
+    if any(not part for part in parts):
+        raise ValueError(f"{label} has an empty id")
+    if len(parts) > limit:
+        raise ValueError(f"{label} accepts at most {limit} ids")
+    return tuple(endpoints.validate_inst_id(part) for part in parts)
+
+
 def _clean_params(params: Mapping[str, Any] | None) -> dict[str, Any] | None:
     if not params:
         return None
@@ -407,10 +418,15 @@ class PublicClient:
         if td_mode not in {"isolated", "cross"}:
             raise ValueError("td_mode must be isolated or cross")
         params: dict[str, Any] = {"instType": inst_type, "tdMode": td_mode}
-        if inst_id:
-            params["instId"] = endpoints.validate_inst_id(inst_id)
-        if inst_family:
-            params["instFamily"] = endpoints.validate_inst_id(inst_family)
+        families = _id_list(inst_family, label="inst_family", limit=5)
+        # SWAP, FUTURES, and OPTION ignore instId. OKX 50015 when neither
+        # instFamily nor uly is present. Do not send instId in that shape.
+        if inst_type.upper() in {"SWAP", "FUTURES", "OPTION"} and not families:
+            raise ValueError("instFamily is required for SWAP, FUTURES, and OPTION position tiers")
+        if families:
+            params["instFamily"] = ",".join(families)
+        elif inst_id:
+            params["instId"] = ",".join(_id_list(inst_id, label="inst_id", limit=5))
         data = self.get(endpoints.POSITION_TIERS, params)
         return [PositionTier.from_dict(row) for row in data]
 

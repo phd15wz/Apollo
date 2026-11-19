@@ -7,11 +7,14 @@ risk-approved buffer. A passing mock is not proof of a live exit.
 
 from __future__ import annotations
 
+import json
 from decimal import Decimal
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 
+from tools.okx.client import HttpResponse, RateLimiter
 from tools.okx.errors import LiveTradingDisabled, OrdersDisabled, RiskLimitError, UnsafeEndpointError
 from tools.okx.guards import SANCTIONED_LIVE_READS, assert_live_place
 from tools.okx.pilot_audit import AuditError, load_audit
@@ -51,7 +54,7 @@ from tools.okx.pilot_policy import (
     project_isolated_liq,
     stop_price,
 )
-from tools.okx.tests.conftest import FakeTransport, load_fixture, make_client
+from tools.okx.tests.conftest import FakeClock, FakeTransport, load_fixture, make_client
 from tools.okx.tests.test_private import _client
 
 pytestmark = pytest.mark.usefixtures("clean_okx_env")
@@ -1009,9 +1012,13 @@ def test_sanctioned_reads_do_not_need_trade_or_the_demo_header() -> None:
         "instId": "MU-USDT-SWAP", "instFamily": "MU-USDT", "uly": "MU-USDT", "tier": "1",
         "minSz": "0", "maxSz": "100", "mmr": "0.004", "imr": "0.01", "maxLever": "50",
     }]})
-    tiers = make_client(public).position_tiers("SWAP", td_mode="isolated", inst_id="MU-USDT-SWAP")
+    tiers = make_client(public).position_tiers("SWAP", td_mode="isolated", inst_family="MU-USDT")
     assert tiers[0].mmr == "0.004"
     assert public.calls[0]["method"] == "GET"
+    assert public.calls[0]["params"]["instFamily"] == "MU-USDT"
+    assert "instId" not in public.calls[0]["params"]
+    with pytest.raises(ValueError, match="instFamily"):
+        make_client(public).position_tiers("SWAP", td_mode="isolated", inst_id="MU-USDT-SWAP")
 
 
 def test_okx_book_read_does_not_post_or_enable_trade() -> None:
@@ -1043,3 +1050,158 @@ def test_runbook_names_the_sanctioned_reads_and_refuses_clearance() -> None:
     assert "3394944" in text
     assert "74ecb90" in text
     assert "24.5554" in text
+
+
+class _StepClock:
+    def __init__(self) -> None:
+        self.ms = NOW
+
+    def __call__(self) -> int:
+        return self.ms
+
+
+class _SequencedTransport:
+    """One step per request. Venue timestamps are the clock at that response."""
+
+    def __init__(self, clock: _StepClock, step_ms: int, *, stale_mark: str = "") -> None:
+        self.clock = clock
+        self.step_ms = step_ms
+        self.stale_mark = stale_mark
+        self.calls: list[dict[str, str]] = []
+
+    def request(self, method, url, *, params, headers, timeout, body=None):
+        del headers, timeout, body
+        self.clock.ms += self.step_ms
+        parsed = urlparse(url)
+        query = {key: values[0] for key, values in parse_qs(parsed.query).items()}
+        merged = dict(query)
+        merged.update({key: str(value) for key, value in (params or {}).items()})
+        self.calls.append({"method": method, "path": parsed.path, **merged})
+        if method != "GET":
+            raise AssertionError(method)
+        if parsed.path == "/api/v5/public/position-tiers" and merged.get("instId") and not merged.get("instFamily"):
+            body = json.dumps({"code": "50015", "msg": "Parameter instFamily or uly can not be empty", "data": []}).encode()
+            return HttpResponse(400, {"Content-Type": "application/json"}, body, url)
+        payload = {"code": "0", "data": _live_shape(parsed.path, merged, self.clock.ms, self.stale_mark)}
+        return HttpResponse(200, {"Content-Type": "application/json"}, json.dumps(payload).encode(), url)
+
+
+def _live_shape(path: str, query: dict[str, str], now_ms: int, stale_mark: str) -> list[dict[str, str]]:
+    names = ("MU-USDT-SWAP", "LITE-USDT-SWAP", "COHR-USDT-SWAP", "QQQ-USDT-SWAP")
+    marks = {"MU-USDT-SWAP": "370", "LITE-USDT-SWAP": "350", "COHR-USDT-SWAP": "280", "QQQ-USDT-SWAP": "670"}
+    if path == "/api/v5/account/config":
+        return [{"acctLv": "2", "posMode": "net_mode", "perm": "read_only", "level": "Lv1"}]
+    if path == "/api/v5/account/positions":
+        return []
+    if path == "/api/v5/trade/orders-pending":
+        return []
+    if path == "/api/v5/account/leverage-info":
+        return [{"instId": query.get("instId", ""), "mgnMode": "isolated", "posSide": "net", "lever": "2"}]
+    if path == "/api/v5/public/instruments":
+        return [_instrument(inst) for inst in names]
+    if path == "/api/v5/public/mark-price":
+        rows = []
+        for inst in names:
+            ts = now_ms - 6_000 if inst == stale_mark else now_ms
+            rows.append({"instType": "SWAP", "instId": inst, "markPx": marks[inst], "ts": str(ts)})
+        return rows
+    if path == "/api/v5/account/trade-fee":
+        return [{
+            "instType": "SWAP",
+            "level": "Lv1",
+            "ts": str(now_ms),
+            "maker": "-0.0002",
+            "taker": "-0.0005",
+            "feeGroup": [{"groupId": "g1", "maker": "-0.0002", "taker": "-0.0005"}],
+        }]
+    if path == "/api/v5/public/position-tiers":
+        families = query.get("instFamily", "").split(",")
+        return [
+            {
+                "instId": "",
+                "instFamily": family,
+                "uly": family,
+                "tier": "1",
+                "minSz": "0",
+                "maxSz": "1000",
+                "mmr": "0.01",
+                "imr": "0.02",
+                "maxLever": "50",
+            }
+            for family in families
+            if family
+        ]
+    raise AssertionError(path)
+
+
+def _instrument(inst_id: str) -> dict[str, str]:
+    family = inst_id.removesuffix("-SWAP")
+    return {
+        "instType": "SWAP",
+        "instId": inst_id,
+        "instFamily": family,
+        "baseCcy": family.split("-")[0],
+        "quoteCcy": "USDT",
+        "settleCcy": "USDT",
+        "state": "live",
+        "tickSz": "0.1",
+        "lotSz": "0.01",
+        "minSz": "0.01",
+        "ctVal": "1",
+        "ctMult": "1",
+        "ctType": "linear",
+        "groupId": "g1",
+    }
+
+
+def _wired_book(step_ms: int, *, stale_mark: str = "") -> tuple[PilotController, OkxPilotBook, _SequencedTransport, Path]:
+    clock = _StepClock()
+    transport = _SequencedTransport(clock, step_ms, stale_mark=stale_mark)
+    limiter = RateLimiter(clock=FakeClock(), sleep=lambda _seconds: None)
+    private, _ = _client(
+        transport,
+        demo=False,
+        allow_orders=False,
+        read_only=True,
+        live_trade=False,
+        pilot_plan=True,
+        limiter=limiter,
+    )
+    public = make_client(transport, clock=FakeClock(), limiter=limiter)
+    book = OkxPilotBook(private, public, now_ms=NOW, clock_ms=clock)
+    return book, transport
+
+
+def test_family_tiers_and_sequential_reads_pass_a_real_5s_check(tmp_path: Path) -> None:
+    book, transport = _wired_book(650)
+    controller = PilotController.create(tmp_path / "audit.json", _policy())
+    armed = controller.arm(book, NOW)
+    assert armed.phase == "armed"
+    assert armed.blockers == ()
+    tiers = [call for call in transport.calls if call["path"] == "/api/v5/public/position-tiers"]
+    assert len(tiers) == 1
+    assert tiers[0]["instFamily"] == "MU-USDT,LITE-USDT,COHR-USDT,QQQ-USDT"
+    assert "instId" not in tiers[0]
+    assert all(call["method"] == "GET" for call in transport.calls)
+    fees = [call for call in transport.calls if call["path"] == "/api/v5/account/trade-fee"]
+    assert [call["instFamily"] for call in fees] == ["MU-USDT", "LITE-USDT", "COHR-USDT", "QQQ-USDT"]
+
+
+def test_a_slow_snapshot_still_rejects_old_receipts(tmp_path: Path) -> None:
+    book, transport = _wired_book(900)
+    controller = PilotController.create(tmp_path / "audit.json", _policy())
+    with pytest.raises(PilotBlocked, match="stale") as raised:
+        controller.arm(book, NOW)
+    assert "stale or bad mark" in str(raised.value)
+    assert all(call["method"] == "GET" for call in transport.calls)
+
+
+def test_one_old_venue_timestamp_stays_stale(tmp_path: Path) -> None:
+    book, transport = _wired_book(100, stale_mark="MU-USDT-SWAP")
+    controller = PilotController.create(tmp_path / "audit.json", _policy())
+    with pytest.raises(PilotBlocked, match="stale or bad mark:MU-USDT-SWAP") as raised:
+        controller.arm(book, NOW)
+    text = str(raised.value)
+    assert "stale or bad mark:LITE-USDT-SWAP" not in text
+    assert "stale fee" not in text
+    assert all(call["method"] == "GET" for call in transport.calls)
